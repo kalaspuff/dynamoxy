@@ -107,7 +107,9 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v10.3.0
-      - run: uvx --from "maturin==$MATURIN_VERSION" maturin build --locked --profile dist --out dist
+      # bash, not the Windows default (PowerShell), so that $MATURIN_VERSION reads the env var.
+      - shell: bash
+        run: uvx --from "maturin==$MATURIN_VERSION" maturin build --locked --profile dist --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-x86_64-pc-windows-msvc
@@ -126,7 +128,9 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v10.3.0
-      - run: uvx --from "maturin==$MATURIN_VERSION" maturin build --locked --profile dist --out dist
+      # bash, not the Windows default (PowerShell), so that $MATURIN_VERSION reads the env var.
+      - shell: bash
+        run: uvx --from "maturin==$MATURIN_VERSION" maturin build --locked --profile dist --out dist
       - name: Smoke test
         shell: bash
         run: |
