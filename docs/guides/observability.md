@@ -1,0 +1,129 @@
+# Observability
+
+dynamoxy reports what it does in four ways: structured events (logging and hooks), OpenTelemetry
+spans and metrics, per-request cost collection, and a metrics snapshot. None of them logs item
+contents.
+
+## Events and logging
+
+Every event has a kind (`category.action`), a message, structured fields and a level. Events go
+to the `dynamoxy.<category>` loggers and to hooks. The full list is in the
+[events reference](../reference/events.md) (`dynamoxy events` prints it).
+
+```python
+import logging
+
+logging.getLogger("dynamoxy").setLevel(logging.INFO)
+
+client = dynamoxy.Client(
+    logging=dynamoxy.LoggingConfig(
+        levels={"operation.succeeded": "debug", "request.retry": "warning"},
+        disabled=("client.*",),
+        include_fields=True,  # "... operation=PutItem table=users attempts=2"
+    )
+)
+```
+
+Log records carry the event as `record.dynamoxy` (kind, message, fields, level, timestamp), so
+JSON formatters can emit structured logs.
+
+| Category | Kinds | Why you care |
+| --- | --- | --- |
+| `request` | `retry`, `throttled`, `gave_up`, `slow` | capacity problems, latency |
+| `batch` | `unprocessed`, `incomplete` | throttled batch jobs |
+| `table` | `created`, `updated`, `deleted` | schema changes made by the application |
+| `operation` | `succeeded` (debug), `failed` | every call, with duration, attempts and capacity |
+| `client` | `connected`, `closed` | lifecycle |
+| `hook`, `events` | `hook.failed`, `events.dropped` | problems in your hooks or an overloaded event buffer |
+
+## Hooks
+
+```python
+unsubscribe = client.on("request.throttled", lambda event: statsd.increment("dynamodb.throttled"))
+
+
+@client.on("operation.failed")
+async def alert(event: dynamoxy.Event) -> None:
+    await pager.notify(event.message, event.fields)
+```
+
+Hooks may be sync or async and match kinds or globs (a typo raises `ValueError`). A failing hook
+never affects the operation; it emits `hook.failed`. Events of a call reach hooks before the call
+returns; async hooks run as tasks (the client waits for them at `close()`). The core records only
+event kinds that logging or a hook wants, so unused kinds cost nothing.
+
+## OpenTelemetry
+
+Install `dynamoxy[otel]` (or any `opentelemetry-api`) and configure an SDK in the application.
+dynamoxy then creates one `CLIENT` span per call, named `<Operation> <table>`, as a child of the
+current span:
+
+| Attribute | Example |
+| --- | --- |
+| `db.system.name` | `aws.dynamodb` |
+| `db.operation.name`, `rpc.method` | `Query` |
+| `db.collection.name`, `aws.dynamodb.table_names` | `users` |
+| `aws.dynamodb.index_name`, `limit`, `consistent_read`, `scan_forward`, `projection`, `segment`, `total_segments` | request parameters |
+| `aws.dynamodb.count`, `scanned_count`, `consumed_capacity` | response |
+| `dynamoxy.attempts`, `dynamoxy.throttles`, `dynamoxy.model` | dynamoxy |
+| `error.type`, `aws.request_id` | failures (status `ERROR`, exception event) |
+| `db.query.text` | expressions with placeholders, with `Telemetry(record_expressions=True)` |
+
+Metrics:
+
+| Instrument | Type | Unit |
+| --- | --- | --- |
+| `db.client.operation.duration` | histogram | s |
+| `db.client.response.returned_rows` | histogram | `{row}` |
+| `dynamoxy.consumed_capacity` (`capacity.type` = read/write) | counter | `{capacity_unit}` |
+| `dynamoxy.request.attempts` | counter | `{attempt}` |
+| `dynamoxy.request.throttles` | counter | `{attempt}` |
+
+```python
+client = dynamoxy.Client(telemetry=dynamoxy.Telemetry(tracer_provider=provider, meter_provider=meters))
+client = dynamoxy.Client(telemetry=None)  # off
+```
+
+## Cost accounting per request
+
+```python
+with dynamoxy.collect() as usage:
+    response = await handle(request)
+logger.info("handled", extra={"dynamodb": usage.summary()})
+# {"calls": 4, "requests": 4, "duration_ms": 12.8, "read_capacity_units": 1.5,
+#  "write_capacity_units": 2.0, "errors": 0, "retries": 0, "operations": {"Query": 1, ...}}
+```
+
+Collectors follow the context into tasks started inside the block and can be nested.
+`usage.records` lists every `OperationRecord` (operation, table, model, duration, attempts,
+throttles, capacity, items, error).
+
+## Metrics snapshot
+
+```python
+snapshot = client.metrics()
+for name, operation in snapshot.operations.items():
+    print(name, operation.calls, operation.errors, operation.throttles, operation.duration)
+```
+
+Lock-free counters kept by the core since the client connected (`client.reset_metrics()`
+restarts them), including latency buckets (`snapshot.latency_buckets_ms`).
+
+## Middleware
+
+Middleware sees every call (`Request`: operation, table, params, model, context) and its
+`Response` (output, stats). Use it for auditing, access control, tenant isolation, caching or
+fault injection in staging:
+
+```python
+async def audit(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+    response = await call_next(request)
+    if request.operation in {"PutItem", "UpdateItem", "DeleteItem", "TransactWriteItems"}:
+        audit_log.info("write", extra={"table": request.table, "attempts": response.stats.attempts})
+    return response
+
+
+client.use(audit)
+```
+
+Middleware runs in registration order (the first registered is the outermost).

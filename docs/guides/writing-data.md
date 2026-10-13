@@ -1,0 +1,117 @@
+# Writing data
+
+## Choosing a write
+
+| Method | Stored item | Fails when | Typical use |
+| --- | --- | --- | --- |
+| `create(item)` | new item | the key exists (`ItemAlreadyExistsError`) | inserts |
+| `put(item)` | replaces whatever is stored | only on `condition=` | idempotent upserts of whole items |
+| `save(item)` | replaces | the stored version differs (`VersionConflictError`) | read-modify-write of versioned models |
+| `update(item_or_key, *actions)` | changes attributes in place | item missing (`ItemNotFoundError`, unless `upsert=True`) | counters, partial changes |
+| `delete(item_or_key)` | removes it | version (instances) or `condition=` | deletes |
+
+All writes validate first, run hooks, maintain automatic and derived fields and unique guards,
+and refresh the instance from DynamoDB's response.
+
+## Update actions
+
+```python
+await users.update(
+    user,
+    User.visits.add(1),                       # ADD (numbers and sets; missing counts as 0 / empty)
+    User.name.set("Ada"),                     # SET a value
+    User.score.set(User.score + 5),           # arithmetic: + and -
+    User.nickname.remove(),                   # REMOVE
+    User.tags.delete({"old"}),                # DELETE elements from a set
+    User.history.append_or_create(["login"]), # list_append, creating the list if missing
+    User.address["city"].set("Lund"),         # nested paths
+)
+```
+
+| Action | Expression |
+| --- | --- |
+| `path.set(value)` | `SET path = :v` (value, another path, `path + n`, `path - n`) |
+| `path.set_if_not_exists(value)` | `SET path = if_not_exists(path, :v)` |
+| `path.if_not_exists(default)` | an operand: `User.n.set(User.n.if_not_exists(0) + 1)` |
+| `path.add(value)`, `increment(n)`, `decrement(n)` | `ADD path :v` |
+| `path.remove()` | `REMOVE path` |
+| `path.delete(values)`, `discard(values)` | `DELETE path :set` |
+| `path.append(list)`, `prepend(list)` | `SET path = list_append(...)` (the list must exist) |
+| `path.append_or_create(list)` | `SET path = list_append(if_not_exists(path, :empty), :v)` |
+
+Rules from DynamoDB: one action per path, no overlapping paths (`a` and `a.b`), key attributes
+cannot change. dynamoxy also refuses updates of derived (templated) and `immutable` fields and of
+unique fields with anything but `set()`/`remove()`.
+
+Values you `set()` are validated like constructor arguments (type, constraints such as `ge` or
+`pattern`, validators), and removing a required field is refused, all before any I/O. Arithmetic
+(`add`, `increment`, `set(path + n)`) happens in DynamoDB and cannot be checked locally: guard it
+with a condition (`condition=Account.balance >= amount`).
+
+`update()` of an instance checks its version (for versioned models) and refreshes it; `update()`
+of a key (`User.key("u1")`) only needs the key, so it suits hot counters.
+
+## Conditions
+
+```python
+await users.put(user, condition=User.email.not_exists() | (User.email == user.email))
+await users.delete("u1", condition=User.visits == 0)
+await users.update(User.key("u1"), User.credits.add(-10), condition=User.credits >= 10)
+```
+
+When a condition fails, `ConditionalCheckFailedError.item` holds the stored item (DynamoDB returns
+it on failure; no extra read).
+
+## Upserts
+
+`update(target, *actions, upsert=True)` updates the item, or creates it when it is missing. The
+created item must be a complete model item, so dynamoxy:
+
+- writes the entity type (single-table models) and `created_at`, `updated_at` and `version`;
+- gives every field the actions leave alone its value with `if_not_exists`: the field's default
+  for key targets, the instance's value for instance targets (existing items keep theirs);
+- renders derived (templated) attributes from those values, also only where missing;
+- refuses, before any I/O, an upsert that leaves a required field without a value. Provide it in
+  the actions, usually with `set_if_not_exists(...)`, which never overwrites an existing value:
+
+```python
+await stats.update(
+    PageStats.key("home"),
+    PageStats.views.add(1),
+    PageStats.title.set_if_not_exists("Home"),
+    upsert=True,
+)
+```
+
+Models with templated keys need the values the templates use: pass the key as field values
+(`orders.update({"customer_id": "c1", "order_id": "o1"}, ..., upsert=True)`) instead of a stored key.
+Unique attributes must be set by the actions of an upsert that may create the item (so the guard
+item is written), unless the target is a loaded instance.
+
+## Batches
+
+```python
+await events.batch_put(items)        # BatchWriteItem in chunks of 25, in parallel
+await events.batch_delete(keys)
+found = await events.batch_get(keys) # BatchGetItem in chunks of 100
+```
+
+- Not atomic and unconditional: each item succeeds or is retried on its own.
+- Unprocessed items (throttling) are sent again with backoff for `batch_max_rounds` rounds; what
+  remains raises `UnprocessedItemsError` with `.unprocessed`.
+- Two writes of the same key in one request are invalid in DynamoDB; `client.batch_writer()`
+  de-duplicates (the last write wins) and flushes every `flush_size` operations.
+- Refused for models with unique attributes (use transactions or single writes).
+- `before_save` hooks run for batch puts; conditions and versions do not apply.
+
+## Deleting
+
+`delete()` returns the deleted item (or `None` when nothing was stored), runs delete hooks and
+removes unique guards in the same transaction. Deleting a loaded versioned instance checks its
+version.
+
+## Time to Live
+
+Set a `ttl(default=None)` field to a `datetime`; DynamoDB deletes expired items within a few
+days. Until then they are still returned: filter them out in reads that must not see them
+(`.filter(Session.expires_at > now)`).

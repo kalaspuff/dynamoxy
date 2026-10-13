@@ -1,0 +1,25 @@
+# dynamoxy
+
+> A typed, async DynamoDB ORM for Python (3.12+) with a Rust core: models with `Attr[T]` fields or pydantic, repositories, queries with cursors, transactions, unique constraints, optimistic locking, single-table design, OpenTelemetry, and an in-memory DynamoDB for tests.
+
+Read the usage guide first; it ships with the package (`dynamoxy guide`) and always matches the installed version.
+
+## Usage
+
+- [Usage guide (AGENT_GUIDE.md)](python/dynamoxy/AGENT_GUIDE.md): rules of thumb, a complete program, recipes for every feature, errors, observability, testing, limits
+- [Skill for application repositories](skills/dynamoxy/SKILL.md): non-negotiable rules and a skeleton
+- [Examples](examples/README.md): runnable programs (quickstart, single-table design, transactions, unique constraints, pydantic, repository pattern, pagination, observability, testing)
+- [Guides](docs/index.md): modeling, reading, writing, constraints, transactions, single-table design, tables, errors and retries, observability, testing, patterns, deployment
+
+## Reference
+
+- [Configuration](docs/reference/configuration.md): every option
+- [Errors](docs/reference/errors.md): every exception and when it is raised
+- [Events](docs/reference/events.md): every event kind
+- [Type stubs of the native module](python/dynamoxy/_core.pyi)
+
+## Development
+
+- [AGENTS.md](AGENTS.md): how to change dynamoxy (layers, commands, checklists)
+- [Architecture](docs/architecture.md): layers, pipelines, invariants
+- [Decisions](docs/adr/README.md)

@@ -1,0 +1,104 @@
+"""The repository scripts (consistency checks, release helpers, wheel smoke test) keep working."""
+
+from __future__ import annotations
+
+import datetime
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+
+
+def load(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(f"scripts_{name}", SCRIPTS / f"{name}.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_code_and_docs_are_consistent(capsys: pytest.CaptureFixture[str]) -> None:
+    assert load("check_consistency").main() == 0, capsys.readouterr().out
+
+
+def test_generated_reference_is_current() -> None:
+    generate_reference = load("generate_reference")
+    assert generate_reference.EVENTS.read_text(encoding="utf-8") == generate_reference.render_events()
+
+
+@pytest.mark.parametrize(
+    ("current", "requested", "expected"),
+    [
+        ("0.4.2", "patch", "0.4.3"),
+        ("0.4.2", "minor", "0.5.0"),
+        ("0.4.2", "major", "0.5.0"),
+        ("1.2.3", "major", "2.0.0"),
+        ("0.1.0", "1.0.0", "1.0.0"),
+    ],
+)
+def test_next_version(current: str, requested: str, expected: str) -> None:
+    assert load("release").next_version(current, requested) == expected
+
+
+def test_invalid_versions_are_refused() -> None:
+    with pytest.raises(SystemExit, match="invalid version"):
+        load("release").next_version("0.1.0", "huge")
+
+
+def test_changelog_update_moves_unreleased_notes(tmp_path: Path) -> None:
+    release = load("release")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## [Unreleased]\n\nHand-written note.\n\n## [0.1.0] - 2026-01-01\n\nOld.\n")
+    release.update_changelog(
+        "0.2.0", generated="## [0.2.0] - 2026-02-02\n\n### Features\n\n- New thing", path=changelog
+    )
+    text = changelog.read_text()
+    assert "## [Unreleased]\n\n## [0.2.0] - 2026-02-02\n\nHand-written note.\n\n### Features" in text
+    assert load("release_notes").section(text, "0.2.0") == "Hand-written note.\n\n### Features\n\n- New thing"
+
+
+def test_first_release_dates_the_placeholder(tmp_path: Path) -> None:
+    release = load("release")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - Unreleased\n\nFirst release.\n")
+    release.update_changelog("0.1.0", path=changelog, today=datetime.date(2026, 10, 13))
+    text = changelog.read_text()
+    assert "## [0.1.0] - 2026-10-13\n" in text
+    assert load("release_notes").section(text, "0.1.0") == "First release."
+
+
+def test_cargo_bump(tmp_path: Path) -> None:
+    release = load("release")
+    cargo = tmp_path / "Cargo.toml"
+    cargo.write_text((SCRIPTS.parent / "Cargo.toml").read_text(encoding="utf-8"))
+    version = release.current_version()
+    release.bump_cargo(version, "9.8.7", path=cargo, update_lock=False)
+    text = cargo.read_text()
+    assert 'version = "9.8.7"' in text
+    assert 'dynamoxy-core = { path = "crates/dynamoxy-core", version = "9.8.7" }' in text
+
+
+def test_release_notes_of_the_current_version() -> None:
+    release = load("release")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "release_notes.py"), f"v{release.current_version()}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip()
+
+
+def test_smoke_test_passes() -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "smoke_test.py")], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OK on" in result.stdout

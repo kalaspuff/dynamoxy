@@ -1,0 +1,34 @@
+[package]
+name = "dynamoxy-py"
+description = "Python bindings for dynamoxy (built with maturin into dynamoxy._core)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+# Covered by the Python test suite; a Rust test harness would have to link libpython.
+test = false
+doctest = false
+
+[dependencies]
+dynamoxy-core.workspace = true
+parking_lot.workspace = true
+pyo3.workspace = true
+pyo3-async-runtimes.workspace = true
+pythonize.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

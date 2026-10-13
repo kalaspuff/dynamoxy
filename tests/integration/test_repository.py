@@ -1,0 +1,457 @@
+"""Repository behaviour on every backend (in-memory and the emulator)."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+
+import dynamoxy
+from dynamoxy import F
+from tests.conftest import ClientFactory
+from tests.helpers import at
+from tests.models import Customer, Event, Order, OrderStatus, Status, User
+
+
+def make_user(user_id: str = "u1", **changes: Any) -> User:
+    values: dict[str, Any] = {"user_id": user_id, "email": f"{user_id}@example.com", "name": user_id.upper()}
+    values.update(changes)
+    return User(**values)
+
+
+@pytest.fixture
+async def users(client: dynamoxy.Client) -> dynamoxy.Repository[User]:
+    await client.create_tables(User)
+    return client.repository(User)
+
+
+@pytest.fixture
+async def events(client: dynamoxy.Client) -> dynamoxy.Repository[Event]:
+    await client.create_tables(Event)
+    return client.repository(Event)
+
+
+async def test_create_get_and_automatic_fields(users: dynamoxy.Repository[User]) -> None:
+    before = datetime.now(UTC) - timedelta(seconds=1)
+    user = await users.create(make_user())
+    assert user.version == 1
+    assert user.created_at is not None
+    assert user.created_at >= before
+    assert user.updated_at == user.created_at
+    assert user.is_loaded
+    fetched = await users.get("u1")
+    assert fetched == user
+    assert fetched is not None
+    assert fetched.is_loaded
+    assert await users.get("missing") is None
+    assert await users.exists("u1")
+    assert not await users.exists(user_id="missing")
+    with pytest.raises(dynamoxy.ItemNotFoundError, match="does not exist"):
+        await users.get_or_raise("missing")
+
+
+async def test_create_refuses_existing_keys(users: dynamoxy.Repository[User]) -> None:
+    await users.create(make_user())
+    with pytest.raises(dynamoxy.ItemAlreadyExistsError) as caught:
+        await users.create(make_user(email="other@example.com"))
+    assert caught.value.key == {"user_id": "u1"}
+    assert isinstance(caught.value, dynamoxy.ConditionalCheckFailedError)
+    assert caught.value.retryable is False
+
+
+async def test_put_replaces_and_save_checks_versions(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user())
+    stale = await users.get_or_raise("u1")
+    user.name = "Ada"
+    await users.save(user)
+    assert user.version == 2
+    stale.name = "Stale"
+    with pytest.raises(dynamoxy.VersionConflictError) as caught:
+        await users.save(stale)
+    assert caught.value.expected_version == 1
+    assert (await users.get_or_raise("u1")).name == "Ada"
+    await users.refresh(stale)
+    assert stale.name == "Ada"
+    assert stale.version == 2
+    stale.name = "Fresh"
+    await users.save(stale)
+    replacement = make_user(name="Replaced")
+    await users.put(replacement)
+    assert (await users.get_or_raise("u1")).name == "Replaced"
+
+
+async def test_save_of_a_new_versioned_item_requires_absence(users: dynamoxy.Repository[User]) -> None:
+    await users.save(make_user())
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.save(make_user(email="second@example.com"))
+
+
+async def test_update_actions(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user(tags={"a"}))
+    created = user.created_at
+    returned = await users.update(
+        user,
+        User.visits.add(2),
+        User.tags.add({"b", "c"}),
+        User.name.set("Ada"),
+        User.age.set(36),
+    )
+    assert returned is user
+    assert (user.visits, user.tags, user.name, user.age, user.version) == (2, {"a", "b", "c"}, "Ada", 36, 2)
+    assert user.created_at == created
+    assert user.updated_at is not None
+    assert user.updated_at >= created
+    await users.update(user, User.tags.delete({"a", "b"}), User.age.remove(), User.visits.set(User.visits + 10))
+    stored = await users.get_or_raise("u1")
+    assert (stored.tags, stored.age, stored.visits, stored.version) == ({"c"}, None, 12, 3)
+    by_key = await users.update(User.key("u1"), User.visits.decrement(2))
+    assert by_key.visits == 10
+    assert by_key.version == 4
+
+
+async def test_update_requires_the_item_unless_upsert(events: dynamoxy.Repository[Event]) -> None:
+    with pytest.raises(dynamoxy.ItemNotFoundError):
+        await events.update(Event.key("s", 1), Event.kind.set("x"))
+    created = await events.update(Event.key("s", 1), Event.kind.set("x"), upsert=True)
+    assert (created.stream, created.seq, created.kind) == ("s", 1, "x")
+    assert created.payload == {}, "untouched fields get their defaults"
+    with pytest.raises(ValueError, match=r"Event\.kind\.set_if_not_exists"):
+        await events.update(Event.key("s", 1), Event.payload["n"].set(1), upsert=True)
+    again = await events.update(
+        Event.key("s", 1), Event.payload["n"].set(1), Event.kind.set_if_not_exists("y"), upsert=True
+    )
+    assert (again.kind, again.payload) == ("x", {"n": 1}), "existing items keep their values"
+
+
+async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
+    await client.create_tables(User, Customer, Order)
+    users = client.repository(User)
+    with dynamoxy.collect() as collected, pytest.raises(ValueError, match=r"required field\(s\) email, name"):
+        await users.update(User.key("u1"), User.visits.add(1), upsert=True)
+    with pytest.raises(ValueError, match="must set it in the actions"):
+        await users.update(make_user("u2"), User.visits.add(1), upsert=True)
+    assert collected.calls == 0, "refused before any I/O"
+    created = await users.update(
+        User.key("u3"), User.email.set("u3@example.com"), User.name.set("Ann"), User.visits.add(2), upsert=True
+    )
+    assert (created.visits, created.status, created.tags, created.version) == (2, Status.ACTIVE, set(), 1)
+    assert created.created_at is not None
+    assert created.created_at == created.updated_at
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await users.update(User.key("u4"), User.email.set("u3@example.com"), User.name.set("Bo"), upsert=True)
+    loaded = await users.get_or_raise("u3")
+    await users.update(loaded, User.visits.add(1), upsert=True)  # loaded: its guard exists already
+    assert loaded.visits == 3
+    orders = client.repository(Order)
+    placed = datetime(2026, 1, 1, tzinfo=UTC)
+    with pytest.raises(ValueError, match="pass the key as field values"):
+        await orders.update(Order.key(customer_id="c1", order_id="o1"), Order.total.set(10), upsert=True)
+    upserted = await orders.update(
+        {"customer_id": "c1", "order_id": "o1"}, Order.placed_at.set(placed), Order.total.set(10), upsert=True
+    )
+    assert (upserted.pk, upserted.sk, upserted.status) == ("CUSTOMER#c1", "ORDER#o1", OrderStatus.NEW)
+    found = await orders.query(customer_id="c1").all()
+    assert [order.order_id for order in found] == ["o1"], "the entity type is written"
+    assert (found[0].gsi1pk, found[0].gsi1sk) == ("STATUS#new", placed.isoformat(timespec="microseconds"))
+    by_status = await orders.query(index=Order.by_status, status=OrderStatus.NEW).all()
+    assert [order.order_id for order in by_status] == ["o1"], "derived index keys are written"
+    await orders.update(
+        {"customer_id": "c1", "order_id": "o1"},
+        Order.status.set(OrderStatus.PAID),
+        Order.placed_at.set_if_not_exists(placed),
+        Order.total.set_if_not_exists(0),
+        upsert=True,
+    )
+    paid = await orders.get_or_raise(customer_id="c1", order_id="o1")
+    assert (paid.status, paid.gsi1pk, paid.total) == (OrderStatus.PAID, "STATUS#paid", 10)
+
+
+async def test_update_conditions_and_version_conflicts(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user())
+    with pytest.raises(dynamoxy.ConditionalCheckFailedError) as caught:
+        await users.update(user, User.visits.add(1), condition=User.status == Status.SUSPENDED)
+    assert not isinstance(caught.value, dynamoxy.VersionConflictError)
+    stale = await users.get_or_raise("u1")
+    await users.update(user, User.visits.add(1))
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.update(stale, User.visits.add(1))
+    await users.update(stale.copy(), User.visits.add(1)) if False else None  # copies are not loaded
+
+
+async def test_update_rejects_keys_and_derived_attributes(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user())
+    with pytest.raises(ValueError, match="key or derived"):
+        await users.update(user, User.user_id.set("u2"))
+    with pytest.raises(ValueError, match="at least one action"):
+        await users.update(user)
+
+
+async def test_delete_returns_the_item_and_checks_versions(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user())
+    stale = await users.get_or_raise("u1")
+    await users.update(user, User.visits.add(1))
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.delete(stale)
+    deleted = await users.delete(user)
+    assert deleted is not None
+    assert deleted.visits == 1
+    assert not user.is_loaded
+    assert await users.delete("u1") is None
+    assert await users.get("u1") is None
+
+
+async def test_delete_with_conditions(events: dynamoxy.Repository[Event]) -> None:
+    await events.put(Event(stream="s", seq=1, kind="keep"))
+    with pytest.raises(dynamoxy.ConditionalCheckFailedError):
+        await events.delete(("s", 1), condition=Event.kind == "drop")
+    deleted = await events.delete(("s", 1), condition=Event.kind == "keep")
+    assert deleted is not None
+    assert deleted.kind == "keep"
+
+
+async def test_batches(events: dynamoxy.Repository[Event]) -> None:
+    items = [Event(stream="s", seq=index, kind="even" if index % 2 == 0 else "odd") for index in range(130)]
+    await events.batch_put(items)
+    keys = [Event.key("s", index) for index in range(0, 130, 3)] + [Event.key("s", 999)]
+    found = await events.batch_get(keys)
+    assert [event.seq for event in found] == list(range(0, 130, 3)), "order follows the keys; missing are skipped"
+    assert await events.count(stream="s") == 130
+    await events.batch_delete([("s", index) for index in range(100)])
+    assert await events.count(stream="s") == 30
+
+
+async def test_batch_writer_deduplicates_and_flushes(
+    client: dynamoxy.Client, events: dynamoxy.Repository[Event]
+) -> None:
+    async with client.batch_writer(flush_size=10) as batch:
+        for index in range(25):
+            await batch.put(Event(stream="w", seq=index % 20, kind=f"v{index}"))
+        await batch.delete(Event.key("w", 0), model=Event)
+    assert await events.count(stream="w") == 19
+    latest = await events.get("w", 1)
+    assert latest is not None
+    assert latest.kind in ("v1", "v21")
+
+
+async def test_query_order_paging_and_cursors(events: dynamoxy.Repository[Event]) -> None:
+    await events.batch_put(
+        [Event(stream="q", seq=index, kind="even" if index % 2 == 0 else "odd") for index in range(20)]
+    )
+    query = events.query(stream="q")
+    assert [event.seq async for event in query] == list(range(20))
+    assert [event.seq for event in await query.descending().limit(3).all()] == [19, 18, 17]
+    first_page = await query.page_size(7).page()
+    assert [event.seq for event in first_page] == list(range(7))
+    assert first_page.cursor is not None
+    assert first_page.has_more
+    second_page = await query.page_size(7).after(first_page.cursor).page()
+    assert [event.seq for event in second_page] == list(range(7, 14))
+    pages = [page async for page in query.page_size(8).pages()]
+    assert sum(len(page) for page in pages) == 20
+    odd = query.filter(Event.kind == "odd")
+    assert await odd.count() == 10
+    assert [event.seq for event in await odd.limit(4).all()] == [1, 3, 5, 7]
+    assert (await query.where(Event.seq.between(5, 8)).all())[-1].seq == 8
+    assert (await query.where(Event.seq >= 18).first()).seq == 18  # type: ignore[union-attr]
+    assert await query.where(Event.seq > 100).first() is None
+    assert not await query.where(Event.seq > 100).exists()
+    assert (await query.where(Event.seq == 4).one()).seq == 4
+    with pytest.raises(ValueError, match="more than one"):
+        await query.one()
+    with pytest.raises(dynamoxy.ItemNotFoundError):
+        await query.where(Event.seq > 100).one()
+    with pytest.raises(ValueError, match="invalid cursor"):
+        await query.after("not-a-cursor").page()
+
+
+async def test_projection_returns_dicts(events: dynamoxy.Repository[Event]) -> None:
+    await events.put(Event(stream="p", seq=1, kind="k", payload={"x": 1, "y": 2}))
+    rows = await events.query(stream="p").project(Event.kind, F("payload")["x"]).all()
+    assert rows == [{"kind": "k", "payload": {"x": 1}}]
+
+
+async def test_global_and_local_indexes(events: dynamoxy.Repository[Event]) -> None:
+    await events.batch_put(
+        [Event(stream=f"s{index % 3}", seq=index, kind="a" if index < 5 else "b") for index in range(10)]
+    )
+    kind_a = await events.query(index=Event.by_kind, kind="a").all()
+    assert sorted(event.seq for event in kind_a) == [0, 1, 2, 3, 4]
+    local = await events.query(index="by_kind_local", stream="s0").where(Event.kind == "b").all()
+    assert sorted(event.seq for event in local) == [6, 9]
+    with pytest.raises(ValueError, match="has no index 'nope'"):
+        events.query(index="nope", kind="a")
+
+
+async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -> None:
+    for index in range(3):
+        await users.create(make_user(f"u{index}"))
+    query = users.query(index=User.by_status, status=Status.ACTIVE)
+    keys = await query.project(User.user_id).all()
+    assert sorted(row["user_id"] for row in keys) == ["u0", "u1", "u2"]
+    with pytest.raises(dynamoxy.ItemDecodeError):
+        await query.all()
+    hydrated = await query.hydrate().all()
+    assert sorted(user.name for user in hydrated) == ["U0", "U1", "U2"]
+
+
+async def test_scans_filters_and_segments(events: dynamoxy.Repository[Event]) -> None:
+    await events.batch_put([Event(stream=f"s{index}", seq=index, kind="k") for index in range(40)])
+    assert len(await events.scan().all()) == 40
+    assert await events.scan().count() == 40
+    assert len(await events.scan().segments(4).all()) == 40
+    assert await events.scan().segments(3).count() == 40
+    assert len(await events.scan().segments(4).limit(5).all()) == 5
+    segment_items = [await events.scan().segment(index, 4).all() for index in range(4)]
+    assert sum(len(items) for items in segment_items) == 40
+    filtered = await events.scan().filter(Event.seq >= 30).all()
+    assert sorted(event.seq for event in filtered) == list(range(30, 40))
+    assert await events.count() == 40
+
+
+async def test_ttl_attribute_is_epoch_seconds(client: dynamoxy.Client, events: dynamoxy.Repository[Event]) -> None:
+    moment = datetime(2030, 1, 1, tzinfo=UTC)
+    await events.put(Event(stream="t", seq=1, kind="k", expires_at=moment))
+    raw = await client.table("events").get(Event.key("t", 1))
+    assert raw is not None
+    assert raw["expires_at"] == int(moment.timestamp())
+    ttl = await client.table("events").time_to_live()
+    assert ttl.enabled
+    assert ttl.attribute == "expires_at"
+
+
+class Reading(dynamoxy.Model, table="readings", datetime_format="iso_z"):
+    """Timestamps stored as RFC 3339 text with a ``Z`` suffix."""
+
+    sensor_id: dynamoxy.Attr[str] = dynamoxy.partition_key()
+    taken_at: dynamoxy.Attr[datetime] = dynamoxy.sort_key()
+    value: dynamoxy.Attr[int]
+    created_at: dynamoxy.Attr[datetime] = dynamoxy.created_at()
+    updated_at: dynamoxy.Attr[datetime] = dynamoxy.updated_at()
+
+
+async def test_timestamps_with_a_z_suffix(client: dynamoxy.Client) -> None:
+    await client.create_tables(Reading)
+    readings = client.repository(Reading)
+    for hour in range(4):
+        await readings.create(Reading(sensor_id="s1", taken_at=at(1, hour), value=hour))
+    raw = await client.table("readings").get(Reading.key("s1", at(1, 2)))
+    assert raw is not None
+    assert raw["taken_at"] == "2026-01-01T02:00:00.000000Z"
+    assert raw["created_at"] == raw["updated_at"]
+    assert raw["created_at"].endswith("Z")
+    window = await readings.query(sensor_id="s1").where(Reading.taken_at.between(at(1, 1), at(1, 2))).all()
+    assert [reading.value for reading in window] == [1, 2]
+    await readings.update(window[0], Reading.value.add(10))
+    raw = await client.table("readings").get(Reading.key("s1", at(1, 1)))
+    assert raw is not None
+    assert raw["value"] == 11
+    assert raw["updated_at"].endswith("Z")
+    assert raw["updated_at"] >= raw["created_at"]
+    # Items written by other services or before a format change are read in either style...
+    written_elsewhere = {"sensor_id": "s2", "taken_at": "2026-01-01T00:00:00+00:00", "value": 1}
+    await client.table("readings").put({**written_elsewhere, "created_at": "2026-01-01T00:00:00.5Z"})
+    legacy = await readings.query(sensor_id="s2").one()
+    assert legacy.taken_at == at(1)
+    assert legacy.created_at == at(1) + timedelta(milliseconds=500)
+    # ...but keys compare stored text: this key is "...00.000000Z", the stored one "...00+00:00".
+    assert await readings.get("s2", at(1)) is None
+
+
+async def test_validation_fails_before_any_io(client_factory: ClientFactory) -> None:
+    client = client_factory()
+    users = client.repository(User)
+    user = make_user()
+    user.__dict__["email"] = "broken"  # bypass assignment validation to simulate corrupted state
+    with dynamoxy.collect() as usage, pytest.raises(dynamoxy.ValidationError, match="email"):
+        await users.put(user)
+    assert usage.calls == 0
+
+
+async def test_model_and_client_hooks(client: dynamoxy.Client) -> None:
+    calls: list[str] = []
+
+    class Hooked(dynamoxy.Model, table="hooked"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+        email: dynamoxy.Attr[str]
+
+        @dynamoxy.before_save
+        def lower(self) -> None:
+            calls.append("model.before_save")
+            self.email = self.email.lower()
+
+        @dynamoxy.after_load
+        def loaded(self) -> None:
+            calls.append("model.after_load")
+
+        @dynamoxy.before_delete
+        async def deleting(self) -> None:
+            calls.append("model.before_delete")
+
+    @client.hook("before_save", Hooked)
+    async def audit(item: Hooked, context: dynamoxy.HookContext) -> None:
+        calls.append(f"client.before_save:{context.operation}")
+
+    client.hooks.add("after_delete", lambda item, context: calls.append("client.after_delete"))
+    await client.create_tables(Hooked)
+    repository = client.repository(Hooked)
+    await repository.create(Hooked(pk="h", email="ADA@EXAMPLE.COM"))
+    stored = await repository.get_or_raise("h")
+    assert stored.email == "ada@example.com"
+    await repository.delete(stored)
+    assert calls == [
+        "model.before_save",
+        "client.before_save:create",
+        "model.after_load",
+        "model.before_delete",
+        "client.after_delete",
+        "model.after_load",  # delete() returns the deleted item, decoded from DynamoDB
+    ]
+
+
+async def test_hooks_can_abort_writes(client: dynamoxy.Client) -> None:
+    class Guarded(dynamoxy.Model, table="guarded"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+
+        @dynamoxy.before_save
+        def refuse(self) -> None:
+            raise PermissionError("read-only")
+
+    await client.create_tables(Guarded)
+    repository = client.repository(Guarded)
+    with pytest.raises(PermissionError):
+        await repository.put(Guarded(pk="x"))
+    assert await repository.get("x") is None
+
+
+async def test_repository_subclasses(client: dynamoxy.Client) -> None:
+    class UserRepository(dynamoxy.Repository[User]):
+        async def by_email(self, email: str) -> User | None:
+            return await self.query(index=User.by_email, email=email).first()
+
+    await client.create_tables(User)
+    repository = UserRepository(client)
+    await repository.create(make_user("u7"))
+    found = await repository.by_email("u7@example.com")
+    assert found is not None
+    assert found.user_id == "u7"
+    with pytest.raises(TypeError, match="does not know its model"):
+        dynamoxy.Repository(client)
+
+
+async def test_updates_validate_values_they_set(client: dynamoxy.Client) -> None:
+    await client.create_tables(User)
+    users = client.repository(User)
+    user = await users.create(make_user("u1"))
+    with dynamoxy.collect() as collected, pytest.raises(dynamoxy.ValidationError, match=r"User\.age: .*0") as caught:
+        await users.update(user, User.age.set(-1))
+    assert [error.path for error in caught.value.errors] == ["age"]
+    with pytest.raises(dynamoxy.ValidationError, match="is required and cannot be removed"):
+        await users.update(user, User.name.remove())
+    with pytest.raises(dynamoxy.ValidationError, match="email"):
+        await users.update(user, User.email.set("not an email"))
+    assert collected.calls == 0, "nothing was sent"
+    await users.update(
+        user, User.age.remove(), User.visits.add(-5)
+    )  # optional fields can go; arithmetic is not checked
+    assert (user.age, user.visits) == (None, -5)

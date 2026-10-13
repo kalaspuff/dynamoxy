@@ -1,0 +1,782 @@
+"""The :class:`Client`: the entry point of dynamoxy."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Self, overload
+
+from dynamoxy import _core
+from dynamoxy._core import CoreClient, MemoryStore
+from dynamoxy._utils import LoopLocal, seconds
+from dynamoxy.errors import DynamoxyError
+from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
+from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
+from dynamoxy.results import CallStats, ConsumedCapacity, MetricsSnapshot, OperationRecord, capacity_split
+from dynamoxy.telemetry import Collector, Telemetry, TelemetryRecorder, collect, record
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from datetime import timedelta
+    from types import TracebackType
+
+    from dynamoxy.batch import BatchWriter
+    from dynamoxy.collection import Collection
+    from dynamoxy.repository import Repository
+    from dynamoxy.schema import HookPoint
+    from dynamoxy.table import Billing, Table
+    from dynamoxy.transactions import Get, Transaction
+
+__all__ = ["Client", "Credentials", "RetryPolicy"]
+
+_FORK_HOOK_REGISTERED = False
+
+# Native methods that accept `return_consumed_capacity`.
+_CAPACITY_METHODS = frozenset(
+    {
+        "get_item",
+        "put_item",
+        "update_item",
+        "delete_item",
+        "query",
+        "scan",
+        "batch_get_item",
+        "batch_write_item",
+        "batch_get",
+        "batch_write",
+        "transact_get_items",
+        "transact_write_items",
+        "execute_statement",
+        "batch_execute_statement",
+        "execute_transaction",
+    }
+)
+
+
+def _register_fork_hook() -> None:
+    global _FORK_HOOK_REGISTERED
+    if not _FORK_HOOK_REGISTERED and hasattr(os, "register_at_fork"):
+        os.register_at_fork(after_in_child=_core._reset_after_fork)
+        _FORK_HOOK_REGISTERED = True
+
+
+@dataclass(frozen=True, slots=True)
+class Credentials:
+    """Static AWS credentials (prefer the default chain: environment, profiles, SSO, roles).
+
+    Attributes:
+        access_key_id: Access key id.
+        secret_access_key: Secret access key (hidden in ``repr``).
+        session_token: Session token of temporary credentials (hidden in ``repr``).
+    """
+
+    access_key_id: str
+    secret_access_key: str
+    session_token: str | None = None
+
+    def __repr__(self) -> str:
+        token = ", session_token='***'" if self.session_token else ""
+        return f"Credentials(access_key_id={self.access_key_id!r}, secret_access_key='***'{token})"
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    """How failed requests are retried (throttling, 5xx errors, transaction conflicts, timeouts).
+
+    Attributes:
+        max_attempts: Attempts per request, the first included (1 disables retries).
+        base_delay: Seconds before the first retry; doubles each time, with full jitter.
+        max_delay: Longest delay between attempts, in seconds.
+        retry_timeouts: Retry requests that timed out or lost their connection. Such a write may
+            have been applied already, which is harmless for conditional and idempotent writes
+            (transactions get an idempotency token automatically).
+    """
+
+    max_attempts: int = 4
+    base_delay: float = 0.05
+    max_delay: float = 5.0
+    retry_timeouts: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError(f"max_attempts must be at least 1 (1 disables retries), got {self.max_attempts}")
+        seconds(self.base_delay, "base_delay", allow_zero=True)
+        seconds(self.max_delay, "max_delay", allow_zero=True)
+        if self.max_delay < self.base_delay:
+            raise ValueError(f"max_delay ({self.max_delay}) must be >= base_delay ({self.base_delay})")
+
+    @classmethod
+    def none(cls) -> RetryPolicy:
+        """No retries."""
+        return cls(max_attempts=1)
+
+    def to_core(self) -> dict[str, Any]:
+        """The core configuration (``RetryConfig`` in ``crates/dynamoxy-core/src/config.rs``)."""
+        return {
+            "max_attempts": self.max_attempts,
+            "base_delay": self.base_delay,
+            "max_delay": self.max_delay,
+            "retry_timeouts": self.retry_timeouts,
+        }
+
+
+def _items_of(operation: str, params: Mapping[str, Any], output: Any) -> int:
+    if not isinstance(output, dict):
+        return 0
+    if operation == "GetItem":
+        return int(output.get("item") is not None)
+    if operation in ("Query", "Scan"):
+        return int(output.get("count", 0))
+    if operation in ("PutItem", "UpdateItem", "DeleteItem"):
+        return 1
+    if operation == "BatchGetItem":
+        found = output.get("items") or output.get("responses") or {}
+        return sum(len(items) for items in found.values())
+    if operation == "BatchWriteItem":
+        requests = params.get("requests")
+        if requests is not None:
+            return len(requests)
+        return sum(len(entries) for entries in params.get("request_items", {}).values())
+    if operation == "TransactGetItems":
+        return sum(item is not None for item in output.get("responses", ()))
+    if operation == "TransactWriteItems":
+        return len(params.get("transact_items", ()))
+    if operation == "ExecuteStatement":
+        return len(output.get("items", ()))
+    return 0
+
+
+def _capacities(output: Any) -> list[ConsumedCapacity]:
+    if not isinstance(output, dict):
+        return []
+    raw = output.get("consumed_capacity")
+    if not raw:
+        return []
+    reports = raw if isinstance(raw, list) else [raw]
+    return [ConsumedCapacity.from_core(report) for report in reports]
+
+
+class Client:
+    """Entry point of dynamoxy. Create one per process (after any ``fork()``) and share it.
+
+    Nothing happens on construction: the client connects on first use or in ``async with``.
+    Credentials and region come from the standard AWS chain unless given.
+
+    Example::
+
+        async with dynamoxy.Client(region="eu-west-1") as client:
+            users = client.repository(User)
+            await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+
+    Args:
+        region: AWS region (default: from the environment or profile).
+        endpoint_url: A DynamoDB-compatible endpoint (DynamoDB Local, MiniStack, VPC endpoint).
+        profile: Named AWS profile.
+        credentials: Static credentials (default: the AWS credential chain).
+        timeout: Time limit of one attempt of a request (seconds or ``timedelta``).
+        connect_timeout: Time limit to establish a connection.
+        retry: Retry policy for throttling, server errors, conflicts and timeouts.
+        table_prefix: Prefix added to every table name of models and ``client.table()``
+            (``"prod-"``), to separate environments sharing an account.
+        table_names: Explicit physical names for logical table names (overrides the prefix).
+        consumed_capacity: Capacity reporting requested from DynamoDB: ``"TOTAL"`` (default;
+            powers metrics, spans and ``collect()``), ``"INDEXES"`` or ``"NONE"``.
+        batch_concurrency: Requests of one managed batch sent in parallel.
+        batch_max_rounds: Rounds for unprocessed batch items before they are reported.
+        slow_operation_threshold: Calls slower than this emit ``request.slow``.
+        telemetry: OpenTelemetry settings (``None`` disables spans and OpenTelemetry metrics).
+        logging: How events are logged (default: every event to ``dynamoxy.*`` loggers).
+        event_buffer: Core events buffered for hooks before new ones are dropped.
+        store: Use this in-memory DynamoDB instead of AWS (see ``dynamoxy.testing``).
+    """
+
+    def __init__(
+        self,
+        *,
+        region: str | None = None,
+        endpoint_url: str | None = None,
+        profile: str | None = None,
+        credentials: Credentials | None = None,
+        timeout: float | timedelta = 10.0,
+        connect_timeout: float | timedelta = 3.1,
+        retry: RetryPolicy | None = None,
+        table_prefix: str = "",
+        table_names: Mapping[str, str] | None = None,
+        consumed_capacity: Literal["NONE", "TOTAL", "INDEXES"] = "TOTAL",
+        batch_concurrency: int = 4,
+        batch_max_rounds: int = 8,
+        slow_operation_threshold: float | timedelta | None = None,
+        telemetry: Telemetry | None = Telemetry(),  # noqa: B008 - frozen dataclass
+        logging: LoggingConfig | None = None,
+        event_buffer: int = 10_000,
+        store: MemoryStore | None = None,
+    ) -> None:
+        if endpoint_url is not None and not endpoint_url.startswith(("http://", "https://")):
+            raise ValueError(f"endpoint_url must start with http:// or https://, got {endpoint_url!r}")
+        if consumed_capacity not in ("NONE", "TOTAL", "INDEXES"):
+            raise ValueError(f"consumed_capacity must be 'NONE', 'TOTAL' or 'INDEXES', got {consumed_capacity!r}")
+        if batch_concurrency < 1:
+            raise ValueError(f"batch_concurrency must be at least 1, got {batch_concurrency}")
+        if batch_max_rounds < 1:
+            raise ValueError(f"batch_max_rounds must be at least 1, got {batch_max_rounds}")
+        if event_buffer < 1:
+            raise ValueError(f"event_buffer must be at least 1, got {event_buffer}")
+        if store is not None and endpoint_url is not None:
+            raise ValueError("pass either store= (in-memory DynamoDB) or endpoint_url=, not both")
+        _register_fork_hook()
+        self.region = region
+        self.endpoint_url = endpoint_url
+        self.profile = profile
+        self.credentials = credentials
+        self.timeout = seconds(timeout, "timeout")
+        self.connect_timeout = seconds(connect_timeout, "connect_timeout")
+        self.retry = retry if retry is not None else RetryPolicy()
+        self.table_prefix = table_prefix
+        self.table_names = dict(table_names or {})
+        self.consumed_capacity = consumed_capacity
+        self.batch_concurrency = batch_concurrency
+        self.batch_max_rounds = batch_max_rounds
+        self.slow_operation_threshold = seconds(slow_operation_threshold, "slow_operation_threshold")
+        self.telemetry = telemetry
+        self.event_buffer = event_buffer
+        self.store = store
+        self.events = EventDispatcher(logging)
+        self.events.on_change(self._update_event_filter)
+        self.hooks = HookRegistry()
+        self._middleware: list[Middleware] = []
+        self._recorder = TelemetryRecorder(telemetry, region=region, endpoint=endpoint_url)
+        self._core_client: CoreClient | None = None
+        self._connect_lock = LoopLocal(asyncio.Lock)
+        self._pump_task: asyncio.Task[None] | None = None
+        self._entered = 0
+        self._closed = False
+
+    def __repr__(self) -> str:
+        target = "memory" if self.store is not None else (self.endpoint_url or self.region or "aws")
+        return f"<dynamoxy.Client {target}>"
+
+    def to_core(self) -> dict[str, Any]:
+        """The core configuration (``ClientConfig`` in ``crates/dynamoxy-core/src/config.rs``)."""
+        credentials = self.credentials
+        return {
+            "region": self.region,
+            "endpoint_url": self.endpoint_url,
+            "profile": self.profile,
+            "access_key_id": credentials.access_key_id if credentials else None,
+            "secret_access_key": credentials.secret_access_key if credentials else None,
+            "session_token": credentials.session_token if credentials else None,
+            "connect_timeout": self.connect_timeout,
+            "timeout": self.timeout,
+            "retry": self.retry.to_core(),
+            "batch_max_rounds": self.batch_max_rounds,
+            "batch_concurrency": self.batch_concurrency,
+            "slow_operation_threshold": self.slow_operation_threshold or 0.0,
+            "event_capacity": self.event_buffer,
+        }
+
+    # ---- lifecycle ------------------------------------------------------------------------
+
+    @property
+    def backend(self) -> Literal["memory", "aws"]:
+        """``"memory"`` for in-memory clients, ``"aws"`` otherwise."""
+        return "memory" if self.store is not None else "aws"
+
+    async def connect(self) -> Self:
+        """Connects now (otherwise the first operation does). Safe to call repeatedly."""
+        await self._core()
+        return self
+
+    async def _core(self) -> CoreClient:
+        if self._closed:
+            raise _core.ShutdownError("this dynamoxy client is closed; create a new Client")
+        core = self._core_client
+        if core is not None:
+            return core
+        async with self._connect_lock.get():
+            if self._core_client is None:
+                if self.store is not None:
+                    core = CoreClient.memory(self.to_core(), self.store)
+                else:
+                    core = await CoreClient.connect(self.to_core())
+                self._core_client = core
+                self._update_event_filter()
+                self.events.emit(
+                    EventKind.CLIENT_CONNECTED,
+                    f"connected to {'the in-memory DynamoDB' if self.store is not None else 'DynamoDB'}",
+                    {"backend": core.backend, "region": self.region or "", "endpoint": self.endpoint_url or ""},
+                )
+        assert self._core_client is not None
+        return self._core_client
+
+    def _update_event_filter(self) -> None:
+        if self._core_client is not None:
+            self._core_client.set_event_filter([kind.value for kind in self.events.wanted()])
+
+    async def __aenter__(self) -> Self:
+        core = await self._core()
+        self._entered += 1
+        if self._pump_task is None:
+            self._pump_task = asyncio.get_running_loop().create_task(self._pump(core), name="dynamoxy-events")
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self._entered -= 1
+        if self._entered <= 0:
+            await self.close()
+
+    async def close(self) -> None:
+        """Stops the event pump, delivers the remaining events and refuses further calls."""
+        if self._closed:
+            return
+        self._closed = True
+        task, self._pump_task = self._pump_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        core = self._core_client
+        if core is not None:
+            self._dispatch_buffered(core)
+            core.close()
+        self.events.emit(EventKind.CLIENT_CLOSED, "client closed")
+        await self.events.drain()
+
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` was called."""
+        return self._closed
+
+    async def _pump(self, core: CoreClient) -> None:
+        # Delivers events while calls are still running (retries, batch rounds). Events are only
+        # ever taken synchronously here and in _dispatch_buffered, so their order is kept.
+        try:
+            while True:
+                await core.wait_events(1.0)
+                self._dispatch_buffered(core)
+        except asyncio.CancelledError:
+            self._dispatch_buffered(core)
+            raise
+
+    def _dispatch_raw(self, raw: list[tuple[str, str, dict[str, str]]]) -> None:
+        if raw:
+            self.events.dispatch(raw)
+
+    def _report_dropped(self, core: CoreClient) -> None:
+        dropped = core.take_dropped_events()
+        if dropped:
+            self.events.emit(
+                EventKind.EVENTS_DROPPED,
+                f"{dropped} events were dropped because the buffer was full",
+                {"dropped": dropped, "event_buffer": self.event_buffer},
+            )
+
+    def _dispatch_buffered(self, core: CoreClient) -> None:
+        # Runs after every call too, so a call's events reach hooks before the call returns.
+        self._dispatch_raw(core.drain_events(1024))
+        self._report_dropped(core)
+
+    # ---- extension points -----------------------------------------------------------------
+
+    @overload
+    def on(self, pattern: str | EventKind) -> Callable[[EventHook], EventHook]: ...
+    @overload
+    def on(self, pattern: str | EventKind, hook: EventHook) -> Callable[[], None]: ...
+    def on(self, pattern: str | EventKind, hook: EventHook | None = None) -> Any:
+        """Calls ``hook`` for events matching ``pattern``.
+
+        ``pattern`` is a kind such as ``"request.retry"`` or a glob such as ``"request.*"``. Works
+        as a decorator; otherwise returns an unsubscribe function.
+
+        Hooks may be sync or async; a failing hook emits ``hook.failed`` and never breaks a call.
+        """
+        if hook is None:
+
+            def decorator(function: EventHook) -> EventHook:
+                self.events.subscribe(pattern, function)
+                return function
+
+            return decorator
+        return self.events.subscribe(pattern, hook)
+
+    def use(self, middleware: Middleware) -> Callable[[], None]:
+        """Adds middleware around every DynamoDB call (first added runs outermost).
+
+        Returns:
+            A function that removes it.
+        """
+        self._middleware.append(middleware)
+
+        def remove() -> None:
+            if middleware in self._middleware:
+                self._middleware.remove(middleware)
+
+        return remove
+
+    def hook(self, point: HookPoint, model: type | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Decorator registering a lifecycle hook for ``model`` (or every model).
+
+        The hook receives ``(instance, context)`` and may be sync or async (``after_load`` hooks
+        must be sync).
+
+        Example::
+
+            @client.hook("before_save", User)
+            def normalize(user: User, context: dynamoxy.HookContext) -> None:
+                user.email = user.email.lower()
+        """
+
+        def decorator(function: Callable[..., Any]) -> Callable[..., Any]:
+            self.hooks.add(point, function, model)
+            return function
+
+        return decorator
+
+    def hook_context(self, operation: str, model: type) -> HookContext:
+        """The context passed to client-level hooks."""
+        return HookContext(operation=operation, model=model, client=self)
+
+    # ---- calls ----------------------------------------------------------------------------
+
+    def table_name(self, logical: str) -> str:
+        """The physical name of a logical table name (``table_names``, else ``table_prefix``)."""
+        return self.table_names.get(logical, f"{self.table_prefix}{logical}")
+
+    async def call(
+        self,
+        method: str,
+        operation: str,
+        *,
+        table: str | None = None,
+        model: type | None = None,
+        **params: Any,
+    ) -> Any:
+        """Performs one native call through middleware, telemetry and events.
+
+        Low-level: repositories and tables use it. ``method`` is a ``CoreClient`` method and
+        ``params`` its keyword arguments.
+        """
+        await self._core()
+        if method in _CAPACITY_METHODS and "return_consumed_capacity" not in params:
+            params["return_consumed_capacity"] = self.consumed_capacity
+        request = Request(operation=operation, method=method, table=table, params=params, model=model)
+        response = await self._chain(0, request)
+        return response.output
+
+    async def _chain(self, index: int, request: Request) -> Response:
+        if index < len(self._middleware):
+            middleware = self._middleware[index]
+            return await middleware(request, lambda next_request: self._chain(index + 1, next_request))
+        return await self._invoke(request)
+
+    async def _invoke(self, request: Request) -> Response:
+        core = await self._core()
+        started = time.perf_counter()
+        native = getattr(core, request.method)
+        with self._recorder.span(request.operation, request.table, request.params) as span:
+            try:
+                output, stats = await native(**request.params)
+            except DynamoxyError as error:
+                entry = OperationRecord(
+                    operation=request.operation,
+                    table=request.table,
+                    model=request.model.__name__ if request.model else None,
+                    duration=error.duration if error.duration is not None else time.perf_counter() - started,
+                    attempts=error.attempts or 1,
+                    throttles=0,
+                    requests=error.attempts or 1,
+                    read_capacity_units=0.0,
+                    write_capacity_units=0.0,
+                    items=0,
+                    error=error.code or type(error).__name__,
+                    timestamp=time.time(),
+                )
+                self._recorder.finish_span(span, None, entry, error)
+                self._finish(core, entry, error)
+                raise
+            read, write = capacity_split(request.operation, _capacities(output))
+            entry = OperationRecord(
+                operation=request.operation,
+                table=request.table,
+                model=request.model.__name__ if request.model else None,
+                duration=stats[3],
+                attempts=stats[0],
+                throttles=stats[1],
+                requests=stats[2],
+                read_capacity_units=read,
+                write_capacity_units=write,
+                items=_items_of(request.operation, request.params, output),
+                error=None,
+                timestamp=time.time(),
+            )
+            self._recorder.finish_span(span, output, entry, None)
+        self._finish(core, entry, None)
+        return Response(output=output, stats=CallStats.from_core(stats))
+
+    def _finish(self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None) -> None:
+        self._recorder.record_metrics(entry)
+        record(entry)
+        self._dispatch_buffered(core)
+        if error is None:
+            if self.events.wants(EventKind.OPERATION_SUCCEEDED):
+                self.events.emit(
+                    EventKind.OPERATION_SUCCEEDED,
+                    f"{entry.operation} {entry.table or ''}".rstrip() + f" took {entry.duration * 1000:.1f} ms",
+                    _fields(entry),
+                )
+        elif self.events.wants(EventKind.OPERATION_FAILED):
+            fields = _fields(entry)
+            reasons = getattr(error, "reasons", None)
+            if reasons:
+                fields["reasons"] = ",".join(str(reason[0]) for reason in reasons)
+            self.events.emit(
+                EventKind.OPERATION_FAILED,
+                f"{entry.operation} {entry.table or ''}".rstrip() + f" failed: {entry.error}",
+                fields,
+            )
+
+    # ---- factories ------------------------------------------------------------------------
+
+    def repository[M](self, model: type[M]) -> Repository[M]:
+        """A typed repository for a model (``client.repository(User)``)."""
+        from dynamoxy.repository import Repository
+
+        return Repository(self, model)
+
+    def table(self, name: str) -> Table:
+        """Dict-level access to a table by its logical name (prefix and mapping apply)."""
+        from dynamoxy.table import Table
+
+        return Table(self, name)
+
+    def collection[M](self, *models: type[M]) -> Collection[M]:
+        """Queries over several models sharing a table (single-table design).
+
+        Each item is decoded into its model by the type attribute.
+        """
+        from dynamoxy.collection import Collection
+
+        return Collection(self, models)
+
+    def transaction(self, *, token: str | None = None) -> Transaction:
+        """A write transaction: all operations succeed or none.
+
+        It commits when the ``async with`` block exits without an exception.
+
+        Args:
+            token: Idempotency token (``ClientRequestToken``, 1 to 36 characters, unique per logical
+                operation across the account); generated when omitted. Retrying an identical
+                transaction with the same token within 10 minutes does not apply it twice.
+
+        Raises:
+            ValueError: The token is empty or longer than 36 characters.
+        """
+        from dynamoxy.transactions import Transaction
+
+        return Transaction(self, token=token)
+
+    async def transact_get(self, *gets: Get[Any]) -> list[Any]:
+        """Reads up to 100 items in one consistent snapshot (``TransactGetItems``).
+
+        Returns:
+            One model instance (or ``None``) per :class:`dynamoxy.Get`, in order.
+        """
+        from dynamoxy.transactions import transact_get
+
+        return await transact_get(self, gets)
+
+    def batch_writer(self, *, flush_size: int = 100) -> BatchWriter:
+        """Buffers puts and deletes and writes them with managed batches (``async with``)."""
+        from dynamoxy.batch import BatchWriter
+
+        return BatchWriter(self, flush_size=flush_size)
+
+    # ---- tables of models -----------------------------------------------------------------
+
+    async def create_tables(
+        self,
+        *models: type,
+        billing: Billing | None = None,
+        wait: bool = True,
+        exist_ok: bool = False,
+        stream: str | None = None,
+        deletion_protection: bool = False,
+        tags: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        """Creates the tables of ``models`` (models sharing a table are merged).
+
+        Also enables TTL on their TTL attributes and waits until the tables are active.
+
+        Args:
+            models: Model classes.
+            billing: Billing mode (default on-demand).
+            wait: Wait until each table is active.
+            exist_ok: Skip tables that exist instead of raising ``ResourceInUseError``.
+            stream: Enable a DynamoDB stream with this view type (``"NEW_AND_OLD_IMAGES"``, ...).
+            deletion_protection: Turn on deletion protection.
+            tags: Tags for every table.
+
+        Returns:
+            The physical names of the tables created.
+        """
+        from dynamoxy.table import definitions_for
+
+        created: list[str] = []
+        for definition in definitions_for(models):
+            table = self.table(definition.name)
+            if exist_ok and await table.exists():
+                continue
+            await table.create_from(
+                definition,
+                billing=billing,
+                wait=wait,
+                stream=stream,
+                deletion_protection=deletion_protection,
+                tags=tags,
+            )
+            created.append(table.physical_name)
+        return created
+
+    async def ensure_tables(self, *models: type, billing: Billing | None = None, wait: bool = True) -> list[str]:
+        """Creates missing tables, global secondary indexes and TTL settings.
+
+        Indexes are added one at a time, as DynamoDB requires. Never deletes anything.
+
+        Returns:
+            The physical names of the tables that were created or changed.
+        """
+        from dynamoxy.table import definitions_for
+
+        changed: list[str] = []
+        for definition in definitions_for(models):
+            table = self.table(definition.name)
+            if not await table.exists():
+                await table.create_from(definition, billing=billing, wait=wait)
+                changed.append(table.physical_name)
+            elif await table.sync_with(definition, wait=wait):
+                changed.append(table.physical_name)
+        return changed
+
+    async def delete_tables(self, *models: type, wait: bool = True, missing_ok: bool = True) -> None:
+        """Deletes the tables of ``models``."""
+        from dynamoxy.table import definitions_for
+
+        for definition in definitions_for(models):
+            await self.table(definition.name).delete_table(wait=wait, missing_ok=missing_ok)
+
+    async def list_tables(self) -> list[str]:
+        """Every table name of the account and region (all pages)."""
+        names: list[str] = []
+        start: str | None = None
+        while True:
+            output = await self.call("list_tables", "ListTables", exclusive_start_table_name=start)
+            names.extend(output["table_names"])
+            start = output["last_evaluated_table_name"]
+            if start is None:
+                return names
+
+    # ---- PartiQL --------------------------------------------------------------------------
+
+    async def execute(self, statement: str, *parameters: Any, consistent: bool = False) -> list[dict[str, Any]]:
+        """Runs a PartiQL statement (``?`` placeholders) and returns every item (all pages).
+
+        Example::
+
+            rows = await client.execute('SELECT * FROM "users" WHERE user_id = ?', "u1")
+        """
+        items: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            output = await self.call(
+                "execute_statement",
+                "ExecuteStatement",
+                statement=statement,
+                parameters=list(parameters),
+                consistent_read=consistent,
+                next_token=token,
+            )
+            items.extend(output["items"])
+            token = output["next_token"]
+            if token is None:
+                return items
+
+    async def execute_transaction(
+        self, statements: Sequence[tuple[str, Sequence[Any]]], *, token: str | None = None
+    ) -> list[dict[str, Any] | None]:
+        """Runs PartiQL statements as one transaction (all reads or all writes).
+
+        Args:
+            statements: ``(statement, parameters)`` pairs.
+            token: Idempotency token, 1 to 36 characters (generated for writes when omitted).
+        """
+        from dynamoxy.transactions import check_token
+
+        check_token(token)
+        output = await self.call(
+            "execute_transaction",
+            "ExecuteTransaction",
+            statements=[
+                {"statement": statement, "parameters": list(parameters)} for statement, parameters in statements
+            ],
+            client_request_token=token,
+        )
+        return list(output["responses"])
+
+    async def batch_execute(self, statements: Sequence[tuple[str, Sequence[Any]]]) -> list[dict[str, Any]]:
+        """Runs up to 25 PartiQL statements; each succeeds or fails on its own.
+
+        Returns:
+            One dict per statement: ``{"error": (code, message, item) | None, "table_name": ..., "item": ...}``.
+        """
+        output = await self.call(
+            "batch_execute_statement",
+            "BatchExecuteStatement",
+            statements=[
+                {"statement": statement, "parameters": list(parameters)} for statement, parameters in statements
+            ],
+        )
+        return [dict(response) for response in output["responses"]]
+
+    # ---- observability --------------------------------------------------------------------
+
+    def metrics(self) -> MetricsSnapshot:
+        """Counters kept by the core since the client connected (or :meth:`reset_metrics`)."""
+        if self._core_client is None:
+            return MetricsSnapshot(operations={}, in_flight=0, latency_buckets_ms=())
+        return MetricsSnapshot.from_core(self._core_client.metrics())
+
+    def reset_metrics(self) -> None:
+        """Resets the counters of :meth:`metrics`."""
+        if self._core_client is not None:
+            self._core_client.reset_metrics()
+
+    @contextlib.contextmanager
+    def collect(self) -> Iterator[Collector]:
+        """Collects every operation made in the block (see :func:`dynamoxy.collect`)."""
+        with collect() as collector:
+            yield collector
+
+
+def _fields(entry: OperationRecord) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "operation": entry.operation,
+        "duration_ms": round(entry.duration * 1000, 3),
+        "attempts": entry.attempts,
+    }
+    if entry.table:
+        fields["table"] = entry.table
+    if entry.model:
+        fields["model"] = entry.model
+    if entry.read_capacity_units:
+        fields["read_units"] = entry.read_capacity_units
+    if entry.write_capacity_units:
+        fields["write_units"] = entry.write_capacity_units
+    if entry.items:
+        fields["items"] = entry.items
+    if entry.error:
+        fields["error"] = entry.error
+    return fields

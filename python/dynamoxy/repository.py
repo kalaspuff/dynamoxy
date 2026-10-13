@@ -1,0 +1,1083 @@
+"""Repositories: typed persistence for one model class.
+
+::
+
+    users = client.repository(User)  # or a subclass with domain queries
+    await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+    user = await users.get("u1")
+    await users.update(user, User.visits.add(1))
+    async for user in users.query(index=User.by_email, email="ada@example.com"):
+        ...
+
+Subclass :class:`Repository` to collect the queries of a model in one place::
+
+    class UserRepository(dynamoxy.Repository[User]):
+        async def by_email(self, email: str) -> User | None:
+            return await self.query(index=User.by_email, email=email).first()
+
+Write semantics:
+
+* ``create`` fails with :class:`ItemAlreadyExistsError` if the key exists.
+* ``put`` replaces whatever is stored under the key.
+* ``save`` is ``put`` with optimistic locking for models with a ``version()`` field: it fails
+  with :class:`VersionConflictError` when the stored version is not the one the instance was
+  loaded with (for new instances: when the key exists).
+* ``update`` changes attributes in place (``SET``/``ADD``/``REMOVE``/``DELETE``) and returns
+  the new state; the item must exist unless ``upsert=True``.
+* ``delete`` removes the item and returns what was deleted.
+
+Every write maintains ``created_at``/``updated_at``/``version`` fields, derived (templated)
+attributes, and unique guard items, and runs the lifecycle hooks.
+"""
+
+from __future__ import annotations
+
+import types
+import typing
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+from dynamoxy import _core
+from dynamoxy._utils import MISSING
+from dynamoxy.constraints import GUARD_PREFIX, guard_item, guard_key
+from dynamoxy.errors import (
+    ConditionalCheckFailedError,
+    DynamoxyError,
+    FieldError,
+    ItemAlreadyExistsError,
+    ItemNotFoundError,
+    TransactionCanceledError,
+    UniqueConstraintError,
+    UnprocessedItemsError,
+    VersionConflictError,
+    cancellation_reasons,
+    validation_error,
+)
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, UpdateAction, Value, and_, as_condition
+from dynamoxy.query import Query, Scan
+from dynamoxy.schema import FieldSpec, IndexSpec, ModelSchema, schema_of
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
+
+    from dynamoxy.client import Client
+    from dynamoxy.schema import GlobalIndex, LocalIndex
+
+__all__ = ["Repository"]
+
+type WriteMode = Literal["create", "put", "save"]
+
+
+def utcnow() -> datetime:
+    """The current time in UTC (what ``created_at``/``updated_at`` fields receive)."""
+    return datetime.now(UTC)
+
+
+def _model_from_generic(cls: type) -> type | None:
+    for base in types.get_original_bases(cls):
+        if typing.get_origin(base) is Repository:
+            (argument,) = typing.get_args(base)
+            if isinstance(argument, type):
+                return argument
+    return None
+
+
+class _Plan:
+    """The native operations of one logical write, and how to explain their failures."""
+
+    def __init__(self) -> None:
+        self.operations: list[dict[str, Any]] = []
+        self.explain: list[Any] = []
+
+    def add(self, operation: dict[str, Any], explain: Any) -> None:
+        self.operations.append(operation)
+        self.explain.append(explain)
+
+
+class _WritePlan:
+    """A planned write of a repository: native operations, and what to do once they ran."""
+
+    def __init__(
+        self,
+        repository: Repository[Any],
+        plan: _Plan,
+        mode: str,
+        key: dict[str, Any],
+        expected: Any,
+        finalize: Any,
+        *,
+        upsert: bool = False,
+        instance: Any = None,
+        old: dict[str, Any] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.plan = plan
+        self.mode = mode
+        self.key = key
+        self.expected = expected
+        self.finalize = finalize
+        self.upsert = upsert
+        self.instance = instance
+        self.old = old
+
+    async def execute(self) -> dict[str, Any] | None:
+        """Runs the plan alone.
+
+        Returns the item attributes the single operation returned (``ALL_NEW`` for updates,
+        ``ALL_OLD`` for deletes), or ``None`` for transactions.
+        """
+        repository = self.repository
+        client = repository.client
+        if len(self.plan.operations) == 1:
+            operation = dict(self.plan.operations[0])
+            kind = operation.pop("kind")
+            method, name, returns = {
+                "put": ("put_item", "PutItem", "NONE"),
+                "update": ("update_item", "UpdateItem", "ALL_NEW"),
+                "delete": ("delete_item", "DeleteItem", "ALL_OLD"),
+            }[kind]
+            try:
+                output = await client.call(
+                    method,
+                    name,
+                    table=repository.table_name,
+                    model=repository.model_class,
+                    return_values=returns,
+                    **operation,
+                )
+            except ConditionalCheckFailedError as error:
+                raise repository._conflict(self, error, error.item) from error
+            attributes = output["attributes"]
+            await self.finalize(attributes)
+            return attributes
+        try:
+            await client.call(
+                "transact_write_items",
+                "TransactWriteItems",
+                table=repository.table_name,
+                model=repository.model_class,
+                transact_items=self.plan.operations,
+            )
+        except TransactionCanceledError as error:
+            raise repository._cancellation(self, error) from error
+        if self.mode != "update":
+            await self.finalize(None)
+        return None
+
+
+class Repository[M]:
+    """Typed persistence for one model class (see the module documentation).
+
+    Args:
+        client: The client.
+        model: The model class (optional in subclasses of ``Repository[Model]``).
+    """
+
+    model: ClassVar[type[Any] | None] = None
+
+    def __init__(self, client: Client, model: type[M] | None = None) -> None:
+        resolved = model or type(self).__dict__.get("model") or _model_from_generic(type(self))
+        if resolved is None:
+            raise TypeError(
+                f"{type(self).__name__} does not know its model: pass it (Repository(client, User)) "
+                "or subclass Repository[User]"
+            )
+        schema = schema_of(resolved)
+        if not schema.is_table or schema.table is None:
+            raise TypeError(f"{resolved.__name__} is not stored in a table; declare table='...' on the class")
+        self.client = client
+        self.model_class: type[M] = resolved
+        self.schema: ModelSchema = schema
+        self.table = client.table(schema.table)
+        self.table_name = self.table.physical_name
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} {self.model_class.__name__} @ {self.table_name}>"
+
+    # ---- helpers --------------------------------------------------------------------------
+
+    def _context(self, operation: str) -> Any:
+        return self.client.hook_context(operation, self.model_class)
+
+    def _load(self, item: Mapping[str, Any]) -> M:
+        instance = self.schema.decode(item)
+        if self.client.hooks.has("after_load", self.model_class):
+            self.client.hooks.run_sync("after_load", instance, self._context("load"))
+        return instance
+
+    def key(self, *key: Any, **key_values: Any) -> dict[str, Any]:
+        """The stored primary key from values.
+
+        Give positional partition/sort values, key field names, or the fields their templates use.
+        """
+        return self.schema.key_from(key, key_values)
+
+    def _target_key(self, target: Any) -> dict[str, Any]:
+        if isinstance(target, self.model_class):
+            return self.schema.key_of(target)
+        if isinstance(target, dict):
+            key_names = {spec.attribute for spec in self.schema.key_fields()}
+            if set(target) == key_names:
+                return dict(target)
+            return self.schema.key_from((), target)
+        if isinstance(target, tuple):
+            return self.schema.key_from(target, {})
+        return self.schema.key_from((target,), {})
+
+    def _type_filter(self) -> Condition | None:
+        schema = self.schema
+        parts: list[Condition] = []
+        if schema.type_attribute is not None and schema.entity is not None:
+            parts.append(F(schema.type_attribute) == schema.entity)
+        elif schema.unique_fields and schema.partition_key is not None:
+            parts.append(~F(schema.partition_key.attribute).begins_with(GUARD_PREFIX))
+        return and_(*parts) if parts else None
+
+    async def _get_raw(self, key: dict[str, Any], *, consistent: bool = True) -> dict[str, Any] | None:
+        output = await self.client.call(
+            "get_item",
+            "GetItem",
+            table=self.table_name,
+            model=self.model_class,
+            table_name=self.table_name,
+            key=key,
+            consistent_read=consistent,
+        )
+        return output["item"]
+
+    # ---- reads ----------------------------------------------------------------------------
+
+    async def get(self, *key: Any, consistent: bool = False, **key_values: Any) -> M | None:
+        """The item with this key, or ``None``.
+
+        Example::
+
+            await users.get("u1")
+            await orders.get(customer_id="c1", order_id="o1")
+
+        Raises:
+            ValueError: The key arguments are incomplete or invalid.
+        """
+        item = await self._get_raw(self.key(*key, **key_values), consistent=consistent)
+        return None if item is None else self._load(item)
+
+    async def get_or_raise(self, *key: Any, consistent: bool = False, **key_values: Any) -> M:
+        """The item with this key.
+
+        Raises:
+            ItemNotFoundError: No item has this key.
+        """
+        stored = self.key(*key, **key_values)
+        item = await self._get_raw(stored, consistent=consistent)
+        if item is None:
+            raise ItemNotFoundError(
+                f"{self.model_class.__name__} {stored} does not exist", model=self.model_class, key=stored
+            )
+        return self._load(item)
+
+    async def exists(self, *key: Any, consistent: bool = False, **key_values: Any) -> bool:
+        """Whether an item has this key."""
+        return await self._get_raw(self.key(*key, **key_values), consistent=consistent) is not None
+
+    async def refresh(self, instance: M, *, consistent: bool = True) -> M:
+        """Reloads ``instance`` in place from DynamoDB.
+
+        Raises:
+            ItemNotFoundError: The item no longer exists.
+        """
+        key = self.schema.key_of(instance)
+        item = await self._get_raw(key, consistent=consistent)
+        if item is None:
+            raise ItemNotFoundError(
+                f"{self.model_class.__name__} {key} no longer exists", model=self.model_class, key=key
+            )
+        self._assign(instance, self._load(item), item)
+        return instance
+
+    def _assign(self, instance: M, source: M, item: dict[str, Any]) -> None:
+        adapter = self.schema.adapter
+        for name in self.schema.fields:
+            adapter.set(instance, name, adapter.get(source, name))
+        state = self.schema.state(instance)
+        if state is not None:
+            state.stored = dict(item)
+
+    def query(self, *, index: str | GlobalIndex | LocalIndex | None = None, **key_values: Any) -> Query[M]:
+        """Items of one partition of the table or of an index.
+
+        ``key_values`` give the partition key (its field name, or the fields its template
+        uses) and optionally the sort key. Without a sort key value, a templated sort key with
+        a constant prefix (``"ORDER#{order_id}"``) restricts the query to this model's items.
+        Add sort key conditions with ``.where()`` and filters with ``.filter()``.
+
+        Example::
+
+            orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2024")).descending()
+            users.query(index=User.by_email, email="ada@example.com").first()
+        """
+        spec = self._index(index)
+        partition_spec = spec.partition_key if spec is not None else self.schema.partition_key
+        sort_spec = spec.sort_key if spec is not None else self.schema.sort_key
+        assert partition_spec is not None
+        if spec is None:
+            partition_value, remaining = self._partition_value(partition_spec, key_values)
+        else:
+            partition_value, remaining = self.schema.index_key(spec, key_values)
+        condition: Condition = F(partition_spec.attribute) == partition_value
+        if sort_spec is not None:
+            sort_condition, remaining = self._sort_condition(sort_spec, remaining)
+            if sort_condition is not None:
+                condition = condition & sort_condition
+        if remaining:
+            raise ValueError(
+                f"{self.model_class.__name__}.query(): unexpected arguments {', '.join(sorted(remaining))}"
+            )
+        query: Query[M] = Query(
+            self.client,
+            self.table_name,
+            decode=self._load,
+            model=self.model_class,
+            index=spec.name if spec is not None else None,
+            key_condition=condition,
+            hydrate=self._hydrate,
+        )
+        type_filter = self._type_filter()
+        return query.filter(type_filter) if type_filter is not None else query
+
+    def _index(self, index: str | GlobalIndex | LocalIndex | None) -> IndexSpec | None:
+        if index is None:
+            return None
+        name = index if isinstance(index, str) else index.name
+        spec = self.schema.indexes.get(name or "")
+        if spec is None:
+            known = ", ".join(self.schema.indexes) or "none"
+            raise ValueError(f"{self.model_class.__name__} has no index {name!r} (indexes: {known})")
+        return spec
+
+    def _partition_value(self, spec: FieldSpec, key_values: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
+        remaining = dict(key_values)
+        used: set[str] = set()
+        value = self.schema._key_value(spec, remaining, [], used)
+        for name in used:
+            remaining.pop(name, None)
+        return value, remaining
+
+    def _sort_condition(self, spec: FieldSpec, remaining: dict[str, Any]) -> tuple[Condition | None, dict[str, Any]]:
+        template = spec.template
+        names = {spec.name, spec.attribute}
+        if names & remaining.keys() or (
+            template is not None and template.fields and all(name in remaining for name in template.fields)
+        ):
+            value, remaining = self._partition_value(spec, remaining)
+            return F(spec.attribute) == value, remaining
+        if template is not None and template.prefix and not template.is_constant:
+            return F(spec.attribute).begins_with(template.prefix), remaining
+        if template is not None and template.is_constant:
+            return F(spec.attribute) == template.template, remaining
+        return None, remaining
+
+    async def _hydrate(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        keys = [self.schema.key_values(item) for item in items]
+        full = await self.table.batch_get(keys, consistent=False)
+        by_key = {tuple(sorted(self.schema.key_values(item).items(), key=lambda pair: pair[0])): item for item in full}
+        result = []
+        for key in keys:
+            found = by_key.get(tuple(sorted(key.items(), key=lambda pair: pair[0])))
+            if found is not None:
+                result.append(found)
+        return result
+
+    def scan(self, *, index: str | GlobalIndex | LocalIndex | None = None) -> Scan[M]:
+        """Every item of this model, in the table or an index.
+
+        Combine with ``.filter()``, ``.segments(n)`` for parallel scans and ``.limit()``.
+        """
+        spec = self._index(index)
+        scan: Scan[M] = Scan(
+            self.client,
+            self.table_name,
+            decode=self._load,
+            model=self.model_class,
+            index=spec.name if spec is not None else None,
+            hydrate=self._hydrate,
+        )
+        type_filter = self._type_filter()
+        return scan.filter(type_filter) if type_filter is not None else scan
+
+    async def count(self, *, index: str | GlobalIndex | LocalIndex | None = None, **key_values: Any) -> int:
+        """Items in a partition (``query`` arguments), or of the whole model without arguments."""
+        if key_values:
+            return await self.query(index=index, **key_values).count()
+        return await self.scan(index=index).count()
+
+    async def batch_get(self, keys: Iterable[Any], *, consistent: bool = False) -> list[M]:
+        """Reads many items by key; missing keys are skipped and order follows ``keys``.
+
+        Keys may be stored keys (``User.key(...)``), partition values, or ``(partition, sort)``
+        tuples.
+        """
+        stored = [self._target_key(key) for key in keys]
+        unique: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
+        for key in stored:
+            unique.setdefault(tuple(sorted(key.items(), key=lambda pair: pair[0])), key)
+        if not unique:
+            return []
+        output = await self.client.call(
+            "batch_get",
+            "BatchGetItem",
+            table=self.table_name,
+            model=self.model_class,
+            request_items={self.table_name: {"keys": list(unique.values()), "consistent_read": consistent}},
+        )
+        pending = output["unprocessed_keys"].get(self.table_name)
+        if pending and pending["keys"]:
+            raise UnprocessedItemsError(
+                f"{len(pending['keys'])} keys of {self.table_name} stayed unprocessed (throttling)",
+                unprocessed=[("get", key) for key in pending["keys"]],
+            )
+        found = {
+            tuple(sorted(self.schema.key_values(item).items(), key=lambda pair: pair[0])): item
+            for item in output["items"].get(self.table_name, [])
+        }
+        result: list[M] = []
+        for key in stored:
+            item = found.get(tuple(sorted(key.items(), key=lambda pair: pair[0])))
+            if item is not None:
+                result.append(self._load(item))
+        return result
+
+    # ---- writes ---------------------------------------------------------------------------
+    #
+    # Every write is planned first (validation, automatic fields, conditions, guard items) and
+    # then executed: one native call when the plan has one operation, a transaction otherwise.
+    # Transactions (`client.transaction()`) execute the plans of several writes together.
+
+    def _prepare(self, instance: M, mode: str) -> tuple[dict[str, Any], dict[str, Any], int | None]:
+        """Validates and computes the stored item. Returns (item, changes to apply, expected version)."""
+        schema = self.schema
+        if not isinstance(instance, self.model_class):
+            raise TypeError(f"expected a {self.model_class.__name__}, got {type(instance).__name__}")
+        schema.validate(instance)
+        values = schema.values(instance)
+        changes: dict[str, Any] = {}
+        now = utcnow()
+        if schema.created_at_field is not None and values.get(schema.created_at_field.name) is None:
+            changes[schema.created_at_field.name] = now
+        if schema.updated_at_field is not None:
+            changes[schema.updated_at_field.name] = now
+        expected: int | None = None
+        if schema.version_field is not None:
+            current = values.get(schema.version_field.name) or 0
+            changes[schema.version_field.name] = current + 1
+            expected = current
+        values.update(changes)
+        derived = schema.render_derived(values)
+        values.update(derived)
+        changes.update(derived)
+        item = schema.encode_values(values)
+        return item, changes, expected
+
+    def _apply(self, instance: M, changes: Mapping[str, Any], item: dict[str, Any] | None) -> None:
+        adapter = self.schema.adapter
+        for name, value in changes.items():
+            adapter.set(instance, name, value)
+        state = self.schema.state(instance)
+        if state is not None:
+            state.stored = dict(item) if item is not None else None
+
+    def _guard_conditions(self, old: Mapping[str, Any], specs: Iterable[FieldSpec]) -> list[Condition]:
+        """Conditions that the unique values of the stored item are still ``old``'s."""
+        return [
+            F(spec.attribute) == old[spec.attribute]
+            if old.get(spec.attribute) is not None
+            else F(spec.attribute).not_exists()
+            for spec in specs
+        ]
+
+    def _plan_guards(
+        self,
+        plan: _Plan,
+        old: Mapping[str, Any] | None,
+        new: Mapping[str, Any] | None,
+        key: dict[str, Any],
+        specs: Iterable[FieldSpec],
+    ) -> None:
+        schema = self.schema
+        assert schema.partition_key is not None
+        for spec in specs:
+            before = old.get(spec.attribute) if old is not None else None
+            after = new.get(spec.attribute) if new is not None else None
+            if before == after:
+                continue
+            if before is not None:
+                plan.add(
+                    {"kind": "delete", "table_name": self.table_name, "key": guard_key(schema, spec, before)}, None
+                )
+            if after is not None:
+                builder = ExpressionBuilder()
+                plan.add(
+                    {
+                        "kind": "put",
+                        "table_name": self.table_name,
+                        "item": guard_item(schema, spec, after, key),
+                        "condition_expression": builder.condition(F(schema.partition_key.attribute).not_exists()),
+                        **builder.arguments(),
+                    },
+                    ("guard", spec, after),
+                )
+
+    async def _plan_put(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> _WritePlan:
+        schema = self.schema
+        await self.client.hooks.run("before_save", instance, self._context(mode))
+        item, changes, expected = self._prepare(instance, mode)
+        key = schema.key_values(item)
+        assert schema.partition_key is not None
+        partition = F(schema.partition_key.attribute)
+        parts: list[Condition] = []
+        if mode == "create":
+            parts.append(partition.not_exists())
+        elif mode == "save" and schema.version_field is not None:
+            parts.append(F(schema.version_field.attribute) == expected if expected else partition.not_exists())
+        user_condition = as_condition(condition)
+        if user_condition is not None:
+            parts.append(user_condition)
+        old: dict[str, Any] | None = None
+        if schema.unique_fields and mode != "create":
+            state = schema.state(instance)
+            if state is not None and state.loaded and schema.key_values(state.stored or {}) == key:
+                old = state.stored
+            else:
+                old = await self._get_raw(key)
+            if old is None:
+                parts.append(partition.not_exists())
+            else:
+                parts.extend(self._guard_conditions(old, schema.unique_fields))
+        plan = _Plan()
+        builder = ExpressionBuilder()
+        plan.add(
+            {
+                "kind": "put",
+                "table_name": self.table_name,
+                "item": item,
+                "condition_expression": builder.condition(and_(*parts)) if parts else None,
+                "return_values_on_condition_check_failure": "ALL_OLD",
+                **builder.arguments(),
+            },
+            ("item", mode),
+        )
+        if schema.unique_fields:
+            self._plan_guards(plan, old, item, key, schema.unique_fields)
+
+        async def finalize(_: dict[str, Any] | None) -> None:
+            self._apply(instance, changes, item)
+            await self.client.hooks.run("after_save", instance, self._context(mode))
+
+        return _WritePlan(self, plan, mode, key, expected, finalize)
+
+    async def create(self, item: M, *, condition: Condition | bool | None = None) -> M:
+        """Writes a new item.
+
+        Raises:
+            ItemAlreadyExistsError: An item with the same key exists.
+            UniqueConstraintError: A unique value is taken.
+            ValidationError: The instance is invalid.
+        """
+        await (await self._plan_put(item, "create", condition)).execute()
+        return item
+
+    async def put(self, item: M, *, condition: Condition | bool | None = None) -> M:
+        """Writes an item, replacing any stored item with the same key.
+
+        Raises:
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            UniqueConstraintError: A unique value is taken.
+        """
+        await (await self._plan_put(item, "put", condition)).execute()
+        return item
+
+    async def save(self, item: M, *, condition: Condition | bool | None = None) -> M:
+        """Writes an item with optimistic locking (models with a ``version()`` field).
+
+        Raises:
+            VersionConflictError: The stored version differs from the instance's (or, for a
+                new instance, the key exists).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+        """
+        await (await self._plan_put(item, "save", condition)).execute()
+        return item
+
+    async def _plan_update(
+        self,
+        target: Any,
+        actions: Sequence[UpdateAction],
+        condition: Condition | bool | None,
+        upsert: bool,
+    ) -> _WritePlan:
+        schema = self.schema
+        instance = target if isinstance(target, self.model_class) else None
+        key = self._target_key(target)
+        state = schema.state(instance) if instance is not None else None
+        actions_list = list(actions)
+        if not actions_list:
+            raise ValueError("update() needs at least one action, e.g. User.visits.add(1)")
+        touched: dict[str, FieldSpec] = {}
+        literals: dict[str, Any] = {}
+        for position, action in enumerate(actions_list):
+            spec = schema.attributes.get(str(action.path.elements[0]))
+            if spec is None:
+                continue
+            if spec.role is not None or spec.derived:
+                raise ValueError(
+                    f"{self.model_class.__name__}.{spec.name} is a key or derived attribute and cannot be updated"
+                )
+            if spec.immutable:
+                raise ValueError(f"{self.model_class.__name__}.{spec.name} is immutable")
+            touched[spec.name] = spec
+            if len(action.path.elements) == 1:
+                is_literal, value = action.literal()
+                if is_literal:
+                    literals[spec.name] = spec.codec.decode(value) if value is not None else None
+                elif action.kind == "REMOVE":
+                    literals[spec.name] = None
+                else:
+                    continue
+                # Values set outright must satisfy the field like a constructor argument would
+                # (arithmetic such as add() cannot be checked locally: guard it with a condition).
+                try:
+                    checked = spec.validate(literals[spec.name])
+                except ValueError as error:
+                    model = self.model_class.__name__
+                    problem = "is required and cannot be removed" if literals[spec.name] is None else str(error)
+                    raise validation_error(
+                        f"{model}.{spec.name}: {problem}", [FieldError(spec.name, problem, literals[spec.name])]
+                    ) from None
+                if checked is not None and checked != literals[spec.name]:  # a validator normalized it
+                    literals[spec.name] = checked
+                    actions_list[position] = UpdateAction("SET", action.path, Value(spec.codec.encode(checked)))
+        assert schema.partition_key is not None
+        parts: list[Condition] = []
+        if not upsert:
+            parts.append(F(schema.partition_key.attribute).exists())
+        expected: Any = None
+        now = utcnow()
+        if schema.version_field is not None:
+            actions_list.append(UpdateAction("ADD", Path(schema.version_field.attribute), Value(1)))
+            if instance is not None:
+                expected = schema.adapter.get(instance, schema.version_field.name)
+                if expected is not None:
+                    parts.append(F(schema.version_field.attribute) == expected)
+        if schema.updated_at_field is not None and schema.updated_at_field.name not in touched:
+            field = schema.updated_at_field
+            actions_list.append(UpdateAction("SET", Path(field.attribute), Value(field.codec.encode(now))))
+        if upsert and schema.created_at_field is not None and schema.created_at_field.name not in touched:
+            field = schema.created_at_field
+            actions_list.append(Path(field.attribute).set_if_not_exists(field.codec.encode(now)))
+        completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
+        if upsert:
+            provided = self._field_values_of(target) if instance is None else {}
+            completion_actions, completion = self._upsert_completion(instance, touched, provided)
+            actions_list.extend(completion_actions)
+        stored_old = state.stored if state is not None and state.loaded else None
+        unique_touched = [spec for spec in schema.unique_fields if spec.name in touched]
+        for spec in unique_touched:
+            if spec.name not in literals:
+                raise ValueError(
+                    f"{self.model_class.__name__}.{spec.name} is unique: update it with .set(value) or .remove() so "
+                    "dynamoxy can maintain its guard item"
+                )
+        derived_specs = [
+            spec
+            for spec in schema.fields.values()
+            if spec.template is not None and spec.role is None and set(spec.template.fields) & touched.keys()
+        ]
+        needs_read = bool(unique_touched) and stored_old is None
+        if derived_specs and stored_old is None and instance is None:
+            needs_read = needs_read or any(
+                name not in literals
+                for spec in derived_specs
+                for name in spec.template.fields  # pyrefly: ignore[missing-attribute]
+            )
+        if needs_read:
+            stored_old = await self._get_raw(key)
+            if stored_old is None and not upsert:
+                raise ItemNotFoundError(
+                    f"{self.model_class.__name__} {key} does not exist", model=self.model_class, key=key
+                )
+        if derived_specs:
+            known: dict[str, Any] = {}
+            if stored_old is not None:
+                known.update(schema.decode_values(stored_old))
+            elif instance is not None:
+                known.update(schema.values(instance))
+            else:
+                known.update(completion)  # an upsert that creates the item writes these values
+            known.update(literals)
+            for spec in derived_specs:
+                assert spec.template is not None
+                rendered = spec.template.render(known, schema.codecs)
+                path = Path(spec.attribute)
+                actions_list.append(
+                    UpdateAction("SET", path, Value(rendered)) if rendered is not None else path.remove()
+                )
+        if upsert:
+            # Derived attributes the actions do not affect: rendered from what a created item holds,
+            # and only written when missing (existing items keep theirs).
+            created = {**completion, **literals}
+            for spec in schema.fields.values():
+                if spec.template is None or spec.role is not None or spec in derived_specs:
+                    continue
+                rendered = spec.template.render(created, schema.codecs)
+                if rendered is not None:
+                    actions_list.append(Path(spec.attribute).set_if_not_exists(rendered))
+        if unique_touched and stored_old is not None:
+            parts.extend(self._guard_conditions(stored_old, unique_touched))
+        user_condition = as_condition(condition)
+        if user_condition is not None:
+            parts.append(user_condition)
+        plan = _Plan()
+        builder = ExpressionBuilder()
+        plan.add(
+            {
+                "kind": "update",
+                "table_name": self.table_name,
+                "key": key,
+                "update_expression": builder.update(actions_list),
+                "condition_expression": builder.condition(and_(*parts)) if parts else None,
+                "return_values_on_condition_check_failure": "ALL_OLD",
+                **builder.arguments(),
+            },
+            ("item", "update"),
+        )
+        if unique_touched:
+            new_values = {
+                spec.attribute: spec.codec.encode(literals[spec.name]) if literals[spec.name] is not None else None
+                for spec in unique_touched
+            }
+            self._plan_guards(plan, stored_old or {}, new_values, key, unique_touched)
+
+        async def finalize(attributes: dict[str, Any] | None) -> None:
+            if instance is None:
+                return
+            if attributes is None:  # in a transaction, which returns nothing
+                attributes = self._updated_locally(stored_old, instance, actions_list)
+            self._assign(instance, self._load(attributes), attributes)
+
+        return _WritePlan(self, plan, "update", key, expected, finalize, upsert=upsert, instance=instance)
+
+    def _field_values_of(self, target: Any) -> dict[str, Any]:
+        """Field values given as an update target (``{"customer_id": "c1", "order_id": "o1"}``)."""
+        if not isinstance(target, dict):
+            return {}
+        key_names = {spec.attribute for spec in self.schema.key_fields()}
+        if set(target) == key_names:  # a stored key: the values its templates used are unknown
+            return {}
+        return {name: value for name, value in target.items() if name in self.schema.fields}
+
+    def _upsert_completion(
+        self, instance: M | None, touched: Mapping[str, FieldSpec], provided: Mapping[str, Any]
+    ) -> tuple[list[UpdateAction], dict[str, Any]]:
+        """Actions that make an item created by ``update(..., upsert=True)`` a complete model item.
+
+        The entity type is set, and every field the actions leave alone gets ``if_not_exists``:
+        the instance's value, or for keys the given field values and the field's default.
+        Existing items keep their values. Returns the actions and the Python values a created
+        item gets.
+
+        Raises:
+            ValueError: Before any I/O: a required field has no value, or a unique value needs
+                its guard item written by the actions.
+        """
+        schema = self.schema
+        model = self.model_class.__name__
+        actions: list[UpdateAction] = []
+        values: dict[str, Any] = {}
+        if schema.type_attribute is not None and schema.entity is not None:
+            actions.append(UpdateAction("SET", Path(schema.type_attribute), Value(schema.entity)))
+        loaded = instance is not None and (state := schema.state(instance)) is not None and state.loaded
+        missing: list[str] = []
+        for spec in schema.fields.values():
+            if spec.name in touched or spec.role is not None or spec.derived:
+                continue
+            if spec.auto in ("created_at", "updated_at", "version"):
+                continue
+            if instance is not None:
+                value = schema.adapter.get(instance, spec.name)
+            elif spec.name in provided:
+                value = spec.validate(provided[spec.name])
+            else:
+                value = spec.initial()
+            if value is MISSING or value is None:
+                if value is MISSING and not spec.optional:
+                    missing.append(spec.name)
+                continue
+            values[spec.name] = value
+            if spec.unique:
+                if loaded:  # the item and its guard existed when it was loaded
+                    continue
+                raise ValueError(
+                    f"{model}.{spec.name} is unique: an upsert that may create the item must set it in the "
+                    f"actions ({model}.{spec.name}.set(...)) so dynamoxy can write its guard item"
+                )
+            encoded = spec.codec.encode(value)
+            if encoded is None or (isinstance(encoded, (set, frozenset)) and not encoded):
+                continue
+            actions.append(Path(spec.attribute).set_if_not_exists(encoded))
+        if missing:
+            names = ", ".join(missing)
+            setters = ", ".join(
+                f"{model}.{name}.{'set' if schema.fields[name].unique else 'set_if_not_exists'}(...)"
+                for name in missing
+            )
+            hint = ""
+            if any(spec.template is not None for spec in schema.key_fields()):
+                hint = f" or pass the key as field values ({{{', '.join(repr(name) + ': ...' for name in missing)}}})"
+            raise ValueError(
+                f"update(..., upsert=True) creates {model} when it is missing, but nothing sets the required "
+                f"field(s) {names}: set them in the actions ({setters}){hint}, or create() the item first"
+            )
+        return actions, values
+
+    def _updated_locally(
+        self, stored: dict[str, Any] | None, instance: M, actions: Sequence[UpdateAction]
+    ) -> dict[str, Any]:
+        """The item after ``actions``, evaluated like DynamoDB on the item as last read.
+
+        Exact for versioned models (the version condition guarantees the stored item was the one
+        loaded). For other models, changes other writers made meanwhile are not reflected.
+        Instances that were never loaded start from their own values.
+        """
+        builder = ExpressionBuilder()
+        expression = builder.update(actions)
+        assert expression is not None, "updates have at least one action"
+        base = stored if stored is not None else self.schema.encode(instance)
+        return _core._apply_update(base, expression, names=builder.names or None, values=builder.values or None)
+
+    async def update(
+        self,
+        target: M | Mapping[str, Any],
+        /,
+        *actions: UpdateAction,
+        condition: Condition | bool | None = None,
+        upsert: bool = False,
+    ) -> M:
+        """Changes attributes in place and returns the new state.
+
+        ``target`` is an instance (refreshed in place; its version is checked for versioned
+        models), a stored key (``User.key("u1")``) or key field values
+        (``{"customer_id": "c1", "order_id": "o1"}``).
+
+        With ``upsert=True`` a missing item is created. It is completed like a constructed
+        instance: untouched fields get their defaults (or the instance's values) with
+        ``if_not_exists``, derived keys and the entity type are written, and required fields
+        without a default must be set by the actions (``User.name.set_if_not_exists("Ada")``).
+
+        Example::
+
+            user = await users.update(user, User.visits.add(1), User.name.set("Ada"))
+            await users.update(User.key("u1"), User.tags.add({"admin"}), condition=User.active == True)
+
+        Raises:
+            ItemNotFoundError: The item does not exist (unless ``upsert``).
+            VersionConflictError: The instance's version is stale.
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            UniqueConstraintError: A new unique value is taken.
+            ValueError: An action targets a key, immutable or derived attribute, a unique
+                attribute is set with something other than a plain value, or an upsert leaves a
+                required field without a value.
+        """
+        write = await self._plan_update(target, actions, condition, upsert)
+        attributes = await write.execute()
+        if attributes is None:  # executed as a transaction (unique attributes): read the result
+            attributes = await self._get_raw(write.key)
+            if attributes is None:
+                raise ItemNotFoundError(
+                    f"{self.model_class.__name__} {write.key} does not exist", model=self.model_class, key=write.key
+                )
+            await write.finalize(attributes)
+        if isinstance(target, self.model_class):
+            return target
+        return self._load(attributes)
+
+    async def _plan_delete(self, target: Any, condition: Condition | bool | None) -> _WritePlan | None:
+        schema = self.schema
+        instance = target if isinstance(target, self.model_class) else None
+        key = self._target_key(target)
+        if instance is not None:
+            await self.client.hooks.run("before_delete", instance, self._context("delete"))
+        parts: list[Condition] = []
+        expected: Any = None
+        if instance is not None and schema.version_field is not None:
+            expected = schema.adapter.get(instance, schema.version_field.name)
+            if expected is not None:
+                parts.append(F(schema.version_field.attribute) == expected)
+        user_condition = as_condition(condition)
+        if user_condition is not None:
+            parts.append(user_condition)
+        old: dict[str, Any] | None = None
+        if schema.unique_fields:
+            state = schema.state(instance) if instance is not None else None
+            old = state.stored if state is not None and state.loaded else await self._get_raw(key)
+            if old is None:
+                return None
+            parts.extend(self._guard_conditions(old, schema.unique_fields))
+        plan = _Plan()
+        builder = ExpressionBuilder()
+        plan.add(
+            {
+                "kind": "delete",
+                "table_name": self.table_name,
+                "key": key,
+                "condition_expression": builder.condition(and_(*parts)) if parts else None,
+                "return_values_on_condition_check_failure": "ALL_OLD",
+                **builder.arguments(),
+            },
+            ("item", "delete"),
+        )
+        if old is not None:
+            self._plan_guards(plan, old, None, key, schema.unique_fields)
+
+        async def finalize(_: dict[str, Any] | None) -> None:
+            if instance is not None:
+                state = schema.state(instance)
+                if state is not None:
+                    state.stored = None
+                await self.client.hooks.run("after_delete", instance, self._context("delete"))
+
+        return _WritePlan(self, plan, "delete", key, expected, finalize, old=old)
+
+    async def delete(
+        self, target: M | Mapping[str, Any] | Any, /, *, condition: Condition | bool | None = None
+    ) -> M | None:
+        """Deletes an item and returns it (``None`` when nothing was stored under the key).
+
+        ``target`` is an instance (its version is checked for versioned models), a stored key,
+        a partition value or a ``(partition, sort)`` tuple.
+
+        Raises:
+            VersionConflictError: The instance's version is stale.
+            ConditionalCheckFailedError: ``condition`` did not hold.
+        """
+        write = await self._plan_delete(target, condition)
+        if write is None:
+            return None
+        deleted = await write.execute()
+        if deleted is None:
+            deleted = write.old
+        return self._load(deleted) if deleted is not None else None
+
+    def _conflict(self, write: _WritePlan, error: DynamoxyError, stored: dict[str, Any] | None) -> DynamoxyError:
+        """The specific error for a failed condition of a planned write."""
+        name = self.model_class.__name__
+        key, expected, mode = write.key, write.expected, write.mode
+        version = self.schema.version_field
+        stored_version = stored.get(version.attribute) if stored is not None and version is not None else None
+        if mode == "create" and stored is not None:
+            return ItemAlreadyExistsError(
+                f"{name} {key} already exists", model=self.model_class, key=key, item=stored, cause=error
+            )
+        if mode == "update" and stored is None and not write.upsert:
+            return ItemNotFoundError(f"{name} {key} does not exist", model=self.model_class, key=key)
+        if version is not None and (mode in ("save", "update", "delete")) and (expected or mode == "save"):
+            if stored is None and expected:
+                return VersionConflictError(
+                    f"{name} {key} was deleted after it was loaded (version {expected})",
+                    model=self.model_class,
+                    key=key,
+                    expected_version=expected,
+                    cause=error,
+                )
+            if stored is not None and stored_version != (expected or None):
+                return VersionConflictError(
+                    f"{name} {key} changed since it was loaded: stored version {stored_version}, expected {expected}",
+                    model=self.model_class,
+                    key=key,
+                    expected_version=expected,
+                    item=stored,
+                    cause=error,
+                )
+        return error
+
+    def _cancellation(self, write: _WritePlan, error: TransactionCanceledError) -> DynamoxyError:
+        """The specific error for a canceled transaction of one planned write."""
+        for reason in cancellation_reasons(error):
+            if reason.code != "ConditionalCheckFailed" or reason.index >= len(write.plan.explain):
+                continue
+            explain = write.plan.explain[reason.index]
+            specific = self.explain_failure(explain, reason.item, write, error)
+            if specific is not None:
+                return specific
+        return error
+
+    def explain_failure(
+        self, explain: Any, item: dict[str, Any] | None, write: _WritePlan, cause: DynamoxyError
+    ) -> DynamoxyError | None:
+        """The specific error for one failed operation of a plan (``None`` when unknown)."""
+        if explain is None:
+            return None
+        if explain[0] == "guard":
+            _, spec, value = explain
+            decoded = spec.codec.decode(value)
+            return UniqueConstraintError(
+                f"{self.model_class.__name__}.{spec.name} {decoded!r} is already used by another item",
+                model=self.model_class,
+                field=spec.name,
+                value=decoded,
+                cause=cause,
+            )
+        failed = ConditionalCheckFailedError(
+            f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
+        )
+        failed.item = item
+        for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
+            value = getattr(cause, name, None)
+            if value is not None:
+                setattr(failed, name, value)
+        return self._conflict(write, failed, item)
+
+    async def batch_put(self, items: Iterable[M]) -> None:
+        """Writes many items (managed ``BatchWriteItem``: unconditional, not atomic).
+
+        Raises:
+            TypeError: The model has unique attributes (use ``create``/``save`` or a transaction).
+            UnprocessedItemsError: Some writes stayed unprocessed after every retry round.
+        """
+        if self.schema.unique_fields:
+            raise TypeError(
+                f"{self.model_class.__name__} has unique attributes; batch writes cannot maintain them "
+                "(use create/save or a transaction)"
+            )
+        prepared: list[tuple[M, dict[str, Any], dict[str, Any]]] = []
+        for instance in items:
+            await self.client.hooks.run("before_save", instance, self._context("batch_put"))
+            item, changes, _ = self._prepare(instance, "batch")
+            prepared.append((instance, item, changes))
+        if not prepared:
+            return
+        await self.table.batch_write(puts=[item for _, item, _ in prepared])
+        for instance, item, changes in prepared:
+            self._apply(instance, changes, item)
+            await self.client.hooks.run("after_save", instance, self._context("batch_put"))
+
+    async def batch_delete(self, targets: Iterable[M | Mapping[str, Any] | Any]) -> None:
+        """Deletes many items by instance or key (managed ``BatchWriteItem``; not atomic).
+
+        Raises:
+            TypeError: The model has unique attributes.
+        """
+        if self.schema.unique_fields:
+            raise TypeError(f"{self.model_class.__name__} has unique attributes; delete items one by one")
+        targets = list(targets)
+        for target in targets:
+            if isinstance(target, self.model_class):
+                await self.client.hooks.run("before_delete", target, self._context("batch_delete"))
+        await self.table.batch_write(deletes=[self._target_key(target) for target in targets])
+        for target in targets:
+            if isinstance(target, self.model_class):
+                self._apply(target, {}, None)
+                await self.client.hooks.run("after_delete", target, self._context("batch_delete"))
+
+    # ---- table ----------------------------------------------------------------------------
+
+    async def create_table(self, **options: Any) -> None:
+        """Creates this model's table (see ``Client.create_tables`` for options)."""
+        await self.client.create_tables(self.model_class, **options)

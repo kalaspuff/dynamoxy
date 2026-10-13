@@ -1,0 +1,179 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "dynamoxy"
+description = "A typed, async DynamoDB ORM for Python with a Rust core: models with descriptors or pydantic, repositories, transactions, unique constraints, OpenTelemetry and an in-memory DynamoDB for tests."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Carl Oscar Aaro", email = "hello@carloscar.com" }]
+keywords = ["dynamodb", "aws", "orm", "asyncio", "pydantic", "rust", "opentelemetry"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+# No required dependencies: integrations are extras, imported lazily.
+dependencies = []
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.7"]
+otel = ["opentelemetry-api>=1.25"]
+all = ["pydantic>=2.7", "opentelemetry-api>=1.25"]
+
+[project.urls]
+Homepage = "https://github.com/kalaspuff/dynamoxy"
+Documentation = "https://github.com/kalaspuff/dynamoxy/tree/main/docs"
+Repository = "https://github.com/kalaspuff/dynamoxy"
+Issues = "https://github.com/kalaspuff/dynamoxy/issues"
+Changelog = "https://github.com/kalaspuff/dynamoxy/blob/main/CHANGELOG.md"
+
+[project.scripts]
+dynamoxy = "dynamoxy.__main__:main"
+
+[dependency-groups]
+test = [
+    "pytest>=9",
+    "pytest-asyncio>=1.2",
+    "pytest-timeout>=2.4",
+    "pytest-cov>=7",
+    "hypothesis>=6.140",
+    "pydantic>=2.7",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    # End-to-end tests: MiniStack emulates DynamoDB (no Docker); boto3 checks wire interop.
+    "ministack>=1.5",
+    "boto3>=1.34",
+]
+lint = ["ruff>=0.17", "pyrefly>=1.3"]
+dev = [{ include-group = "test" }, { include-group = "lint" }, "maturin>=1.15,<2"]
+
+[tool.uv]
+default-groups = ["dev"]
+# Rebuild the native extension when Rust sources change (`uv run` keeps it fresh).
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "crates/**/*.rs" },
+    { file = "crates/**/Cargo.toml" },
+]
+
+[tool.maturin]
+manifest-path = "crates/dynamoxy-py/Cargo.toml"
+python-source = "python"
+module-name = "dynamoxy._core"
+include = [{ path = "LICENSE", format = "sdist" }]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["python", "tests", "examples"]
+extend-exclude = ["target"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade (modern syntax for 3.12+)
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "RUF",      # ruff-specific
+    "ASYNC",    # async pitfalls
+    "PT",       # pytest style
+    "PIE",      # misc lints
+    "RET",      # return statements
+    "PERF",     # performance
+    "FURB",     # refurb
+    "TC",       # type-checking imports
+    "PYI",      # stub style
+    "N",        # naming
+    "D",        # docstrings (public API)
+    "BLE",      # blind except
+    "T20",      # print statements
+    "LOG",      # logging
+    "G",        # logging format
+    "S",        # security (bandit)
+    "ANN",      # annotations
+    "TRY",      # exception handling
+    "PGH",      # pygrep hooks
+    "FA",       # future annotations
+]
+ignore = [
+    "D105",    # magic method docstrings
+    "D107",    # __init__ docstrings (documented on the class)
+    "D203",    # conflicts with D211
+    "D213",    # conflicts with D212
+    "ANN401",  # Any is sometimes the honest type
+    "TRY003",  # long messages in exceptions are helpful
+    "TRY004",  # codecs and validators report invalid values as ValueError (collected as field errors)
+    "S101",    # assert is used for invariants
+    "TC006",   # quoting cast() targets is noise
+    "ASYNC109", # `timeout` parameters are part of the public API
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+# Overrides are documented by the method they override.
+ignore-decorators = ["typing.override"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ANN", "S", "PLR2004", "T20", "BLE001", "TRY", "N802", "PERF", "TC"]
+"examples/**" = ["D", "T20", "S", "ANN", "BLE001", "TRY", "TC", "PT"]
+"scripts/**" = ["T20", "S", "D", "ANN"]
+"python/dynamoxy/_core.pyi" = ["D", "PYI021", "N818"]
+"python/dynamoxy/__main__.py" = ["T20"]
+
+[tool.ruff.lint.flake8-type-checking]
+quote-annotations = true
+
+[tool.pyrefly]
+project-includes = ["python", "tests", "examples", "scripts"]
+python-version = "3.12"
+search-path = ["python", "scripts"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+timeout = 180
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "e2e: end-to-end tests against the DynamoDB emulator (MiniStack); started automatically unless DYNAMOXY_TEST_ENDPOINT_URL is set",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["dynamoxy"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "@overload", "raise NotImplementedError", "\\.\\.\\."]

@@ -1,0 +1,90 @@
+# Single-table design
+
+Single-table design stores several entity types in one table, so that related items share a
+partition and one query returns them together. dynamoxy supports it with entities, key
+templates, derived index keys and collections.
+
+```python
+class Customer(Model, table="app", entity="Customer"):
+    pk: Attr[str] = partition_key(template="CUSTOMER#{customer_id}")
+    sk: Attr[str] = sort_key(template="PROFILE")
+    customer_id: Attr[str]
+    name: Attr[str]
+
+
+class Order(Model, table="app", entity="Order"):
+    pk: Attr[str] = partition_key(template="CUSTOMER#{customer_id}")
+    sk: Attr[str] = sort_key(template="ORDER#{order_id}")
+    customer_id: Attr[str]
+    order_id: Attr[str]
+    status: Attr[OrderStatus] = field(default=OrderStatus.NEW)
+    placed_at: Attr[datetime]
+    gsi1pk: Attr[str] = field(template="STATUS#{status}")
+    gsi1sk: Attr[str] = field(template="{placed_at}")
+
+    by_status = GlobalIndex("gsi1", partition_key=gsi1pk, sort_key=gsi1sk)
+```
+
+## Entities
+
+`entity="Order"` stores the entity name in a type attribute (`_type` by default;
+`type_attribute=` changes it). Repository reads filter on it, so `orders.scan()` returns orders
+only, and collections use it to decode mixed results. Entity names are part of the stored format:
+renaming one needs a data migration.
+
+## Key templates
+
+`template="ORDER#{order_id}"` renders the key from other fields with their stored form (enums as
+values, datetimes as ISO text, numbers as text). Templated fields:
+
+- are never passed to the constructor and are recomputed on every write;
+- are recomputed by `update()` when a field they use changes (dynamoxy reads the item first if
+  the update does not set every field the template needs);
+- accept the fields they use in reads: `orders.get(customer_id="c1", order_id="o1")`,
+  `orders.query(customer_id="c1")`, `Order.key(customer_id=..., order_id=...)`.
+
+When a model's sort key template starts with a constant (`"ORDER#"`) and a query gives only the
+partition key, dynamoxy adds `begins_with(sk, "ORDER#")`, so `orders.query(customer_id="c1")`
+does not return the customer profile.
+
+Template values must not contain the separators you rely on: validate them (`pattern=`) when
+they come from users.
+
+## Generic indexes
+
+Overloaded index keys (`gsi1pk`, `gsi1sk`) let one index serve several access patterns. Declare
+them as templated fields and the index on them; query by the template's fields:
+
+```python
+paid = await orders.query(index=Order.by_status, status=OrderStatus.PAID).all()
+```
+
+Models that should not appear in an index simply have no such fields (sparse index).
+
+## Collections
+
+```python
+items = await client.collection(Customer, Order).query(customer_id="c1").all()
+for item in items:
+    match item:
+        case Customer():
+            ...
+        case Order():
+            ...
+```
+
+A collection reads a partition (or scans the table) once and decodes each item by its entity.
+Items of entities not in the collection are skipped.
+
+## Creating the table
+
+`client.create_tables(Customer, Order)` merges the models of a table: key schema, attribute
+definitions and every index. Models sharing a table must agree on key attribute names and types
+(dynamoxy raises `TypeError` otherwise).
+
+## Tips
+
+- Start from access patterns: list every query the application needs, then design keys.
+- Keep partition keys high-cardinality; avoid one hot partition for all writes.
+- Use `begins_with` on sort keys for hierarchies (`ORDER#2026-05#o1`).
+- Keep item collections (all items of one partition key) below 10 GB when using local indexes.
