@@ -147,6 +147,17 @@ def _default_levels() -> dict[EventKind, str]:
     return levels
 
 
+class _Route:
+    """Where events of one kind go: the matching hooks and the logger (cached per kind)."""
+
+    __slots__ = ("hooks", "level", "logger")
+
+    def __init__(self, hooks: tuple[EventHook, ...], logger: logging.Logger | None, level: int) -> None:
+        self.hooks = hooks
+        self.logger = logger
+        self.level = level
+
+
 class EventDispatcher:
     """Routes events to logging and hooks. A failing hook never breaks the library.
 
@@ -159,6 +170,11 @@ class EventDispatcher:
         self._tasks: set[asyncio.Task[None]] = set()
         self._levels = _default_levels()
         self._on_change: Callable[[], None] | None = None
+        # Routes by kind for the logging configuration in `_routes_logging` and the current hooks
+        # (pattern matching is the costly part; logger levels are still checked on every event).
+        self._routes: dict[EventKind, _Route] = {}
+        self._routes_logging: LoggingConfig | None = None
+        self._routes_levels: dict[str, str] = {}
 
     def on_change(self, callback: Callable[[], None]) -> None:
         """Calls ``callback`` whenever the set of wanted kinds may have changed."""
@@ -189,8 +205,24 @@ class EventDispatcher:
         return unsubscribe
 
     def _changed(self) -> None:
+        self._routes.clear()
         if self._on_change is not None:
             self._on_change()
+
+    def _route(self, kind: EventKind) -> _Route:
+        config = self.logging
+        # The configuration is frozen, but its `levels` mapping could still be changed in place.
+        if self._routes_logging is not config or self._routes_levels != config.levels:
+            self._routes.clear()
+            self._routes_logging = config
+            self._routes_levels = dict(config.levels)
+        route = self._routes.get(kind)
+        if route is None:
+            hooks = tuple(hook for pattern, hook in self._hooks if fnmatch.fnmatchcase(kind.value, pattern))
+            level = self.logging.level_for(kind, self.level(kind))
+            logger = None if level is None else logging.getLogger(f"dynamoxy.{kind.value.split('.', 1)[0]}")
+            route = self._routes[kind] = _Route(hooks, logger, _LEVELS[level] if level is not None else 0)
+        return route
 
     def level(self, kind: EventKind) -> str:
         """The default level of ``kind``."""
@@ -198,12 +230,11 @@ class EventDispatcher:
 
     def wants(self, kind: EventKind) -> bool:
         """Whether an event of ``kind`` would be logged or reach a hook (cheap to build otherwise)."""
-        if any(fnmatch.fnmatchcase(kind.value, pattern) for pattern, _ in self._hooks):
+        route = self._route(kind)
+        if route.hooks:
             return True
-        level = self.logging.level_for(kind, self.level(kind))
-        if level is None:
-            return False
-        return logging.getLogger(f"dynamoxy.{kind.value.split('.', 1)[0]}").isEnabledFor(_LEVELS[level])
+        logger = route.logger
+        return logger is not None and logger.isEnabledFor(route.level)
 
     def wanted(self) -> list[EventKind]:
         """The core kinds somebody listens to (only these are recorded by the core).
@@ -238,9 +269,7 @@ class EventDispatcher:
     def dispatch_event(self, event: Event) -> None:
         """Logs ``event`` and calls the hooks that match it."""
         self._log(event)
-        for pattern, hook in list(self._hooks):
-            if not fnmatch.fnmatchcase(event.kind.value, pattern):
-                continue
+        for hook in self._route(event.kind).hooks:
             try:
                 result = hook(event)
             except Exception as error:  # noqa: BLE001 - a failing hook must never break the library
@@ -286,11 +315,17 @@ class EventDispatcher:
                     _logger.exception("event hook %r failed for hook.failed", other)
 
     def _log(self, event: Event, exc_info: BaseException | None = None) -> None:
-        level_name = self.logging.level_for(event.kind, event.level)
-        if level_name is None:
-            return
-        logger = logging.getLogger(f"dynamoxy.{event.category}")
-        level = _LEVELS[level_name]
+        if event.level == self.level(event.kind):
+            route = self._route(event.kind)
+            logger, level = route.logger, route.level
+            if logger is None:
+                return
+        else:
+            level_name = self.logging.level_for(event.kind, event.level)
+            if level_name is None:
+                return
+            logger = logging.getLogger(f"dynamoxy.{event.category}")
+            level = _LEVELS[level_name]
         if not logger.isEnabledFor(level):
             return
         message = event.message

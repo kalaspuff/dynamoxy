@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     from dynamoxy.results import OperationRecord
 
 __all__ = ["Collector", "Telemetry", "collect"]
+
+_UNKNOWN: Any = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +160,11 @@ def record(entry: OperationRecord) -> None:
         collector.records.append(entry)
 
 
+def active_collectors() -> tuple[Collector, ...]:
+    """The collectors of the current context (an operation is recorded by each of them)."""
+    return _COLLECTORS.get()
+
+
 class TelemetryRecorder:
     """Creates spans and records OpenTelemetry metrics (no-op without ``opentelemetry-api``)."""
 
@@ -172,6 +180,13 @@ class TelemetryRecorder:
         self._tracer: Any = None
         self._instruments: dict[str, Any] | None = None
         self._otel: Any = None
+        self._otel_metrics: Any = None
+        self._trace_globals: dict[str, Any] = {}
+        self._metrics_globals: dict[str, Any] = {}
+        # The global proxy providers while no OpenTelemetry SDK is configured: their spans and
+        # instruments record nothing, so the work around them is skipped until one is set.
+        self._tracer_proxy: Any = None
+        self._meter_proxy: Any = None
         if settings is None or not (settings.tracing or settings.metrics):
             return
         try:
@@ -181,9 +196,21 @@ class TelemetryRecorder:
         from dynamoxy import __version__
 
         self._otel = trace
+        self._otel_metrics = metrics
+        # Where the API keeps the global providers (`set_*_provider`); the proxies check the same.
+        self._trace_globals = vars(trace)
+        self._metrics_globals = vars(sys.modules.get("opentelemetry.metrics._internal", metrics))
         if settings.tracing:
             self._tracer = trace.get_tracer("dynamoxy", __version__, tracer_provider=settings.tracer_provider)
+            if settings.tracer_provider is None:
+                provider = trace.get_tracer_provider()
+                if isinstance(provider, trace.ProxyTracerProvider):
+                    self._tracer_proxy = provider
         if settings.metrics:
+            if settings.meter_provider is None:
+                provider = metrics.get_meter_provider()
+                if type(provider).__name__ == "_ProxyMeterProvider":
+                    self._meter_proxy = provider
             meter = metrics.get_meter("dynamoxy", __version__, meter_provider=settings.meter_provider)
             self._instruments = {
                 "duration": meter.create_histogram(
@@ -207,6 +234,30 @@ class TelemetryRecorder:
     def tracing(self) -> bool:
         """Whether spans are created."""
         return self._tracer is not None
+
+    def recording_tracer(self) -> Any:
+        """The tracer, unless spans would record nothing (no tracer, or no SDK configured yet)."""
+        proxy = self._tracer_proxy
+        if proxy is not None:
+            # Like the API's proxy tracer, look at the global provider without a function call
+            # (`get_tracer_provider()` also reads the environment on every call).
+            current = self._trace_globals.get("_TRACER_PROVIDER", _UNKNOWN)
+            if current is None or (current is _UNKNOWN and self._otel.get_tracer_provider() is proxy):
+                return None
+            self._tracer_proxy = None  # an SDK provider was set; it cannot be unset
+        return self._tracer
+
+    def recording_metrics(self) -> bool:
+        """Whether metrics are recorded (instruments exist and an SDK is configured)."""
+        if self._instruments is None:
+            return False
+        proxy = self._meter_proxy
+        if proxy is not None:
+            current = self._metrics_globals.get("_METER_PROVIDER", _UNKNOWN)
+            if current is None or (current is _UNKNOWN and self._otel_metrics.get_meter_provider() is proxy):
+                return False
+            self._meter_proxy = None
+        return True
 
     def base_attributes(self, operation: str, table: str | None) -> dict[str, Any]:
         """Attributes every span and metric of an operation carries."""
@@ -277,7 +328,7 @@ class TelemetryRecorder:
         error: BaseException | None,
     ) -> None:
         """Adds the outcome to a span (``output`` is the native response, usually a dict)."""
-        if span is None:
+        if span is None or not span.is_recording():
             return
         span.set_attribute("dynamoxy.attempts", entry.attempts)
         if entry.throttles:
@@ -306,9 +357,10 @@ class TelemetryRecorder:
 
     def record_metrics(self, entry: OperationRecord) -> None:
         """Records the metrics of one finished call."""
-        instruments = self._instruments
-        if instruments is None:
+        if not self.recording_metrics():
             return
+        instruments = self._instruments
+        assert instruments is not None
         attributes = self.base_attributes(entry.operation, entry.table)
         attributes.pop("aws.dynamodb.table_names", None)
         if entry.error is not None:
