@@ -87,6 +87,25 @@ async def test_save_of_a_new_versioned_item_requires_absence(users: dynamoxy.Rep
         await users.save(make_user(email="second@example.com"))
 
 
+async def test_copies_save_like_new_instances(users: dynamoxy.Repository[User]) -> None:
+    original = await users.create(make_user("u1"))
+    await users.update(original, User.visits.add(1))
+    clone = original.copy(user_id="u2", email="u2@example.com")
+    assert (clone.version, clone.created_at, clone.updated_at, clone.is_loaded) == (None, None, None, False)
+    assert clone.visits == 1, "the other values are copied"
+    await users.save(clone)  # a new item: version 1 and timestamps of its own
+    assert clone.version == 1
+    assert clone.created_at is not None
+    assert original.created_at is not None
+    assert clone.created_at > original.created_at
+    assert (await users.get_or_raise("u1")).version == 2, "the original is unchanged"
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.save(original.copy(name="Same key"))  # like a new instance: the key must be free
+    kept = original.copy(user_id="u3", email="u3@example.com", created_at=original.created_at)
+    await users.create(kept)
+    assert kept.created_at == original.created_at, "automatic fields given as changes are kept"
+
+
 async def test_update_actions(users: dynamoxy.Repository[User]) -> None:
     user = await users.create(make_user(tags={"a"}))
     created = user.created_at

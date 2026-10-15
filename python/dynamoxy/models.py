@@ -327,14 +327,31 @@ class Document:
         schema_of(type(self)).validate(self)
 
     def copy(self, **changes: Any) -> Self:
-        """A copy with some fields changed (validated).
+        """A new, unsaved instance with the same values and some fields changed (validated).
 
-        The copy is not "loaded": saving it behaves like saving a new instance.
+        Automatic fields (``created_at``, ``updated_at``, ``version``) start empty, as in a
+        constructed instance, so saving the copy behaves like saving a new instance: a versioned
+        copy is written with version 1, and its ``save()`` fails if the key exists. Pass them in
+        ``changes`` to keep them (``item.copy(created_at=item.created_at)``). ``copy.copy()`` and
+        ``copy.deepcopy()`` make exact duplicates instead.
         """
-        clone = _copy.deepcopy(self)
-        clone.__dict__.pop(_STATE, None)
+        values = {name: value for name, value in self.__dict__.items() if name != _STATE}
+        clone = object.__new__(type(self))
+        clone.__dict__.update(_copy.deepcopy(values))
+        for name in schema_of(type(self))._automatic:
+            clone.__dict__[name] = None
         for name, value in changes.items():
             setattr(clone, name, value)
+        return clone
+
+    def __copy__(self) -> Self:
+        # A shallow duplicate with a persistence state of its own: writing one of them must not
+        # change what the other knows about its stored item.
+        clone = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        state = self.__dict__.get(_STATE)
+        if state is not None:
+            clone.__dict__[_STATE] = _copy.copy(state)
         return clone
 
 

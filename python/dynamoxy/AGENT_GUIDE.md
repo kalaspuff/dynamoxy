@@ -195,6 +195,9 @@ Rules that are easy to miss:
   `copy`, ...). Name the field differently and keep the stored name with `attribute_name=`.
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
+- `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
+  `updated_at`, `version`) start empty, so saving it writes a new item. `copy.copy(item)` and
+  pydantic's `model_copy()` duplicate the instance as it is, loaded state included.
 - DynamoDB reserved words (`name`, `status`, `count`, ...) are fine as attribute names:
   dynamoxy always uses placeholders.
 

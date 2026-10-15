@@ -639,6 +639,8 @@ class ModelSchema:
             (spec.name, spec.settable_in_init, spec, _value_check(spec)) for spec in fields
         )
         self._timestamps = self.created_at_field is not None or self.updated_at_field is not None
+        # Fields dynamoxy sets on writes (empty in new instances and copies).
+        self._automatic: tuple[str, ...] = tuple(spec.name for spec in fields if spec.auto in automatic)
         self._settable: frozenset[str] = frozenset(spec.name for spec in fields if spec.settable_in_init)
         self._dict_backed: bool = bool(getattr(self.adapter, "dict_backed", False))
         self._paths: dict[str, Path[Any]] = {}

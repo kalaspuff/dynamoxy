@@ -34,3 +34,17 @@ async def test_existing_models_through_a_subclass(client: dynamoxy.Client) -> No
     assert loaded == ContactRecord.model_validate(existing.model_dump())
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await contacts.create(ContactRecord(contact_id="c2", email="ada@example.com", name="Bo"))
+
+
+async def test_model_copies_track_their_own_stored_item(client: dynamoxy.Client) -> None:
+    await client.create_tables(Account)
+    accounts = client.repository(Account)
+    ada = await accounts.create(Account(account_id="a1", owner="Ada", handle="ada"))
+    bob = ada.model_copy(update={"account_id": "a2", "owner": "Bob", "handle": "bob", "version": None})
+    await accounts.create(bob)
+    # The guard transition of `ada` uses what `ada` knows about its stored item, not `bob`'s.
+    await accounts.update(ada, dynamoxy.attr(Account.handle).set("ada2"))
+    assert (await accounts.get_or_raise("a1")).handle == "ada2"
+    await accounts.create(Account(account_id="a3", owner="Cy", handle="ada"))  # free again
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await accounts.create(Account(account_id="a4", owner="Di", handle="bob"))  # still taken
