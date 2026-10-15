@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -253,10 +254,36 @@ def test_validators_and_hooks_are_collected() -> None:
 
 def test_copy_is_not_loaded() -> None:
     user = make_user()
-    copy = user.copy(name="Bob")
-    assert copy.name == "Bob"
+    clone = user.copy(name="Bob")
+    assert clone.name == "Bob"
     assert user.name == "Ada"
-    assert not copy.is_loaded
+    assert not clone.is_loaded
+
+
+def test_copy_starts_automatic_fields_empty() -> None:
+    stored = User.from_item(
+        {
+            "user_id": "u1",
+            "email": "ada@example.com",
+            "name": "Ada",
+            "created_at": "2026-01-01T00:00:00.000000+00:00",
+            "updated_at": "2026-01-02T00:00:00.000000+00:00",
+            "version": 3,
+        }
+    )
+    clone = stored.copy(name="Bob")
+    assert (clone.created_at, clone.updated_at, clone.version) == (None, None, None)
+    assert (clone.user_id, clone.name) == ("u1", "Bob")
+    assert (stored.version, stored.name) == (3, "Ada"), "the original keeps its values"
+    assert stored.copy(version=3).version == 3, "unless they are given"
+
+
+def test_python_copies_have_their_own_persistence_state() -> None:
+    stored = User.from_item({"user_id": "u1", "email": "ada@example.com", "name": "Ada", "version": 3})
+    for duplicate in (copy.copy(stored), copy.deepcopy(stored)):
+        assert duplicate == stored
+        assert duplicate.is_loaded, "an exact duplicate, loaded like the original"
+        assert duplicate.__dict__["__dynamoxy_state__"] is not stored.__dict__["__dynamoxy_state__"]
 
 
 def test_documents_accept_dicts() -> None:

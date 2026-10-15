@@ -39,6 +39,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Fixed
 
+- `Model.copy()` kept the copied `version` (and timestamps), so saving a copy of a versioned
+  instance under a new key failed with `VersionConflictError`. Copies now start with empty
+  automatic fields, as the documentation promised: saving one writes a new item.
+- Shallow copies (`copy.copy()`, pydantic's `model_copy()`) shared their original's persistence
+  state, so writing one changed what the other knew about its stored item (updates of unique
+  attributes of the original could then fail). Each copy now has its own.
 - Updates that change a field a key template uses by arithmetic or a function (`add`,
   `increment`, `set(path + n)`, `set_if_not_exists`, nested paths) wrote the templated attribute
   rendered from the old value, so a leaderboard key such as `SCORE#{score:08d}` kept the old

@@ -27,7 +27,8 @@ Plain ``pydantic.BaseModel`` classes can be nested in any model; they are stored
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+import copy
+from typing import TYPE_CHECKING, Any, ClassVar, Self, override
 
 from pydantic import BaseModel, ConfigDict
 from pydantic_core import PydanticUndefined
@@ -229,6 +230,15 @@ class PydanticModel(BaseModel):
     @classmethod
     def __dynamoxy_build_schema__(cls) -> ModelSchema:
         return _build(cls, cls.__dynamoxy_options__)
+
+    @override
+    def __copy__(self) -> Self:
+        # model_copy() and copy.copy(): a persistence state of its own, as for native models.
+        clone = super().__copy__()
+        state = self.__dict__.get(_STATE)
+        if state is not None:
+            clone.__dict__[_STATE] = copy.copy(state)
+        return clone
 
     def to_item(self) -> dict[str, Any]:
         """The stored form (attribute names, encoded values, derived keys, type attribute)."""
