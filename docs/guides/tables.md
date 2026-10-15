@@ -4,7 +4,9 @@
 
 Models declare logical table names (`table="users"`). The client maps them to physical names:
 `Client(table_prefix="prod-")` makes `users` → `prod-users`; `table_names={"users":
-"legacy_users"}` maps single names. `client.table_name("users")` returns the physical name.
+"legacy_users"}` maps single names (without the prefix). `client.table_name("users")` returns the
+physical name. See [Deployment](deployment.md#environments-sharing-an-account) for environments
+sharing an account.
 
 ## Creating and evolving
 

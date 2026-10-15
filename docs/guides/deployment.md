@@ -53,6 +53,23 @@ found, connecting (the first call, or `async with`) raises `ConfigurationError`,
 `endpoint_url` is set: then `us-east-1` is used, which local endpoints such as DynamoDB Local and
 MiniStack ignore.
 
+## Environments sharing an account
+
+Several environments (developers, QA, staging) can share one AWS account and region with
+`table_prefix=`: models keep their logical names (`table="users"`) and the client adds the
+prefix, so `Client(table_prefix="qa-1-")` uses `qa-1-users`. Read the prefix from your settings:
+
+```python
+dynamoxy.Client(table_prefix=settings.table_prefix)  # e.g. APP_TABLE_PREFIX="dev-alice-"
+```
+
+- The prefix applies to repositories, `client.table()`, batches, transactions and
+  `create_tables()` / `ensure_tables()`, so each environment creates and uses its own tables.
+- `table_names={"users": "shared-users"}` maps single logical names; these names are used as
+  given, without the prefix.
+- Separate the environments in IAM too: grant each one only `arn:...:table/qa-1-*` (indexes
+  included).
+
 ## IAM permissions
 
 Grant the actions you use on the table ARNs and `arn:...:table/<name>/index/*`:

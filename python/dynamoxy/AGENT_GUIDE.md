@@ -606,8 +606,10 @@ from the models (create a new table and migrate). Local indexes can only be crea
 table. In production, prefer infrastructure as code for tables and call `ensure_tables()` only
 in development and tests.
 
-`Client(table_prefix="dev-")` separates environments sharing an account;
-`table_names={"users": "legacy_users"}` maps individual logical names.
+`Client(table_prefix="dev-")` separates environments sharing an account (`users` →
+`dev-users`, for every operation including `create_tables()`); read the prefix from settings
+rather than putting environment names in models. `table_names={"users": "legacy_users"}` maps
+individual logical names, used as given without the prefix.
 
 ## 11. The dict-level API and PartiQL
 

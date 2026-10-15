@@ -16,7 +16,9 @@ It is authoritative for the installed version; this skill only summarizes it.
 ## Non-negotiables
 
 1. One `dynamoxy.Client` per process, created after `fork()`, shared, and closed at shutdown
-   (`async with client:`). Tests use `dynamoxy.testing.memory_client()`.
+   (`async with client:`). Tests use `dynamoxy.testing.memory_client()`. Environments sharing
+   an AWS account use `Client(table_prefix="dev-")` (`users` → `dev-users`), not per-environment
+   table names in models.
 2. Models subclass `dynamoxy.Model` (or `dynamoxy.PydanticModel`) with `table="..."`; fields are
    `Attr[T]` with `field()`, `partition_key()`, `sort_key()`; automatic fields use `created_at()`,
    `updated_at()`, `version()`, `ttl(default=None)`.
