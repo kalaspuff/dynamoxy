@@ -11,7 +11,7 @@ import dynamoxy
 from dynamoxy import F
 from tests.conftest import ClientFactory
 from tests.helpers import at
-from tests.models import Customer, Event, Order, OrderStatus, Status, User
+from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
 
 
 def make_user(user_id: str = "u1", **changes: Any) -> User:
@@ -165,6 +165,29 @@ async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
     )
     paid = await orders.get_or_raise(customer_id="c1", order_id="o1")
     assert (paid.status, paid.gsi1pk, paid.total) == (OrderStatus.PAID, "STATUS#paid", 10)
+
+
+async def test_derived_attributes_follow_arithmetic_updates(client: dynamoxy.Client) -> None:
+    await client.create_tables(Player)
+    players = client.repository(Player)
+    ada = await players.create(Player(player_id="p1", name="Ada"))
+    await players.create(Player(player_id="p2", name="Bo", score=5))
+    await players.update(ada, Player.score.add(10))  # a loaded instance: computed from the stored item
+    assert ada.rank == "SCORE#00000010"
+    await players.update(Player.key("p2"), Player.score.set(Player.score + 20))  # by key: read first
+    async with client.transaction() as tx:
+        tx.update(ada, Player.score.increment(3))
+    assert ada.rank == "SCORE#00000013"
+    created = await players.update(
+        Player.key("p3"), Player.name.set_if_not_exists("Cy"), Player.score.add(7), upsert=True
+    )
+    assert created.rank == "SCORE#00000007"
+    ranked = await players.query(index=Player.by_rank, board="global").descending().all()
+    assert [(player.player_id, player.rank) for player in ranked] == [
+        ("p2", "SCORE#00000025"),
+        ("p1", "SCORE#00000013"),
+        ("p3", "SCORE#00000007"),
+    ]
 
 
 async def test_update_conditions_and_version_conflicts(users: dynamoxy.Repository[User]) -> None:
