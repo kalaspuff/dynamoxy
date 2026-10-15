@@ -67,7 +67,8 @@ outside the repository if the workspace is a slow mounted volume.
    The binding crate contains conversions only.
 2. **Never break the invariants** in docs/architecture.md (fail fast before I/O, no values in
    expressions, unique guards consistent, versions checked, both backends equal, nothing dropped
-   silently, fork safety, clean exit, stored formats stable, no payload logging).
+   silently, fork safety, clean exit, instances bound to their repository, stored formats
+   stable, no payload logging).
 3. **Every behaviour change ships with tests, docs and a changelog-worthy commit message.** CI
    enforces formatting, lint, types (pyrefly), clippy `-D warnings`, tests on Python 3.12-3.15,
    and `scripts/check_consistency.py`.

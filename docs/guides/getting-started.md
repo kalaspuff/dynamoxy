@@ -72,11 +72,18 @@ how to get the definitions).
 users = client.repository(User)
 
 ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
-await users.update(ada, User.visits.add(1))          # atomic, refreshes `ada` in place
+await ada.increment(User.visits)                     # atomic, refreshes `ada` in place
+ada.name = "Ada Lovelace"
+await ada.save()                                     # writes the changed instance
 same = await users.get("u1")
 by_email = await users.query(index=User.by_email, email="ada@example.com").first()
-await users.delete(ada)
+await ada.delete()
 ```
+
+An instance remembers the repository that read or wrote it, so `ada.save()` is
+`users.save(ada)` and `ada.increment(User.visits)` is `users.update(ada, User.visits.add(1))`.
+The repository does the same by key, without an instance:
+`await users.update(User.key("u1"), User.visits.add(1))`.
 
 ## Next steps
 

@@ -30,7 +30,9 @@ async def main() -> None:
         users = client.repository(User)
 
         ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
-        await users.update(ada, User.visits.add(1))  # atomic; `ada` is refreshed in place
+        await ada.increment(User.visits)  # atomic; `ada` is refreshed in place
+        ada.name = "Ada Lovelace"
+        await ada.save()  # only if nobody changed it meanwhile (version)
 
         try:
             await users.create(User(user_id="u2", email="ada@example.com", name="Imposter"))

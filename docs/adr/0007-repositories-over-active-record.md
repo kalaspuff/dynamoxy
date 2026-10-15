@@ -1,6 +1,7 @@
 # 0007: Repositories (data mapper) instead of active record
 
-Status: Accepted
+Status: Accepted, amended by [0011](0011-instances-remember-their-repository.md) (instances remember
+the repository that read or wrote them and offer `save()`, `delete()`, ... through it)
 
 ## Context
 

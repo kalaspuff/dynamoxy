@@ -40,6 +40,10 @@ same evaluator the in-memory DynamoDB uses), so `account.balance` is the new bal
 another read. This is exact for versioned models; for others, writes made by other clients
 between your read and the commit are not reflected (call `refresh()` if that matters).
 
+A transaction writes each instance through the repository it is bound to (when it uses the
+transaction's client), so instances stay bound to the repository that read them:
+`await account.save()` after the commit still goes through your `AccountRepository`.
+
 Update hooks (`before_update`/`after_update`) run for updates of instances, like save and delete
 hooks for theirs.
 

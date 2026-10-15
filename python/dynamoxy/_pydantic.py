@@ -47,7 +47,7 @@ from dynamoxy.attributes import (
     Version,
 )
 from dynamoxy.codecs import DateTimeCodec, UseCodec
-from dynamoxy.models import _STATE
+from dynamoxy.models import _STATE, _Persistence
 from dynamoxy.schema import (
     ModelOptions,
     ModelSchema,
@@ -180,12 +180,15 @@ def build_plain_schema(model: type[BaseModel]) -> ModelSchema:
     return _build(model, ModelOptions(abstract=True))
 
 
-class PydanticModel(BaseModel):
+class PydanticModel(BaseModel, _Persistence):
     """A pydantic model stored in DynamoDB. Class keywords are the same as :class:`dynamoxy.Model`'s.
 
     Indexes are class attributes (``by_email = dynamoxy.GlobalIndex(partition_key="email")``).
     Instances compare like any pydantic model: an instance read from DynamoDB equals a new one
-    with the same values.
+    with the same values. Like native models, instances that a repository read or wrote can
+    persist themselves: ``save()``, ``delete()``, ``update(...)``, ``add(...)``,
+    ``increment(...)``, ``decrement(...)`` and ``refresh()`` (paths as ``dynamoxy.attr(Model.field)``
+    for static typing).
     """
 
     model_config = ConfigDict(ignored_types=(_IndexDeclaration,), validate_assignment=True)

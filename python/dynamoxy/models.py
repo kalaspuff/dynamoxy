@@ -26,16 +26,26 @@
             if self.name.strip() != self.name:
                 raise ValueError("name must not start or end with spaces")
 
-Models validate on construction and on assignment, and are plain objects: persistence goes
-through a :class:`dynamoxy.Repository` (``client.repository(User)``), so models never hold a
-connection.
+Models validate on construction and on assignment. Persistence goes through a
+:class:`dynamoxy.Repository` (``client.repository(User)``); model classes hold no client, so
+several clients can use the same models. An instance that a repository read or wrote remembers
+that repository and can persist itself through it::
+
+    user = await users.get_or_raise("u1")
+    user.name = "Ada"
+    await user.save()  # users.save(user)
+    await user.increment(User.visits)  # users.update(user, User.visits.increment())
+    await user.delete()  # users.delete(user)
 """
 
 from __future__ import annotations
 
 import copy as _copy
 import dataclasses
-from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform
+from collections.abc import Hashable
+from collections.abc import Set as AbstractSet
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform, overload
 
 from dynamoxy._utils import MISSING
 from dynamoxy.attributes import (
@@ -49,7 +59,8 @@ from dynamoxy.attributes import (
     updated_at,
     version,
 )
-from dynamoxy.errors import FieldError, validation_error
+from dynamoxy.errors import FieldError, ValidationError, validation_error
+from dynamoxy.expressions import Arithmetic, IfNotExists, ListAppend, Path, UpdateAction, Value
 from dynamoxy.schema import (
     ModelOptions,
     ModelSchema,
@@ -64,8 +75,11 @@ from dynamoxy.schema import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
+    from datetime import timedelta
 
-    from dynamoxy.codecs import DateTimeFormat
+    from dynamoxy.codecs import Codec, DateTimeFormat
+    from dynamoxy.expressions import Condition
+    from dynamoxy.repository import Repository
 
 __all__ = [
     "Document",
@@ -100,8 +114,9 @@ def validator[F: Callable[..., Any]](function: F) -> F:
 def before_save[F: Callable[..., Any]](function: F) -> F:
     """Marks a method (sync or async) that runs before the instance is written.
 
-    It runs for put, create, save, batch puts and transactions, may change the instance, and
-    aborts the write by raising. Updates run :func:`before_update` hooks instead.
+    It runs for put, create, save (also ``instance.save()``), batch puts and transactions, may
+    change the instance, and aborts the write by raising. Updates run :func:`before_update`
+    hooks instead.
     """
     return _mark(function, "before_save")
 
@@ -114,7 +129,8 @@ def after_save[F: Callable[..., Any]](function: F) -> F:
 def before_update[F: Callable[..., Any]](function: F) -> F:
     """Marks a method (sync or async) that runs before an update of the instance.
 
-    It runs for ``update()`` of an instance, in repositories and transactions, and aborts the
+    It runs for ``update()`` of an instance (in repositories and transactions) and for the
+    instance's own ``update()``, ``add()``, ``increment()`` and ``decrement()``, and aborts the
     update by raising. The update writes its actions only: changes the hook makes to the
     instance are not stored. Updates by key have no instance and run no hooks.
     """
@@ -172,10 +188,10 @@ class NativeAdapter:
         values = source.__dict__
         instance.__dict__.update({name: values.get(name) for name in names})
 
-    def load_stored(self, values: dict[str, Any], stored: dict[str, Any]) -> Any:
-        """``load`` and record ``stored`` as the instance's stored item, in one step."""
+    def load_stored(self, values: dict[str, Any], stored: dict[str, Any], repository: Repository[Any] | None) -> Any:
+        """``load``, recording ``stored`` as the instance's stored item read by ``repository``."""
         instance = object.__new__(self.model)
-        values[_STATE] = ModelState(stored)
+        values[_STATE] = ModelState(stored, repository)
         instance.__dict__.update(values)
         return instance
 
@@ -217,7 +233,7 @@ class Document:
         for name, annotation in own_annotations(cls).items():
             if name.startswith("_") or _is_class_var(annotation):
                 continue
-            if name in _RESERVED_NAMES:
+            if name in _reserved_names(cls):
                 raise TypeError(
                     f"{cls.__name__}.{name}: the name is part of the model API ({name}); name the field "
                     f"differently and keep the stored name with attribute_name={name!r}"
@@ -430,7 +446,349 @@ def _class_values(cls: type) -> list[Any]:
     return list(values.values())
 
 
-class Model(Document):
+#: Paths of sets and lists of ``E`` (for the overloads of ``add``).
+type _SetPath[E] = Path[set[E]] | Path[frozenset[E]] | Path[set[E] | None] | Path[frozenset[E] | None]
+type _ListPath[E] = Path[list[E]] | Path[tuple[E, ...]] | Path[list[E] | None] | Path[tuple[E, ...] | None]
+type _Condition = Condition | bool | None
+
+
+class _Persistence:
+    """Persistence methods of model instances (:class:`Model` and ``PydanticModel``).
+
+    An instance remembers the repository that last read or wrote it, next to the stored copy.
+    These methods call that repository's public methods (``save``, ``update``, ``delete``,
+    ``refresh``), so they behave exactly like them (validation, hooks, versions, unique
+    guards, automatic and derived fields) and go through the overrides of repository
+    subclasses. Instances no repository read or wrote (new ones, ``copy()``, unpickled ones)
+    are not bound: their methods raise ``RuntimeError`` before any I/O.
+    """
+
+    __slots__ = ()
+
+    async def save(self, *, condition: Condition | bool | None = None) -> Self:
+        """Writes the instance: creates the item, or replaces the stored one (``repository.save``).
+
+        For models with a ``version()`` field, the write only succeeds if the stored item is
+        still the one this instance was loaded with.
+
+        Example::
+
+            customer = await customers.get_or_raise("c1")
+            customer.name = "Ada"
+            await customer.save()
+
+        Raises:
+            VersionConflictError: The stored version differs (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            UniqueConstraintError: A unique value is taken.
+            ValidationError: The instance is invalid.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        return await _repository_of(self, "save", "save").save(self, condition=condition)
+
+    async def delete(self, *, condition: Condition | bool | None = None) -> Self | None:
+        """Deletes the item (``repository.delete``).
+
+        The instance is no longer loaded afterwards, but stays bound to the repository.
+
+        Returns:
+            The item as it was stored (a new instance), or ``None`` when nothing was stored.
+
+        Raises:
+            VersionConflictError: The item changed since it was loaded (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        return await _repository_of(self, "delete", "delete").delete(self, condition=condition)
+
+    async def update(
+        self, *actions: UpdateAction, condition: Condition | bool | None = None, upsert: bool = False
+    ) -> Self:
+        """Applies update actions atomically and refreshes the instance (``repository.update``).
+
+        Example::
+
+            await order.update(Order.status.set("paid"), Order.events.append_or_create(["paid"]))
+
+        Raises:
+            ItemNotFoundError: The item no longer exists (unless ``upsert``).
+            VersionConflictError: The item changed since it was loaded (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            ValueError: An action targets a key, immutable or derived attribute (see ``update``).
+            RuntimeError: The instance is not bound to a repository.
+        """
+        repository = _repository_of(self, "update", "update")
+        return await repository.update(self, *actions, condition=condition, upsert=upsert)
+
+    # Overloads let type checkers check the value against the attribute: elements for sets and
+    # lists, numbers of the attribute's type otherwise. Nested paths (``Path[Any]``) accept any.
+
+    @overload
+    async def add[E](self, path: _SetPath[E], value: E | AbstractSet[E], *, condition: _Condition = None) -> Self: ...
+    @overload
+    async def add[E](self, path: _ListPath[E], value: E, *, condition: _Condition = None) -> Self: ...
+    @overload
+    async def add(self, path: Path[int] | Path[int | None], value: int, *, condition: _Condition = None) -> Self: ...
+    @overload
+    async def add(
+        self, path: Path[float] | Path[float | None], value: float, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def add(
+        self, path: Path[Decimal] | Path[Decimal | None], value: Decimal | int, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def add(
+        self, path: Path[timedelta] | Path[timedelta | None], value: timedelta, *, condition: _Condition = None
+    ) -> Self: ...
+    async def add(self, path: Path[Any], value: Any, *, condition: Condition | bool | None = None) -> Self:
+        """Adds ``value`` atomically: to a number, as an element of a set, or at the end of a list.
+
+        ``path`` is a field (``Player.score``) or a nested path (``Player.stats["wins"]``). Sets
+        take one element or a set of elements; lists take one element and are created when
+        missing; missing numbers count as 0. The value is validated with the field's type
+        before any I/O. The instance is refreshed with the stored result.
+
+        Example::
+
+            await player.add(Player.badges, "first-win")
+            await player.add(Player.history, "won")
+            await player.add(Player.coins, Decimal("2.5"))
+
+        Raises:
+            TypeError: ``path`` holds neither numbers, sets nor lists, or is not a field of this model.
+            ValueError: ``value`` is an empty set.
+            ValidationError: ``value`` does not fit the attribute.
+            VersionConflictError: The item changed since it was loaded (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        repository = _repository_of(self, "add", "update")
+        return await repository.update(self, _add_action(self, path, value), condition=condition)
+
+    @overload
+    async def increment(
+        self, path: Path[int] | Path[int | None], amount: int = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def increment(
+        self, path: Path[float] | Path[float | None], amount: float = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def increment(
+        self, path: Path[Decimal] | Path[Decimal | None], amount: Decimal | int = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def increment(
+        self, path: Path[timedelta] | Path[timedelta | None], amount: timedelta, *, condition: _Condition = None
+    ) -> Self: ...
+    async def increment(
+        self, path: Path[Any], amount: float | Decimal | timedelta = 1, *, condition: Condition | bool | None = None
+    ) -> Self:
+        """Adds ``amount`` (default 1) to a number atomically; a missing number counts as 0.
+
+        Works on fields (``Player.score``) and nested paths (``Player.stats["wins"]``). DynamoDB
+        does the arithmetic, so constraints such as ``ge=0`` cannot be checked locally: guard
+        the change with a condition (``condition=Player.score >= 1``) when they matter.
+
+        Example::
+
+            await page.increment(Page.views)
+            await player.increment(Player.stats["wins"], 2)
+
+        Raises:
+            TypeError: ``path`` does not hold numbers, or is not a field of this model.
+            ValidationError: ``amount`` does not fit the attribute (``0.5`` for an ``int``).
+            VersionConflictError: The item changed since it was loaded (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        repository = _repository_of(self, "increment", "update")
+        return await repository.update(self, _number_action(self, "increment", path, amount), condition=condition)
+
+    @overload
+    async def decrement(
+        self, path: Path[int] | Path[int | None], amount: int = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def decrement(
+        self, path: Path[float] | Path[float | None], amount: float = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def decrement(
+        self, path: Path[Decimal] | Path[Decimal | None], amount: Decimal | int = 1, *, condition: _Condition = None
+    ) -> Self: ...
+    @overload
+    async def decrement(
+        self, path: Path[timedelta] | Path[timedelta | None], amount: timedelta, *, condition: _Condition = None
+    ) -> Self: ...
+    async def decrement(
+        self, path: Path[Any], amount: float | Decimal | timedelta = 1, *, condition: Condition | bool | None = None
+    ) -> Self:
+        """Subtracts ``amount`` (default 1) from a number atomically (see :meth:`increment`).
+
+        Example::
+
+            await account.decrement(Account.credits, 10, condition=Account.credits >= 10)
+
+        Raises:
+            TypeError: ``path`` does not hold numbers, or is not a field of this model.
+            ValidationError: ``amount`` does not fit the attribute.
+            VersionConflictError: The item changed since it was loaded (versioned models).
+            ConditionalCheckFailedError: ``condition`` did not hold.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        repository = _repository_of(self, "decrement", "update")
+        return await repository.update(self, _number_action(self, "decrement", path, amount), condition=condition)
+
+    async def refresh(self, *, consistent: bool = True) -> Self:
+        """Reloads the instance in place from DynamoDB (``repository.refresh``).
+
+        Raises:
+            ItemNotFoundError: The item no longer exists.
+            RuntimeError: The instance is not bound to a repository.
+        """
+        return await _repository_of(self, "refresh", "refresh").refresh(self, consistent=consistent)
+
+
+def _repository_of(instance: Any, method: str, repository_method: str) -> Repository[Any]:
+    """The repository an instance is bound to.
+
+    Raises:
+        RuntimeError: No repository read or wrote the instance.
+    """
+    state = instance.__dict__.get(_STATE)
+    repository = state.repository if state is not None else None
+    if repository is None:
+        name = type(instance).__name__
+        arguments = "item, ..." if repository_method == "update" else "item"
+        raise RuntimeError(
+            f"{name}.{method}(): this instance is not bound to a repository (no repository read or wrote it; "
+            "new instances, copies and unpickled instances are not bound). Use a repository once, for example "
+            f"`await client.repository({name}).{repository_method}({arguments})`; that binds the instance"
+        )
+    return repository
+
+
+def _target(instance: Any, path: Path[Any], method: str) -> tuple[str, Codec[Any] | None]:
+    """A description of ``path`` for messages, and the codec of its values (``None`` when unknown).
+
+    Raises:
+        TypeError: ``path`` is not a path, or a field of another model.
+    """
+    model = type(instance)
+    if not isinstance(path, Path):
+        raise TypeError(
+            f"{model.__name__}.{method}() takes an attribute path such as {model.__name__}.<field>, "
+            f"got {type(path).__name__} {path!r:.40}"
+        )
+    if isinstance(path, FieldPath) and not issubclass(model, path.model):
+        raise TypeError(f"{path.model.__name__}.{path.field_name} is not a field of {model.__name__}")
+    root, *rest = path.elements
+    spec = schema_of(model).attributes.get(str(root))
+    codec: Codec[Any] | None = spec.codec if spec is not None else None
+    for element in rest:
+        if codec is None:
+            break
+        codec = codec.element() if isinstance(element, int) else codec.member(element)
+    where = spec.name if spec is not None else str(root)
+    where += "".join(f"[{element}]" if isinstance(element, int) else f".{element}" for element in rest)
+    return f"{model.__name__}.{where}", codec
+
+
+def _checked(where: str, codec: Codec[Any] | None, value: Any, hint: str = "") -> Any:
+    """``value`` validated and encoded with ``codec`` (unchanged without one).
+
+    Raises:
+        ValidationError: ``value`` does not fit (the message starts with ``hint``).
+    """
+    if codec is None:
+        return value
+    try:
+        return codec.encode(codec.validate(value))
+    except ValueError as error:
+        raise _invalid(where, f"{hint}{error}", value) from None
+
+
+def _invalid(where: str, problem: str, value: Any) -> ValidationError:
+    return validation_error(f"{where}: {problem}", [FieldError(where.partition(".")[2], problem, value)])
+
+
+def _number(where: str, codec: Codec[Any] | None, amount: Any) -> float | Decimal:
+    """The stored form of a number to add to ``where``.
+
+    Raises:
+        ValidationError: ``amount`` is not a number the attribute accepts.
+    """
+    encoded = _checked(where, codec, amount)
+    if isinstance(encoded, bool) or not isinstance(encoded, (int, float, Decimal)):
+        raise _invalid(where, f"expected a number, got {type(amount).__name__} {amount!r:.60}", amount)
+    return encoded
+
+
+def _add_number(path: Path[Any], amount: float | Decimal) -> UpdateAction:
+    if len(path.elements) == 1:
+        return UpdateAction("ADD", path, Value(amount))
+    # DynamoDB documents ADD for top-level attributes; SET with if_not_exists works at any depth.
+    return UpdateAction("SET", path, Arithmetic(IfNotExists(path, Value(0)), "+", Value(amount)))
+
+
+def _number_action(instance: Any, method: str, path: Path[Any], amount: Any) -> UpdateAction:
+    """The action of ``increment()`` (or ``decrement()``) of ``path`` by ``amount``.
+
+    Raises:
+        TypeError: ``path`` does not hold numbers.
+        ValidationError: ``amount`` does not fit the attribute.
+    """
+    where, codec = _target(instance, path, method)
+    if codec is not None and codec.dynamo_type not in (None, "N"):
+        raise TypeError(f"{where} holds {codec.describe()} values: {method}() needs a number attribute")
+    encoded = _number(where, codec, amount)
+    return _add_number(path, -encoded if method == "decrement" else encoded)
+
+
+def _add_action(instance: Any, path: Path[Any], value: Any) -> UpdateAction:
+    """The action of ``add(path, value)``: by the attribute's type, or the value's when it is unknown.
+
+    Raises:
+        TypeError: The attribute holds neither numbers, sets nor lists.
+        ValueError: An empty set.
+        ValidationError: ``value`` does not fit the attribute.
+    """
+    where, codec = _target(instance, path, "add")
+    kind = codec.dynamo_type if codec is not None else None
+    if kind is None:  # untyped (Any, or not a field): numbers and sets, as DynamoDB's ADD
+        if isinstance(value, AbstractSet):
+            kind = "SS"
+        elif isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+            kind = "N"
+        else:
+            raise TypeError(
+                f"{where} has no known type, so add() takes a number or a set; append to a list with "
+                f"update({type(instance).__name__}.<path>.append_or_create([...]))"
+            )
+    if kind == "N":
+        return _add_number(path, _number(where, codec, value))
+    if kind in ("SS", "NS", "BS"):
+        if isinstance(value, AbstractSet):
+            elements = set(value)
+        elif isinstance(value, Hashable):
+            elements = {value}
+        else:
+            message = f"add() takes one element or a set of elements, got {type(value).__name__} {value!r:.60}"
+            raise _invalid(where, message, value)
+        if not elements:
+            raise ValueError(f"{where}: add() needs at least one element to add to a set")
+        return UpdateAction("ADD", path, Value(_checked(where, codec, elements)))
+    if kind == "L":
+        element_codec = codec.element() if codec is not None else None
+        element = _checked(where, element_codec, value, "add() appends one element: ")
+        return UpdateAction("SET", path, ListAppend(IfNotExists(path, Value([])), Value([element])))
+    assert codec is not None
+    raise TypeError(f"{where} holds {codec.describe()} values: add() works on numbers, sets and lists")
+
+
+class Model(Document, _Persistence):
     """A DynamoDB item type. Declare its table with class keywords.
 
     Args (class keywords):
@@ -508,5 +866,14 @@ class Model(Document):
         return state is not None and state.loaded
 
 
-#: Names of the model API that fields must not shadow.
-_RESERVED_NAMES = frozenset(name for name in (*vars(Document), *vars(Model)) if not name.startswith("_"))
+def _api_names(*classes: type) -> frozenset[str]:
+    return frozenset(name for cls in classes for name in vars(cls) if not name.startswith("_"))
+
+
+#: Names of the document and model APIs, which fields must not shadow.
+_DOCUMENT_API = _api_names(Document)
+_MODEL_API = _api_names(Document, Model, _Persistence)
+
+
+def _reserved_names(cls: type) -> frozenset[str]:
+    return _MODEL_API if issubclass(cls, Model) else _DOCUMENT_API

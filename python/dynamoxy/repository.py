@@ -28,6 +28,12 @@ Write semantics:
 
 Every write maintains ``created_at``/``updated_at``/``version`` fields, derived (templated)
 attributes, and unique guard items, and runs the lifecycle hooks.
+
+Instances remember the repository that last read or wrote them, so they can persist themselves
+through it: ``await user.save()`` is ``await users.save(user)``, ``await user.increment(User.visits)``
+is ``await users.update(user, User.visits.increment())``, and ``delete()``, ``update(...)``,
+``add(...)``, ``decrement(...)`` and ``refresh()`` work the same way, overrides of repository
+subclasses included.
 """
 
 from __future__ import annotations
@@ -204,7 +210,7 @@ class Repository[M]:
 
     def _load(self, item: dict[str, Any]) -> M:
         # Items come straight from responses: the instance's stored copy is the item itself.
-        instance = self.schema._decode(item, item)
+        instance = self.schema._decode(item, item, self)
         hooks = self.client.hooks
         if hooks.has("after_load", self.model_class):
             hooks.run_sync("after_load", instance, self._context("load"))
@@ -214,7 +220,7 @@ class Repository[M]:
         if self.client.hooks.has("after_load", self.model_class):
             return [self._load(item) for item in items]
         decode = self.schema._decode
-        return [decode(item, item) for item in items]
+        return [decode(item, item, self) for item in items]
 
     def key(self, *key: Any, **key_values: Any) -> dict[str, Any]:
         """The stored primary key from values.
@@ -324,6 +330,7 @@ class Repository[M]:
         state = self.schema.state(instance)
         if state is not None:
             state.stored = dict(item)
+            state.repository = self
 
     def query(self, *, index: str | GlobalIndex | LocalIndex | None = None, **key_values: Any) -> Query[M]:
         """Items of one partition of the table or of an index.
@@ -510,6 +517,7 @@ class Repository[M]:
         state = self.schema.state(instance)
         if state is not None:
             state.stored = dict(item) if item is not None else None
+            state.repository = self
 
     def _guard_conditions(self, old: Mapping[str, Any], specs: Iterable[FieldSpec]) -> list[Condition]:
         """Conditions that the unique values of the stored item are still ``old``'s."""
@@ -1004,6 +1012,7 @@ class Repository[M]:
                 state = schema.state(instance)
                 if state is not None:
                     state.stored = None
+                    state.repository = self  # stays bound
                 if hooks.has("after_delete", type(instance)):
                     await hooks.run("after_delete", instance, self._context("delete"))
 

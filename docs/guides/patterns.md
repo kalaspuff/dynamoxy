@@ -21,6 +21,12 @@ and makes services trivially testable with the memory client.
 Construct repositories once from the shared client (`OrderRepository(client)`) and inject them.
 `client.repository(Order)` returns a plain `Repository[Order]` when you need no extra methods.
 
+Instances remember the repository that read or wrote them, so code that already holds an
+instance can write it directly (`await order.save()`, `await order.increment(Order.reminders)`,
+`await order.delete()`). These calls go through that repository, overrides included, so a
+repository that adds auditing or tenant checks to `save()` sees them too. Keep queries and
+operations that encode business rules (`mark_paid` above) as repository methods.
+
 ## Services and the unit of work
 
 Services implement use cases. When a use case changes several items, use one transaction as the

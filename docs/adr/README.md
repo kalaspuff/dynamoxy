@@ -5,7 +5,8 @@ when a change alters a layer boundary, a stored or wire format, a default with b
 impact, or a guarantee (an invariant in [architecture.md](../architecture.md)). Number them in
 order (`NNNN-short-title.md`) and list them below; `scripts/check_consistency.py` checks the list.
 
-Status values: **Accepted**, **Superseded by NNNN**, **Deprecated**.
+Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR adjusts it),
+**Superseded by NNNN**, **Deprecated**.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -15,7 +16,8 @@ Status values: **Accepted**, **Superseded by NNNN**, **Deprecated**.
 | [0004](0004-expressions-built-in-python.md) | Expressions are built in Python and parsed, validated and evaluated in Rust | Accepted |
 | [0005](0005-unique-constraints-guard-items.md) | Unique attributes with guard items written in transactions | Accepted |
 | [0006](0006-attr-descriptors-dataclass-transform.md) | Fields are `Attr[T]` descriptors declared with `dataclass_transform` | Accepted |
-| [0007](0007-repositories-over-active-record.md) | Repositories (data mapper) instead of active record | Accepted |
+| [0007](0007-repositories-over-active-record.md) | Repositories (data mapper) instead of active record | Accepted, amended by 0011 |
 | [0008](0008-stored-formats.md) | Stored formats: codecs, sortable timestamps, entity types, cursors | Accepted |
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
 | [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |
+| [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted |

@@ -20,6 +20,7 @@ import itertools
 from typing import TYPE_CHECKING, Any, Self
 
 from dynamoxy.errors import UnprocessedItemsError
+from dynamoxy.schema import bound_repository
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -50,14 +51,19 @@ class BatchWriter:
     def __len__(self) -> int:
         return len(self._pending)
 
-    def _repository(self, model: type) -> Repository[Any]:
+    def _repository(self, model: type, target: Any = None) -> Repository[Any]:
+        """The repository that writes ``target``: the one it is bound to, if it uses this client.
+
+        Raises:
+            TypeError: The model has unique attributes.
+        """
         repository = self._repositories.get(model)
         if repository is None:
             repository = self.client.repository(model)
             if repository.schema.unique_fields:
                 raise TypeError(f"{model.__name__} has unique attributes; batch writes cannot maintain them")
             self._repositories[model] = repository
-        return repository
+        return bound_repository(target, model, self.client) or repository
 
     async def _queue(self, table: str, kind: str, item: dict[str, Any], identity: str, instance: Any = None) -> None:
         self._pending.pop((table, identity), None)
@@ -71,14 +77,14 @@ class BatchWriter:
 
     async def put(self, item: Any) -> None:
         """Queues a model instance (validated now; hooks run at flush)."""
-        repository = self._repository(type(item))
+        repository = self._repository(type(item), item)
         repository.schema.validate(item)
         await self._queue(repository.table_name, "put", {}, self._identity(repository.schema.key_of(item)), item)
 
     async def delete(self, target: Any, *, model: type | None = None) -> None:
         """Queues a delete by instance, or by stored key with ``model=``."""
         resolved = model or type(target)
-        repository = self._repository(resolved)
+        repository = self._repository(resolved, target)
         key = repository._target_key(target)
         instance = target if isinstance(target, resolved) else None
         await self._queue(repository.table_name, "delete", key, self._identity(key), instance)
@@ -109,7 +115,7 @@ class BatchWriter:
         for table, kind, item, instance in pending:
             if instance is not None:
                 model = type(instance)
-                repository = self._repositories.get(model) or self.client.repository(model)
+                repository = self._repository(model, instance)
                 if kind == "put":
                     if hooks.has("before_save", model):
                         await hooks.run("before_save", instance, repository._context("batch_put"))

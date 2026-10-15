@@ -13,6 +13,54 @@
 All writes validate first, run hooks, maintain automatic and derived fields and unique guards,
 and refresh the instance from DynamoDB's response.
 
+## Writing through an instance
+
+An instance that a repository read or wrote remembers that repository, so it can write itself:
+
+```python
+user = await users.get_or_raise("u1")
+user.name = "Ada"
+await user.save()                                     # users.save(user)
+await user.save(condition=User.status == "active")
+
+await user.increment(User.visits)                     # +1, atomic; a missing number counts as 0
+await user.decrement(User.credits, 10, condition=User.credits >= 10)
+await user.add(User.tags, "vip")                      # sets: one element, or a set of elements
+await user.add(User.history, "signed-in")             # lists: appended, created when missing
+await user.add(User.score, 5)                         # numbers
+await user.increment(User.stats["logins"])            # nested paths
+await user.update(User.name.set("Ada"), User.nickname.remove())  # any update actions
+await user.refresh()                                  # reload in place
+await user.delete()                                   # users.delete(user)
+```
+
+| Instance method | Does |
+| --- | --- |
+| `save(condition=)` | `repository.save(item, ...)`: creates the item or replaces it, with the version check for versioned models |
+| `delete(condition=)` | `repository.delete(item, ...)`: returns the item as it was stored, or `None` |
+| `update(*actions, condition=, upsert=)` | `repository.update(item, *actions, ...)` |
+| `add(path, value, condition=)` | an update that adds to a number, adds set elements or appends to a list |
+| `increment(path, amount=1, condition=)`, `decrement(...)` | an update of a number: `ADD` for attributes, `SET p = if_not_exists(p, 0) + n` for nested paths |
+| `refresh(consistent=True)` | `repository.refresh(item)` |
+
+- They call the repository's own methods, so everything on this page applies (validation,
+  hooks, versions, unique guards, automatic and derived fields), and so do the overrides of your
+  repository subclasses: an instance read by a `UserRepository` saves through it.
+- Every read binds instances (`get`, queries, scans, `batch_get`, `transact_get`, collections,
+  `refresh`), and so does every write (`create`, `put`, `save`, `update`, batch writes,
+  transactions). An instance stays with the repository, and client, that last read or wrote it;
+  transactions and batch writers keep that binding.
+- New instances are not bound until a repository writes them: `await users.create(user)` (or
+  `save`/`put`) first. `copy()` results and unpickled instances are not bound either. Their
+  methods raise `RuntimeError` before any I/O.
+- `add`, `increment` and `decrement` check the value against the attribute before any I/O, and
+  type checkers check it too: `increment(User.name)` raises `TypeError`,
+  `increment(User.visits, 0.5)` a `ValidationError`.
+- Like every update of an instance, they check the version of versioned models. For hot
+  counters that should not conflict with other writers, update by key:
+  `await users.update(User.key("u1"), User.visits.increment())`.
+- The instance is refreshed from DynamoDB's result after each of them.
+
 ## Update actions
 
 ```python
@@ -106,9 +154,10 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
 
 ## Deleting
 
-`delete()` returns the deleted item (or `None` when nothing was stored), runs delete hooks and
-removes unique guards in the same transaction. Deleting a loaded versioned instance checks its
-version.
+`delete()` (`await users.delete(user)` or `await user.delete()`) returns the deleted item (or
+`None` when nothing was stored), runs delete hooks and removes unique guards in the same
+transaction. Deleting a loaded versioned instance checks its version. A deleted instance is no
+longer loaded but stays bound to its repository.
 
 ## Time to Live
 
