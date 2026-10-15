@@ -165,6 +165,13 @@ struct Inner {
     closed: AtomicBool,
 }
 
+/// What one chunk of a managed batch did: what remains (or was found) and the consumed capacity,
+/// or the error, with the chunk's stats.
+type ChunkOutcome<T> = (Result<(T, Vec<ConsumedCapacity>)>, OperationStats);
+
+/// Items found by a chunk of a managed `BatchGetItem`, and the keys still unprocessed.
+type GotChunk = (BTreeMap<String, Vec<Item>>, BTreeMap<String, KeysAndAttributes>);
+
 /// Generates a client request token (idempotent retries of transactions).
 fn request_token() -> String {
     let hex = crate::backend::memory::random_hex(32);
@@ -747,9 +754,11 @@ impl Client {
         return_consumed_capacity: ReturnConsumedCapacity,
     ) -> Call<BatchWriteResult> {
         let started = Instant::now();
-        let chunks: Vec<Vec<(String, WriteRequest)>> = requests.chunks(25).map(<[_]>::to_vec).collect();
-        let mut tasks = JoinSet::new();
-        let mut pending = chunks.into_iter();
+        let mut chunks: Vec<Vec<(String, WriteRequest)>> = Vec::with_capacity(requests.len().div_ceil(25));
+        let mut requests = requests.into_iter().peekable();
+        while requests.peek().is_some() {
+            chunks.push(requests.by_ref().take(25).collect());
+        }
         let mut result = BatchWriteResult::default();
         let mut capacity = BTreeMap::new();
         let mut stats = OperationStats {
@@ -759,47 +768,66 @@ impl Client {
             requests: 0,
             duration: Duration::ZERO,
         };
-        let concurrency = self.inner.config.batch_concurrency;
-        loop {
-            while tasks.len() < concurrency
-                && let Some(chunk) = pending.next()
-            {
-                let client = self.clone();
-                tasks.spawn(async move { client.write_chunk(chunk, return_consumed_capacity).await });
-            }
-            let Some(joined) = tasks.join_next().await else { break };
-            let (outcome, chunk_stats) = match joined {
-                Ok(done) => done,
-                Err(error) => (
-                    Err(Error::Transport { operation: "BatchWriteItem", message: error.to_string(), retryable: false }),
-                    stats,
-                ),
-            };
+        let mut merge = |(outcome, chunk_stats): ChunkOutcome<Vec<(String, WriteRequest)>>,
+                         stats: &mut OperationStats| {
             stats.attempts += chunk_stats.attempts;
             stats.throttles += chunk_stats.throttles;
             stats.requests += chunk_stats.requests;
-            match outcome {
-                Ok((unprocessed, consumed)) => {
-                    result.unprocessed.extend(unprocessed);
-                    merge_capacity(&mut capacity, consumed);
+            outcome.map(|(unprocessed, consumed)| {
+                result.unprocessed.extend(unprocessed);
+                merge_capacity(&mut capacity, consumed);
+            })
+        };
+        if self.sequential_chunks(chunks.len()) {
+            for chunk in chunks {
+                let done = self.write_chunk(chunk, return_consumed_capacity).await;
+                if let Err(error) = merge(done, &mut stats) {
+                    stats.duration = started.elapsed();
+                    return Call { result: Err(error), stats };
                 }
-                Err(error) => {
+            }
+        } else {
+            let mut tasks = JoinSet::new();
+            let mut pending = chunks.into_iter();
+            let concurrency = self.inner.config.batch_concurrency;
+            loop {
+                while tasks.len() < concurrency
+                    && let Some(chunk) = pending.next()
+                {
+                    let client = self.clone();
+                    tasks.spawn(async move { client.write_chunk(chunk, return_consumed_capacity).await });
+                }
+                let Some(joined) = tasks.join_next().await else { break };
+                let done = joined.unwrap_or_else(|error| {
+                    let error =
+                        Error::Transport { operation: "BatchWriteItem", message: error.to_string(), retryable: false };
+                    (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
+                });
+                if let Err(error) = merge(done, &mut stats) {
                     tasks.abort_all();
                     stats.duration = started.elapsed();
                     return Call { result: Err(error), stats };
                 }
             }
         }
+        drop(merge);
         result.consumed_capacity = capacity.into_values().collect();
         stats.duration = started.elapsed();
         Call { result: Ok(result), stats }
+    }
+
+    /// Whether the chunks of a managed batch are sent one after the other from the calling task:
+    /// a single chunk, or the in-memory backend, which applies one request at a time anyway (no
+    /// task is spawned, so in-memory batches finish without a thread hop).
+    fn sequential_chunks(&self, chunks: usize) -> bool {
+        chunks <= 1 || self.inner.config.batch_concurrency <= 1 || self.inner.memory.is_some()
     }
 
     async fn write_chunk(
         &self,
         mut chunk: Vec<(String, WriteRequest)>,
         return_consumed_capacity: ReturnConsumedCapacity,
-    ) -> (Result<(Vec<(String, WriteRequest)>, Vec<ConsumedCapacity>)>, OperationStats) {
+    ) -> ChunkOutcome<Vec<(String, WriteRequest)>> {
         let mut stats = OperationStats {
             operation: Operation::BatchWriteItem,
             attempts: 0,
@@ -883,8 +911,6 @@ impl Client {
         if current_size > 0 {
             chunks.push(current);
         }
-        let mut tasks = JoinSet::new();
-        let mut pending = chunks.into_iter();
         let mut result = BatchGetResult::default();
         let mut capacity = BTreeMap::new();
         let mut stats = OperationStats {
@@ -894,60 +920,67 @@ impl Client {
             requests: 0,
             duration: Duration::ZERO,
         };
-        let concurrency = self.inner.config.batch_concurrency;
-        loop {
-            while tasks.len() < concurrency
-                && let Some(chunk) = pending.next()
-            {
-                let client = self.clone();
-                tasks.spawn(async move { client.get_chunk(chunk, return_consumed_capacity).await });
-            }
-            let Some(joined) = tasks.join_next().await else { break };
-            let (outcome, chunk_stats) = match joined {
-                Ok(done) => done,
-                Err(error) => (
-                    Err(Error::Transport { operation: "BatchGetItem", message: error.to_string(), retryable: false }),
-                    stats,
-                ),
-            };
+        let mut merge = |(outcome, chunk_stats): ChunkOutcome<GotChunk>, stats: &mut OperationStats| {
             stats.attempts += chunk_stats.attempts;
             stats.throttles += chunk_stats.throttles;
             stats.requests += chunk_stats.requests;
-            match outcome {
-                Ok((items, unprocessed, consumed)) => {
-                    for (table, found) in items {
-                        result.items.entry(table).or_default().extend(found);
-                    }
-                    for (table, keys) in unprocessed {
-                        let entry = result
-                            .unprocessed
-                            .entry(table)
-                            .or_insert_with(|| KeysAndAttributes { keys: Vec::new(), ..keys.clone() });
-                        entry.keys.extend(keys.keys);
-                    }
-                    merge_capacity(&mut capacity, consumed);
+            outcome.map(|((items, unprocessed), consumed)| {
+                for (table, found) in items {
+                    result.items.entry(table).or_default().extend(found);
                 }
-                Err(error) => {
+                for (table, keys) in unprocessed {
+                    let entry = result
+                        .unprocessed
+                        .entry(table)
+                        .or_insert_with(|| KeysAndAttributes { keys: Vec::new(), ..keys.clone() });
+                    entry.keys.extend(keys.keys);
+                }
+                merge_capacity(&mut capacity, consumed);
+            })
+        };
+        if self.sequential_chunks(chunks.len()) {
+            for chunk in chunks {
+                let done = self.get_chunk(chunk, return_consumed_capacity).await;
+                if let Err(error) = merge(done, &mut stats) {
+                    stats.duration = started.elapsed();
+                    return Call { result: Err(error), stats };
+                }
+            }
+        } else {
+            let mut tasks = JoinSet::new();
+            let mut pending = chunks.into_iter();
+            let concurrency = self.inner.config.batch_concurrency;
+            loop {
+                while tasks.len() < concurrency
+                    && let Some(chunk) = pending.next()
+                {
+                    let client = self.clone();
+                    tasks.spawn(async move { client.get_chunk(chunk, return_consumed_capacity).await });
+                }
+                let Some(joined) = tasks.join_next().await else { break };
+                let done = joined.unwrap_or_else(|error| {
+                    let error =
+                        Error::Transport { operation: "BatchGetItem", message: error.to_string(), retryable: false };
+                    (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
+                });
+                if let Err(error) = merge(done, &mut stats) {
                     tasks.abort_all();
                     stats.duration = started.elapsed();
                     return Call { result: Err(error), stats };
                 }
             }
         }
+        drop(merge);
         result.consumed_capacity = capacity.into_values().collect();
         stats.duration = started.elapsed();
         Call { result: Ok(result), stats }
     }
 
-    #[allow(clippy::type_complexity)]
     async fn get_chunk(
         &self,
         mut chunk: BTreeMap<String, KeysAndAttributes>,
         return_consumed_capacity: ReturnConsumedCapacity,
-    ) -> (
-        Result<(BTreeMap<String, Vec<Item>>, BTreeMap<String, KeysAndAttributes>, Vec<ConsumedCapacity>)>,
-        OperationStats,
-    ) {
+    ) -> ChunkOutcome<GotChunk> {
         let mut stats = OperationStats {
             operation: Operation::BatchGetItem,
             attempts: 0,
@@ -974,7 +1007,7 @@ impl Client {
             }
             chunk = output.unprocessed_keys.into_iter().filter(|(_, keys)| !keys.keys.is_empty()).collect();
             if chunk.is_empty() {
-                return (Ok((items, BTreeMap::new(), consumed)), stats);
+                return (Ok(((items, BTreeMap::new()), consumed)), stats);
             }
             if round == rounds {
                 break;
@@ -994,7 +1027,7 @@ impl Client {
                 .field("operation", "BatchGetItem")
                 .field("count", count)
         });
-        (Ok((items, chunk, consumed)), stats)
+        (Ok(((items, chunk), consumed)), stats)
     }
 }
 

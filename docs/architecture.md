@@ -147,7 +147,9 @@ These are relied upon across layers; tests cover each of them.
   the event buffer is a `parking_lot::Mutex<VecDeque>` held only for push/drain (never across
   `.await`), with a `tokio::sync::Notify` for waiters.
 - **Managed batches** run up to `batch_concurrency` requests at once (`JoinSet`), and send
-  unprocessed items again for up to `batch_max_rounds` rounds with backoff.
+  unprocessed items again for up to `batch_max_rounds` rounds with backoff. A batch of one chunk,
+  and every batch of the in-memory backend (which applies one request at a time anyway), sends its
+  chunks from the calling task.
 - **The in-memory backend** keeps tables behind a lock; each operation (including a whole
   transaction) is applied atomically.
 - **Python**: no threads. Each `Client` has a per-event-loop connect lock (`LoopLocal`), so it

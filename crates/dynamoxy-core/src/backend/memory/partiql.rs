@@ -718,9 +718,9 @@ fn prepare_write(state: &State, statement: &Statement) -> Result<(Prepared, Retu
                 let prepared = Prepared {
                     table: table.name.clone(),
                     key: stored,
-                    old: None,
                     new: None,
                     writes: false,
+                    read_size: 0,
                     updated_paths: Vec::new(),
                 };
                 return Ok((prepared, *returning));
@@ -979,8 +979,7 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
             hasher.finish()
         };
         let current = now();
-        state.tokens.retain(|_, record| current - record.at < 600.0);
-        if let Some(record) = state.tokens.get(token) {
+        if let Some(record) = state.tokens.get(token, current) {
             if record.fingerprint != fingerprint {
                 return Err(ServiceError::new(
                     "IdempotentParameterMismatchException",

@@ -8,6 +8,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Performance
+
+- The in-memory backend reads only the keys a query or scan can return (bounded, lazy ranges),
+  stops cloning the items a write replaces, prunes idempotency tokens incrementally, and its
+  managed batches no longer spawn tasks (nor do single-chunk batches on AWS). Its expression
+  parser no longer copies tokens or placeholder names, and the reserved-word check no longer
+  allocates (parsing takes about 40% less time).
+- Numbers in canonical form (as DynamoDB returns them) are parsed without copying, and compared
+  and measured without allocating.
+
 ### Fixed
 
 - The in-memory backend compared binary values by length only when it checked that a reused

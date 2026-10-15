@@ -62,8 +62,8 @@ impl ExpressionKind {
 pub struct Placeholders<'a> {
     names: &'a BTreeMap<String, String>,
     values: &'a BTreeMap<String, AttributeValue>,
-    used_names: BTreeSet<String>,
-    used_values: BTreeSet<String>,
+    used_names: BTreeSet<&'a str>,
+    used_values: BTreeSet<&'a str>,
 }
 
 impl<'a> Placeholders<'a> {
@@ -74,21 +74,22 @@ impl<'a> Placeholders<'a> {
 
     /// Placeholder names that no expression used.
     pub fn unused_names(&self) -> Vec<&str> {
-        self.names.keys().filter(|name| !self.used_names.contains(*name)).map(String::as_str).collect()
+        self.names.keys().map(String::as_str).filter(|name| !self.used_names.contains(name)).collect()
     }
 
     /// Placeholder values that no expression used.
     pub fn unused_values(&self) -> Vec<&str> {
-        self.values.keys().filter(|name| !self.used_values.contains(*name)).map(String::as_str).collect()
+        self.values.keys().map(String::as_str).filter(|name| !self.used_values.contains(name)).collect()
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum Token {
-    Ident(String),
-    NamePlaceholder(String),
-    ValuePlaceholder(String),
-    Integer(String),
+/// A token: a slice of the expression for words, placeholders and integers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Token<'t> {
+    Ident(&'t str),
+    NamePlaceholder(&'t str),
+    ValuePlaceholder(&'t str),
+    Integer(&'t str),
     LParen,
     RParen,
     LBracket,
@@ -105,11 +106,11 @@ enum Token {
     Minus,
 }
 
-impl Token {
+impl Token<'_> {
     fn text(&self) -> String {
         match self {
             Self::Ident(text) | Self::NamePlaceholder(text) | Self::ValuePlaceholder(text) | Self::Integer(text) => {
-                text.clone()
+                (*text).to_owned()
             }
             Self::LParen => "(".into(),
             Self::RParen => ")".into(),
@@ -133,9 +134,9 @@ impl Token {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Spanned {
-    token: Token,
+#[derive(Clone, Copy, Debug)]
+struct Spanned<'t> {
+    token: Token<'t>,
     start: usize,
     end: usize,
 }
@@ -144,7 +145,7 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned>> {
+fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned<'_>>> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0;
@@ -192,7 +193,7 @@ fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned>> {
                 if end == index + 1 {
                     return Err(syntax_error(kind, text, &char_at(text, index), start, start + 1));
                 }
-                let word = text[index..end].to_owned();
+                let word = &text[index..end];
                 index = end - 1;
                 if byte == b'#' { Token::NamePlaceholder(word) } else { Token::ValuePlaceholder(word) }
             }
@@ -201,7 +202,7 @@ fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned>> {
                 while end < bytes.len() && is_word_byte(bytes[end]) {
                     end += 1;
                 }
-                let word = text[index..end].to_owned();
+                let word = &text[index..end];
                 index = end - 1;
                 if word.bytes().all(|b| b.is_ascii_digit()) { Token::Integer(word) } else { Token::Ident(word) }
             }
@@ -210,7 +211,7 @@ fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned>> {
                 while end < bytes.len() && is_word_byte(bytes[end]) {
                     end += 1;
                 }
-                let word = text[index..end].to_owned();
+                let word = &text[index..end];
                 index = end - 1;
                 Token::Ident(word)
             }
@@ -244,7 +245,7 @@ const CONDITION_FUNCTIONS: [&str; 5] =
 struct Parser<'p, 'a> {
     kind: ExpressionKind,
     text: &'p str,
-    tokens: Vec<Spanned>,
+    tokens: Vec<Spanned<'p>>,
     position: usize,
     placeholders: &'p mut Placeholders<'a>,
 }
@@ -272,16 +273,16 @@ impl<'p, 'a> Parser<'p, 'a> {
         Error::validation_exception(format!("Invalid {}: {message}", self.kind.as_str()))
     }
 
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.position).map(|spanned| &spanned.token)
+    fn peek(&self) -> Option<Token<'p>> {
+        self.tokens.get(self.position).map(|spanned| spanned.token)
     }
 
-    fn peek_at(&self, offset: usize) -> Option<&Token> {
-        self.tokens.get(self.position + offset).map(|spanned| &spanned.token)
+    fn peek_at(&self, offset: usize) -> Option<Token<'p>> {
+        self.tokens.get(self.position + offset).map(|spanned| spanned.token)
     }
 
-    fn next(&mut self) -> Option<Token> {
-        let token = self.tokens.get(self.position).map(|spanned| spanned.token.clone());
+    fn next(&mut self) -> Option<Token<'p>> {
+        let token = self.peek();
         if token.is_some() {
             self.position += 1;
         }
@@ -298,7 +299,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         }
     }
 
-    fn expect(&mut self, expected: &Token) -> Result<()> {
+    fn expect(&mut self, expected: Token<'_>) -> Result<()> {
         if self.peek() == Some(expected) {
             self.position += 1;
             Ok(())
@@ -317,24 +318,24 @@ impl<'p, 'a> Parser<'p, 'a> {
 
     // ---- paths and operands -------------------------------------------------------------
 
-    fn name_element(&mut self, token: Token) -> Result<String> {
+    fn name_element(&mut self, token: Token<'_>) -> Result<String> {
         match token {
             Token::Ident(name) => {
-                if is_reserved(&name) {
+                if is_reserved(name) {
                     return Err(self.error(format!("Attribute name is a reserved keyword; reserved keyword: {name}")));
                 }
                 if name.as_bytes()[0].is_ascii_digit() {
                     return Err(self.unexpected_previous());
                 }
-                Ok(name)
+                Ok(name.to_owned())
             }
             Token::NamePlaceholder(placeholder) => {
-                let Some(name) = self.placeholders.names.get(&placeholder) else {
+                let Some((key, name)) = self.placeholders.names.get_key_value(placeholder) else {
                     return Err(self.error(format!(
                         "An expression attribute name used in the document path is not defined; attribute name: {placeholder}"
                     )));
                 };
-                self.placeholders.used_names.insert(placeholder);
+                self.placeholders.used_names.insert(key);
                 Ok(name.clone())
             }
             _ => Err(self.unexpected_previous()),
@@ -365,7 +366,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                         }
                         _ => return Err(self.unexpected_previous()),
                     }
-                    self.expect(&Token::RBracket)?;
+                    self.expect(Token::RBracket)?;
                 }
                 _ => break,
             }
@@ -376,29 +377,29 @@ impl<'p, 'a> Parser<'p, 'a> {
         Ok(Path(elements))
     }
 
-    fn value(&mut self, placeholder: String) -> Result<AttributeValue> {
-        let Some(value) = self.placeholders.values.get(&placeholder) else {
+    fn value(&mut self, placeholder: &str) -> Result<AttributeValue> {
+        let Some((key, value)) = self.placeholders.values.get_key_value(placeholder) else {
             return Err(self.error(format!(
                 "An expression attribute value used in expression is not defined; attribute value: {placeholder}"
             )));
         };
-        self.placeholders.used_values.insert(placeholder);
+        self.placeholders.used_values.insert(key);
         Ok(value.clone())
     }
 
     fn operand(&mut self) -> Result<Operand> {
-        match self.peek().cloned() {
+        match self.peek() {
             Some(Token::ValuePlaceholder(placeholder)) => {
                 self.position += 1;
                 Ok(Operand::Value(self.value(placeholder)?))
             }
-            Some(Token::Ident(name)) if self.peek_at(1) == Some(&Token::LParen) => {
+            Some(Token::Ident(name)) if self.peek_at(1) == Some(Token::LParen) => {
                 if name != "size" {
                     return Err(self.error(format!("Invalid function name; function: {name}")));
                 }
                 self.position += 2;
                 let path = self.path()?;
-                self.expect(&Token::RParen)?;
+                self.expect(Token::RParen)?;
                 Ok(Operand::Size(path))
             }
             Some(Token::Ident(_) | Token::NamePlaceholder(_)) => Ok(Operand::Path(self.path()?)),
@@ -437,21 +438,21 @@ impl<'p, 'a> Parser<'p, 'a> {
     }
 
     fn primary_condition(&mut self) -> Result<Condition> {
-        if self.peek() == Some(&Token::LParen) {
+        if self.peek() == Some(Token::LParen) {
             self.position += 1;
             let inner = self.condition()?;
-            self.expect(&Token::RParen)?;
+            self.expect(Token::RParen)?;
             return Ok(inner);
         }
-        if let Some(Token::Ident(name)) = self.peek().cloned()
-            && self.peek_at(1) == Some(&Token::LParen)
+        if let Some(Token::Ident(name)) = self.peek()
+            && self.peek_at(1) == Some(Token::LParen)
             && name != "size"
         {
-            if !CONDITION_FUNCTIONS.contains(&name.as_str()) {
+            if !CONDITION_FUNCTIONS.contains(&name) {
                 return Err(self.error(format!("Invalid function name; function: {name}")));
             }
             self.position += 2;
-            return self.function_condition(&name);
+            return self.function_condition(name);
         }
         let left = self.operand()?;
         let comparator = match self.peek() {
@@ -480,13 +481,13 @@ impl<'p, 'a> Parser<'p, 'a> {
         }
         if self.at_keyword("IN") {
             self.position += 1;
-            self.expect(&Token::LParen)?;
+            self.expect(Token::LParen)?;
             let mut candidates = vec![self.operand()?];
-            while self.peek() == Some(&Token::Comma) {
+            while self.peek() == Some(Token::Comma) {
                 self.position += 1;
                 candidates.push(self.operand()?);
             }
-            self.expect(&Token::RParen)?;
+            self.expect(Token::RParen)?;
             if candidates.len() > 100 {
                 return Err(self.error(format!(
                     "The IN operator is provided with too many operands; number of operands: {}",
@@ -512,7 +513,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             "attribute_exists" => Condition::AttributeExists(path),
             "attribute_not_exists" => Condition::AttributeNotExists(path),
             _ => {
-                self.expect(&Token::Comma)?;
+                self.expect(Token::Comma)?;
                 let argument = self.operand()?;
                 match name {
                     "attribute_type" => Condition::AttributeType(path, argument),
@@ -521,7 +522,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                 }
             }
         };
-        self.expect(&Token::RParen)?;
+        self.expect(Token::RParen)?;
         Ok(condition)
     }
 
@@ -529,25 +530,26 @@ impl<'p, 'a> Parser<'p, 'a> {
 
     fn update(&mut self) -> Result<UpdateExpression> {
         let mut update = UpdateExpression::default();
-        let mut seen = BTreeSet::new();
+        let mut seen: Vec<&str> = Vec::with_capacity(4);
         while let Some(token) = self.next() {
-            let section = match &token {
-                Token::Ident(word) => word.to_ascii_uppercase(),
+            let section = match token {
+                Token::Ident(word) => ["SET", "REMOVE", "ADD", "DELETE"]
+                    .into_iter()
+                    .find(|section| word.eq_ignore_ascii_case(section))
+                    .ok_or_else(|| self.unexpected_previous())?,
                 _ => return Err(self.unexpected_previous()),
             };
-            if !matches!(section.as_str(), "SET" | "REMOVE" | "ADD" | "DELETE") {
-                return Err(self.unexpected_previous());
-            }
-            if !seen.insert(section.clone()) {
+            if seen.contains(&section) {
                 return Err(
                     self.error(format!("The \"{section}\" section can only be used once in an update expression;"))
                 );
             }
+            seen.push(section);
             loop {
-                match section.as_str() {
+                match section {
                     "SET" => {
                         let path = self.path()?;
-                        self.expect(&Token::Eq)?;
+                        self.expect(Token::Eq)?;
                         let left = self.update_operand()?;
                         let value = match self.peek() {
                             Some(Token::Plus) => {
@@ -576,7 +578,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                         }
                     }
                 }
-                if self.peek() == Some(&Token::Comma) {
+                if self.peek() == Some(Token::Comma) {
                     self.position += 1;
                 } else {
                     break;
@@ -587,27 +589,27 @@ impl<'p, 'a> Parser<'p, 'a> {
     }
 
     fn update_operand(&mut self) -> Result<UpdateOperand> {
-        match self.peek().cloned() {
+        match self.peek() {
             Some(Token::ValuePlaceholder(placeholder)) => {
                 self.position += 1;
                 Ok(UpdateOperand::Value(self.value(placeholder)?))
             }
-            Some(Token::Ident(name)) if self.peek_at(1) == Some(&Token::LParen) => {
+            Some(Token::Ident(name)) if self.peek_at(1) == Some(Token::LParen) => {
                 self.position += 2;
-                let operand = match name.as_str() {
+                let operand = match name {
                     "if_not_exists" => {
                         let path = self.path()?;
-                        self.expect(&Token::Comma)?;
+                        self.expect(Token::Comma)?;
                         UpdateOperand::IfNotExists(path, Box::new(self.update_operand()?))
                     }
                     "list_append" => {
                         let first = self.update_operand()?;
-                        self.expect(&Token::Comma)?;
+                        self.expect(Token::Comma)?;
                         UpdateOperand::ListAppend(Box::new(first), Box::new(self.update_operand()?))
                     }
                     _ => return Err(self.error(format!("Invalid function name; function: {name}"))),
                 };
-                self.expect(&Token::RParen)?;
+                self.expect(Token::RParen)?;
                 Ok(operand)
             }
             Some(Token::Ident(_) | Token::NamePlaceholder(_)) => Ok(UpdateOperand::Path(self.path()?)),
@@ -617,7 +619,7 @@ impl<'p, 'a> Parser<'p, 'a> {
 
     fn projection(&mut self) -> Result<Vec<Path>> {
         let mut paths = vec![self.path()?];
-        while self.peek() == Some(&Token::Comma) {
+        while self.peek() == Some(Token::Comma) {
             self.position += 1;
             paths.push(self.path()?);
         }

@@ -39,21 +39,28 @@ impl Failure {
     }
 }
 
-/// A validated write, ready to apply.
+/// A validated write, ready to apply. The item it replaces is still in the table until
+/// [`apply`] returns it.
 #[derive(Debug)]
 pub struct Prepared {
     /// Table name.
     pub table: String,
     /// Key of the item.
     pub key: StoredKey,
-    /// The item before the write.
-    pub old: Option<Item>,
     /// The item after the write (`None`: deleted or does not exist).
     pub new: Option<Item>,
     /// Whether anything is written (`false` for condition checks).
     pub writes: bool,
+    /// Size of the item a condition check read (for its capacity).
+    pub read_size: usize,
     /// Paths written by an update (for `UPDATED_OLD` / `UPDATED_NEW`).
     pub updated_paths: Vec<crate::expr::Path>,
+}
+
+impl Prepared {
+    fn write(table: &Table, key: StoredKey, new: Option<Item>, updated_paths: Vec<crate::expr::Path>) -> Self {
+        Self { table: table.name.clone(), key, new, writes: true, read_size: 0, updated_paths }
+    }
 }
 
 fn check_condition(
@@ -81,9 +88,8 @@ pub fn prepare_put(
     return_on_failure: ReturnValuesOnConditionCheckFailure,
 ) -> Result<Prepared, Failure> {
     let key = table.validate_item(&item)?;
-    let old = table.items.get(&key).cloned();
-    check_condition(condition, old.as_ref(), return_on_failure)?;
-    Ok(Prepared { table: table.name.clone(), key, old, new: Some(item), writes: true, updated_paths: Vec::new() })
+    check_condition(condition, table.items.get(&key), return_on_failure)?;
+    Ok(Prepared::write(table, key, Some(item), Vec::new()))
 }
 
 /// Prepares a `DeleteItem`.
@@ -94,9 +100,8 @@ pub fn prepare_delete(
     return_on_failure: ReturnValuesOnConditionCheckFailure,
 ) -> Result<Prepared, Failure> {
     let key = table.key.exact_key(key)?;
-    let old = table.items.get(&key).cloned();
-    check_condition(condition, old.as_ref(), return_on_failure)?;
-    Ok(Prepared { table: table.name.clone(), key, old, new: None, writes: true, updated_paths: Vec::new() })
+    check_condition(condition, table.items.get(&key), return_on_failure)?;
+    Ok(Prepared::write(table, key, None, Vec::new()))
 }
 
 /// Prepares a condition check (transactions).
@@ -107,9 +112,10 @@ pub fn prepare_check(
     return_on_failure: ReturnValuesOnConditionCheckFailure,
 ) -> Result<Prepared, Failure> {
     let key = table.key.exact_key(key)?;
-    let old = table.items.get(&key).cloned();
-    check_condition(condition, old.as_ref(), return_on_failure)?;
-    Ok(Prepared { table: table.name.clone(), key, new: old.clone(), old, writes: false, updated_paths: Vec::new() })
+    let old = table.items.get(&key);
+    check_condition(condition, old, return_on_failure)?;
+    let read_size = old.map_or(0, item_size);
+    Ok(Prepared { table: table.name.clone(), key, new: None, writes: false, read_size, updated_paths: Vec::new() })
 }
 
 /// Validates an update against the table's key (before any item is looked at).
@@ -127,25 +133,28 @@ pub fn prepare_update(
     return_on_failure: ReturnValuesOnConditionCheckFailure,
 ) -> Result<Prepared, Failure> {
     let stored = table.key.exact_key(key)?;
-    let old = table.items.get(&stored).cloned();
-    check_condition(condition, old.as_ref(), return_on_failure)?;
-    let base = old.clone().unwrap_or_else(|| key.clone());
+    let old = table.items.get(&stored);
+    check_condition(condition, old, return_on_failure)?;
+    let base = old.unwrap_or(key);
     let (new, updated_paths) = match update {
-        Some(update) => (apply_update(update, &base)?, update.paths().cloned().collect()),
-        None => (base, Vec::new()),
+        Some(update) => (apply_update(update, base)?, update.paths().cloned().collect()),
+        None => (base.clone(), Vec::new()),
     };
     table.validate_item(&new)?;
-    Ok(Prepared { table: table.name.clone(), key: stored, old, new: Some(new), writes: true, updated_paths })
+    Ok(Prepared::write(table, stored, Some(new), updated_paths))
 }
 
-/// Applies a prepared write and records its capacity. Returns the old item.
+/// Applies a prepared write and records its capacity. Returns the item it replaced or deleted
+/// (condition checks write nothing and return `None`).
 pub fn apply(state: &mut State, prepared: Prepared, meter: &mut CapacityMeter, multiplier: f64) -> Option<Item> {
-    let Some(table) = state.tables.get_mut(&prepared.table) else { return prepared.old };
-    meter.write(table, prepared.old.as_ref(), prepared.new.as_ref(), multiplier);
-    if prepared.writes {
-        table.write(prepared.key, prepared.new);
+    let table = state.tables.get_mut(&prepared.table)?;
+    if !prepared.writes {
+        return None;
     }
-    prepared.old
+    let old = table.write(&prepared.key, prepared.new);
+    let table = &*table;
+    meter.write(table, old.as_ref(), table.items.get(&prepared.key), multiplier);
+    old
 }
 
 /// `PutItem` and `DeleteItem` only return the old item.
@@ -216,7 +225,7 @@ pub fn delete_item(state: &mut State, input: DeleteItemInput) -> Result<WriteIte
         prepare_delete(table, &input.key, parsed.condition.as_ref(), input.return_values_on_condition_check_failure)
             .map_err(Failure::into_error)?;
     let metrics = if input.return_item_collection_metrics {
-        prepared.old.as_ref().and_then(|item| table.item_collection_metrics(item))
+        table.items.get(&prepared.key).and_then(|item| table.item_collection_metrics(item))
     } else {
         None
     };
@@ -258,17 +267,19 @@ pub fn update_item(state: &mut State, input: UpdateItemInput) -> Result<WriteIte
     } else {
         None
     };
-    let new = prepared.new.clone();
-    let paths = prepared.updated_paths.clone();
+    let mut prepared = prepared;
+    let paths = std::mem::take(&mut prepared.updated_paths);
     let table_name = prepared.table.clone();
+    let key = prepared.key.clone();
     let old = apply(state, prepared, &mut meter, 1.0);
+    let new = || state.tables.get(&table_name).and_then(|table| table.items.get(&key));
     let non_empty = |item: Item| (!item.is_empty()).then_some(item);
     let attributes = match input.return_values {
         ReturnValues::None => None,
         ReturnValues::AllOld => old,
-        ReturnValues::AllNew => new,
+        ReturnValues::AllNew => new().cloned(),
         ReturnValues::UpdatedOld => old.and_then(|old| non_empty(project(&old, &paths))),
-        ReturnValues::UpdatedNew => new.and_then(|new| non_empty(project(&new, &paths))),
+        ReturnValues::UpdatedNew => new().and_then(|new| non_empty(project(new, &paths))),
     };
     Ok(WriteItemOutput {
         attributes,

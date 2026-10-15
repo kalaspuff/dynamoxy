@@ -54,7 +54,8 @@ pub fn item_to_sdk(item: Item) -> HashMap<String, sdk::AttributeValue> {
 }
 
 fn number(text: String) -> Result<Number> {
-    Number::parse(&text).map_err(|error| protocol_error(format!("invalid number {text:?}: {error}")))
+    // DynamoDB returns canonical numbers: they are kept as they are, without a copy.
+    Number::parse_owned(text).map_err(|error| protocol_error(format!("invalid number: {error}")))
 }
 
 /// Converts a value from the SDK's representation.

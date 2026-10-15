@@ -25,7 +25,7 @@ mod table;
 mod tests;
 mod transact;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -71,6 +71,54 @@ pub(crate) struct TokenRecord {
     at: f64,
 }
 
+/// How long a client request token is remembered (10 minutes).
+pub(crate) const TOKEN_LIFETIME: f64 = 600.0;
+
+/// Client request tokens of the last [`TOKEN_LIFETIME`] seconds. Expired tokens are forgotten in
+/// arrival order, so each transaction does work proportional to what expired, not to every
+/// token remembered.
+#[derive(Debug, Default)]
+pub(crate) struct Tokens {
+    records: HashMap<String, TokenRecord>,
+    arrivals: VecDeque<(f64, String)>,
+}
+
+impl Tokens {
+    /// Forgets the tokens that expired at `now`.
+    fn expire(&mut self, now: f64) {
+        while let Some((at, _)) = self.arrivals.front()
+            && now - *at >= TOKEN_LIFETIME
+        {
+            if let Some((at, token)) = self.arrivals.pop_front()
+                && self.records.get(&token).is_some_and(|record| record.at == at)
+            {
+                self.records.remove(&token);
+            }
+        }
+    }
+
+    /// The record of `token` if it has not expired at `now`.
+    fn get(&mut self, token: &str, now: f64) -> Option<&TokenRecord> {
+        self.expire(now);
+        // Arrivals are in clock order unless the clock went back: check the age too.
+        self.records.get(token).filter(|record| now - record.at < TOKEN_LIFETIME)
+    }
+
+    fn insert(&mut self, token: String, record: TokenRecord) {
+        self.arrivals.push_back((record.at, token.clone()));
+        self.records.insert(token, record);
+    }
+
+    fn remove(&mut self, token: &str) {
+        self.records.remove(token);
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+        self.arrivals.clear();
+    }
+}
+
 /// What an injected fault does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FaultKind {
@@ -105,7 +153,7 @@ pub struct Fault {
 pub(crate) struct State {
     tables: BTreeMap<String, Table>,
     backups: BTreeMap<String, Backup>,
-    tokens: HashMap<String, TokenRecord>,
+    tokens: Tokens,
     faults: Vec<Fault>,
     region: String,
     account_id: String,
@@ -137,7 +185,7 @@ impl MemoryBackend {
             state: Arc::new(Mutex::new(State {
                 tables: BTreeMap::new(),
                 backups: BTreeMap::new(),
-                tokens: HashMap::new(),
+                tokens: Tokens::default(),
                 faults: Vec::new(),
                 region: region.to_owned(),
                 account_id: account_id.to_owned(),
@@ -176,7 +224,7 @@ impl MemoryBackend {
                 .map(|(key, _)| key.clone())
                 .collect();
             for key in expired {
-                table.write(key, None);
+                table.write(&key, None);
                 deleted += 1;
             }
         }

@@ -198,6 +198,8 @@ impl Decimal {
         })
     }
 
+    /// Numeric order (the reference for [`Number`]'s text-based `Ord`; tests compare them).
+    #[cfg(test)]
     fn cmp_value(&self, other: &Self) -> Ordering {
         match (self.negative && !self.is_zero(), other.negative && !other.is_zero()) {
             (false, true) => Ordering::Greater,
@@ -270,15 +272,84 @@ impl Decimal {
     }
 }
 
+/// Significant digits and adjusted exponent of `text` if it is a canonical number within
+/// DynamoDB's limits (what [`Number`] stores), else `None`.
+///
+/// Canonical: an optional `-`, then `0`, or an integer without leading zeros, optionally with a
+/// fraction that does not end in `0` (`0.5`, `12.25`, `100`). Zero is `0`, never `-0`.
+fn canonical(text: &str) -> Option<(usize, i64)> {
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(body) => (true, body),
+        None => (false, text),
+    };
+    let (integer, fraction) = match body.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (body, None),
+    };
+    let integer = integer.as_bytes();
+    if integer.is_empty() || !integer.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let (digits, adjusted) = match fraction {
+        None => {
+            if integer[0] == b'0' {
+                // "0" is canonical; "-0" and leading zeros are not.
+                return (integer.len() == 1 && !negative).then_some((1, 0));
+            }
+            let trailing = integer.iter().rev().take_while(|digit| **digit == b'0').count();
+            (integer.len() - trailing, integer.len() as i64 - 1)
+        }
+        Some(fraction) => {
+            let fraction = fraction.as_bytes();
+            if fraction.is_empty() || !fraction.iter().all(u8::is_ascii_digit) || fraction.last() == Some(&b'0') {
+                return None;
+            }
+            if integer == b"0" {
+                let leading = fraction.iter().take_while(|digit| **digit == b'0').count();
+                (fraction.len() - leading, -(leading as i64) - 1)
+            } else if integer[0] == b'0' {
+                return None;
+            } else {
+                (integer.len() + fraction.len(), integer.len() as i64 - 1)
+            }
+        }
+    };
+    let within =
+        digits <= MAX_SIGNIFICANT_DIGITS && (MIN_ADJUSTED_EXPONENT..=MAX_ADJUSTED_EXPONENT).contains(&adjusted);
+    within.then_some((digits, adjusted))
+}
+
+/// Compares the magnitudes of two canonical numbers without signs (`"0.5"`, `"12"`).
+fn cmp_canonical_magnitude(left: &str, right: &str) -> Ordering {
+    let (left_integer, left_fraction) = left.split_once('.').unwrap_or((left, ""));
+    let (right_integer, right_fraction) = right.split_once('.').unwrap_or((right, ""));
+    // Integer parts have no leading zeros and fractions no trailing zeros, so text order is
+    // numeric order once the integer parts have the same length.
+    left_integer
+        .len()
+        .cmp(&right_integer.len())
+        .then_with(|| left_integer.cmp(right_integer))
+        .then_with(|| left_fraction.cmp(right_fraction))
+}
+
 impl Number {
     /// Parses and validates `text`, returning the canonical number.
     ///
     /// Accepts an optional sign, digits with an optional decimal point and an optional exponent
     /// (`"-1.5e3"`). Whitespace, underscores, `NaN` and infinities are rejected, like DynamoDB.
     pub fn parse(text: &str) -> Result<Self, NumberError> {
+        if canonical(text).is_some() {
+            return Ok(Self(text.to_owned()));
+        }
         let decimal = Decimal::parse(text).ok_or_else(|| NumberError::Invalid(text.to_owned()))?;
         decimal.check_limits()?;
         Ok(Self(decimal.to_canonical()))
+    }
+
+    /// Like [`Self::parse`], taking ownership of the text (no copy when it is canonical already,
+    /// as DynamoDB's responses are).
+    pub fn parse_owned(text: String) -> Result<Self, NumberError> {
+        if canonical(&text).is_some() { Ok(Self(text)) } else { Self::parse(&text) }
     }
 
     /// The number zero.
@@ -308,7 +379,10 @@ impl Number {
 
     /// Number of significant digits (used for DynamoDB's item size calculation).
     pub fn significant_digits(&self) -> usize {
-        self.decimal().digits.len().max(1)
+        match canonical(&self.0) {
+            Some((digits, _)) => digits.max(1),
+            None => self.decimal().digits.len().max(1),
+        }
     }
 
     fn decimal(&self) -> Decimal {
@@ -374,7 +448,13 @@ impl Ord for Number {
         if self.0 == other.0 {
             return Ordering::Equal;
         }
-        self.decimal().cmp_value(&other.decimal())
+        // The text is canonical (zero is "0"), so the sign decides first.
+        match (self.0.strip_prefix('-'), other.0.strip_prefix('-')) {
+            (None, None) => cmp_canonical_magnitude(&self.0, &other.0),
+            (Some(left), Some(right)) => cmp_canonical_magnitude(right, left),
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+        }
     }
 }
 
@@ -460,6 +540,73 @@ mod tests {
         assert_eq!(n("1E+125").checked_sub(&n("1")).unwrap_err(), NumberError::TooPrecise);
         assert_eq!(n("9E+125").checked_add(&n("1E+125")).unwrap_err(), NumberError::Overflow);
         assert_eq!(n("12345678901234567890").checked_add(&n("0.5")).unwrap(), n("12345678901234567890.5"));
+    }
+
+    #[test]
+    fn fast_paths_agree_with_the_general_algorithm() {
+        let inputs = [
+            "0",
+            "-0",
+            "1",
+            "-1",
+            "10",
+            "100",
+            "1500",
+            "007",
+            "0.5",
+            "-0.5",
+            "0.05",
+            "00.5",
+            "0.50",
+            "1.0",
+            "12.25",
+            "-12.25",
+            "1e3",
+            "1E-3",
+            ".5",
+            "5.",
+            "+1",
+            "1.",
+            "0.0",
+            "-0.001",
+            "123456789012345678901234567890.12345678",
+            "12345678901234567890123456789012345678",
+            "123456789012345678901234567890123456789",
+            "1234567890123456789012345678901234567800000",
+        ];
+        for input in inputs {
+            let general = Decimal::parse(input).map(|decimal| (decimal.check_limits(), decimal));
+            match general {
+                Some((Ok(()), decimal)) => {
+                    let parsed = n(input);
+                    assert_eq!(parsed.as_str(), decimal.to_canonical(), "{input}");
+                    assert_eq!(parsed.significant_digits(), decimal.digits.len().max(1), "{input}");
+                    if let Some((digits, adjusted)) = canonical(input) {
+                        assert_eq!(input, decimal.to_canonical(), "{input} is not canonical");
+                        assert_eq!(digits, decimal.digits.len().max(1), "{input}");
+                        assert_eq!(
+                            adjusted,
+                            if decimal.is_zero() { 0 } else { decimal.adjusted_exponent() },
+                            "{input}"
+                        );
+                    }
+                }
+                _ => assert!(Number::parse(input).is_err(), "{input}"),
+            }
+        }
+        let mut values: Vec<Number> =
+            ["10", "-1", "2", "1.5", "-10.25", "0", "100", "0.001", "-0.5", "0.25", "-0.25", "9.99", "10.01"]
+                .map(n)
+                .to_vec();
+        for left in &values {
+            for right in &values {
+                assert_eq!(left.cmp(right), left.decimal().cmp_value(&right.decimal()), "{left} vs {right}");
+            }
+        }
+        values.sort();
+        assert_eq!(values.first().map(Number::as_str), Some("-10.25"));
+        assert_eq!(Number::parse_owned("12.5".to_owned()).unwrap(), n("12.5"));
+        assert_eq!(Number::parse_owned("12.50".to_owned()).unwrap(), n("12.5"));
     }
 
     #[test]

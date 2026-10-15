@@ -582,8 +582,8 @@ pub const RESERVED_WORDS: &[&str] = &[
 
 /// Whether `name` is a reserved word (case-insensitive).
 pub fn is_reserved(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    RESERVED_WORDS.binary_search(&upper.as_str()).is_ok()
+    let upper = name.bytes().map(|byte| byte.to_ascii_uppercase());
+    RESERVED_WORDS.binary_search_by(|word| word.bytes().cmp(upper.clone())).is_ok()
 }
 
 #[cfg(test)]
@@ -596,5 +596,18 @@ mod tests {
         assert_eq!(RESERVED_WORDS.len(), 573);
         assert!(is_reserved("name") && is_reserved("Status") && is_reserved("TTL"));
         assert!(!is_reserved("email") && !is_reserved("user_id"));
+    }
+
+    #[test]
+    fn matches_an_upper_cased_lookup() {
+        let reference = |name: &str| RESERVED_WORDS.binary_search(&name.to_ascii_uppercase().as_str()).is_ok();
+        for word in RESERVED_WORDS {
+            let lower = word.to_ascii_lowercase();
+            let shorter = lower[..lower.len() - 1].to_owned();
+            for candidate in [shorter, format!("{lower}x"), format!("{word}é"), format!("_{word}"), lower] {
+                assert_eq!(is_reserved(&candidate), reference(&candidate), "{candidate}");
+            }
+        }
+        assert!(!is_reserved(""));
     }
 }
