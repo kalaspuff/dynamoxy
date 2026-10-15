@@ -8,6 +8,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Fixed
+
+- The in-memory backend compared binary values by length only when it checked that a reused
+  transaction idempotency token belonged to the same request.
+
 ## [0.1.0] - 2026-10-13
 
 First release.

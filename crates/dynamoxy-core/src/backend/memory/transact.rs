@@ -14,7 +14,7 @@ use crate::expr::{ExpressionInput, parse_request, project};
 use crate::types::{
     TransactGetItemsInput, TransactGetItemsOutput, TransactWriteItem, TransactWriteItemsInput, TransactWriteItemsOutput,
 };
-use crate::value::item_size;
+use crate::value::{AttributeValue, Item, item_size};
 
 /// How long a client request token is remembered (10 minutes).
 const TOKEN_LIFETIME: f64 = 600.0;
@@ -66,10 +66,62 @@ pub fn transact_get_items(state: &State, input: &TransactGetItemsInput) -> Resul
     Ok(TransactGetItemsOutput { responses, consumed_capacity: meter.reports(input.return_consumed_capacity) })
 }
 
+/// A hash of every parameter of a transaction's operations (an idempotency token may only be
+/// reused for the same request).
 fn fingerprint(input: &TransactWriteItemsInput) -> u64 {
     let mut hasher = DefaultHasher::new();
-    format!("{:?}", input.transact_items).hash(&mut hasher);
+    input.transact_items.len().hash(&mut hasher);
+    for operation in &input.transact_items {
+        let (kind, item, update) = match operation {
+            TransactWriteItem::ConditionCheck { key, .. } => (0u8, key, None),
+            TransactWriteItem::Put { item, .. } => (1, item, None),
+            TransactWriteItem::Delete { key, .. } => (2, key, None),
+            TransactWriteItem::Update { key, update_expression, .. } => (3, key, Some(update_expression)),
+        };
+        let target = operation.target();
+        kind.hash(&mut hasher);
+        target.table_name.hash(&mut hasher);
+        target.condition_expression.hash(&mut hasher);
+        target.expression_attribute_names.hash(&mut hasher);
+        target.expression_attribute_values.len().hash(&mut hasher);
+        for (placeholder, value) in &target.expression_attribute_values {
+            placeholder.hash(&mut hasher);
+            hash_value(value, &mut hasher);
+        }
+        target.return_values_on_condition_check_failure.hash(&mut hasher);
+        hash_item(item, &mut hasher);
+        update.hash(&mut hasher);
+    }
     hasher.finish()
+}
+
+fn hash_item(item: &Item, hasher: &mut DefaultHasher) {
+    item.len().hash(hasher);
+    for (name, value) in item {
+        name.hash(hasher);
+        hash_value(value, hasher);
+    }
+}
+
+fn hash_value(value: &AttributeValue, hasher: &mut DefaultHasher) {
+    std::mem::discriminant(value).hash(hasher);
+    match value {
+        AttributeValue::S(text) => text.hash(hasher),
+        AttributeValue::N(number) => number.hash(hasher),
+        AttributeValue::B(bytes) => bytes.hash(hasher),
+        AttributeValue::Bool(flag) => flag.hash(hasher),
+        AttributeValue::Null => {}
+        AttributeValue::L(values) => {
+            values.len().hash(hasher);
+            for value in values {
+                hash_value(value, hasher);
+            }
+        }
+        AttributeValue::M(item) => hash_item(item, hasher),
+        AttributeValue::Ss(values) => values.hash(hasher),
+        AttributeValue::Ns(values) => values.hash(hasher),
+        AttributeValue::Bs(values) => values.hash(hasher),
+    }
 }
 
 /// `TransactWriteItems`.
