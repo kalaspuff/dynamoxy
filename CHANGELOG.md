@@ -10,9 +10,25 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Features
 
+- Model instances persist themselves through the repository that last read or wrote them
+  ([ADR 0011](docs/adr/0011-instances-remember-their-repository.md)): `save()`, `delete()`,
+  `update(*actions)`, `add(path, value)`, `increment(path, amount=1)`, `decrement(...)` and
+  `refresh()`, on native and pydantic models. They call the repository's public methods, so
+  validation, hooks, versions, unique guards and the overrides of repository subclasses apply.
+  `add()` adds to numbers, adds set elements and appends to lists (creating missing lists);
+  `add()`, `increment()` and `decrement()` work on nested paths, check the value against the
+  attribute before any I/O, and are typed for type checkers. Every read and write binds
+  instances, transactions and batch writers keep the binding, and pickles drop it.
 - Lifecycle hooks for updates: `@dynamoxy.before_update` and `@dynamoxy.after_update` (and
-  `client.hook("after_update", Model)`) run around updates of instances, in repositories and
-  transactions.
+  `client.hook("after_update", Model)`) run around updates of instances, in repositories,
+  transactions and the new instance methods.
+
+### Changed
+
+- [**breaking**] `save`, `delete`, `update`, `add`, `increment`, `decrement` and `refresh` are model
+  methods now, so `Model` fields can no longer use these names: rename the field and keep the
+  stored name with `attribute_name=`. Documents (nested maps) no longer reserve the names of model
+  methods (`key`, `primary_key`, `is_loaded`).
 
 ### Performance
 

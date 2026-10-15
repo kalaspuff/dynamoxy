@@ -223,6 +223,27 @@ def test_fields_must_not_shadow_the_model_api() -> None:
             key: Attr[str] = partition_key()  # pyrefly: ignore[bad-override]
 
 
+@pytest.mark.parametrize("name", ["save", "delete", "update", "add", "increment", "decrement", "refresh"])
+def test_persistence_methods_are_part_of_the_model_api(name: str) -> None:
+    namespace = {"__annotations__": {"pk": Attr[str], name: Attr[int]}, "pk": partition_key()}
+    with pytest.raises(TypeError, match=rf"Shadow\.{name}: the name is part of the model API"):
+        type("Shadow", (Model,), namespace, table="shadow")
+
+
+def test_documents_may_use_the_names_of_model_methods() -> None:
+    class Change(Document):
+        add: Attr[list[str]] = field(default_factory=list)
+        delete: Attr[list[str]] = field(default_factory=list)
+        key: Attr[str | None] = field(default=None)
+
+    change = Change(add=["a"], key="k")
+    assert (change.add, change.delete, change.key) == (["a"], [], "k")
+    with pytest.raises(TypeError, match=r"Patch\.copy: the name is part of the model API"):
+
+        class Patch(Document):
+            copy: Attr[str]  # pyrefly: ignore[bad-override]
+
+
 def test_item_decode_errors_name_the_attribute() -> None:
     with pytest.raises(dynamoxy.ItemDecodeError, match="no 'name' attribute") as caught:
         User.from_item({"user_id": "u1", "email": "a@b.c"})

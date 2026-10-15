@@ -34,8 +34,12 @@ async def main(client: dynamoxy.Client | None = None) -> User:
         ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
         print(f"created {ada.user_id} (version {ada.version}) at {ada.created_at:%Y-%m-%d %H:%M}")
 
-        await users.update(ada, User.visits.add(1), User.tags.add({"admin"}))
-        print(f"after update: visits={ada.visits} tags={sorted(ada.tags)} version={ada.version}")
+        # An instance remembers the repository that read or wrote it, and writes through it.
+        await ada.increment(User.visits)  # atomic; `ada` is refreshed with the result
+        await ada.add(User.tags, "admin")
+        ada.name = "Ada Lovelace"
+        await ada.save()  # replaces the item, if nobody changed it meanwhile (version check)
+        print(f"after updates: visits={ada.visits} tags={sorted(ada.tags)} version={ada.version}")
 
         found = await users.query(index=User.by_email, email="ada@example.com").first()
         assert found is not None

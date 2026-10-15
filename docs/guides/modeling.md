@@ -171,15 +171,15 @@ class Customer(dynamoxy.Model, table="customers"):
         await outbox.publish("customer.saved", self.customer_id)
 
     @dynamoxy.after_update
-    def forget(self) -> None:  # the refreshed instance, after an update
+    def forget(self) -> None:  # the refreshed instance, after update(), add(), increment(), ...
         cache.pop(self.customer_id, None)
 ```
 
 | Hooks | Run for | Notes |
 | --- | --- | --- |
-| `before_save`, `after_save` | `create`, `put`, `save`, batch puts, transactions | `before_save` may change the instance, and runs before validation |
-| `before_update`, `after_update` | `update()` of an instance, in repositories and transactions | the update writes its actions only, so changes `before_update` makes to the instance are not stored; `after_update` sees the refreshed instance |
-| `before_delete`, `after_delete` | `delete()` of an instance, batch deletes, transactions | |
+| `before_save`, `after_save` | `create`, `put`, `save` (`customer.save()` too), batch puts, transactions | `before_save` may change the instance, and runs before validation |
+| `before_update`, `after_update` | `update()` of an instance, in repositories and transactions, and the instance's `update()`, `add()`, `increment()`, `decrement()` | the update writes its actions only, so changes `before_update` makes to the instance are not stored; `after_update` sees the refreshed instance |
+| `before_delete`, `after_delete` | `delete()` of an instance (`customer.delete()` too), batch deletes, transactions | |
 | `after_load` | every item a repository decodes | migrate old shapes in memory |
 
 Raising in a `before_*` hook aborts the write (in a transaction, the whole transaction). Writes
@@ -191,5 +191,7 @@ after the model's own and suit cross-cutting concerns such as auditing.
 ## Names to avoid
 
 Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `validate`, `copy`,
-`to_dict`, `to_item`, `from_item`. Use another Python name and `attribute_name="key"` to keep
-the stored name. DynamoDB reserved words (`name`, `status`, `data`, ...) are fine.
+`to_dict`, `to_item`, `from_item` and the instance methods `save`, `delete`, `update`, `add`,
+`increment`, `decrement`, `refresh`. Use another Python name and `attribute_name="key"` to keep
+the stored name. Documents only reserve `validate`, `copy`, `to_dict`, `to_item` and
+`from_item`. DynamoDB reserved words (`name`, `status`, `data`, ...) are fine.

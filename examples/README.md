@@ -16,7 +16,7 @@ asyncio.run(quickstart.main(dynamoxy.Client(endpoint_url="http://localhost:4566"
 
 | Example | Shows |
 | --- | --- |
-| [quickstart.py](quickstart.py) | A model with a unique email, timestamps and a version; create, update, query an index |
+| [quickstart.py](quickstart.py) | A model with a unique email, timestamps and a version; create, atomic updates and `save()` through the instance, query an index |
 | [single_table.py](single_table.py) | Several entities in one table, key templates, derived index keys, collections, nested documents |
 | [transactions.py](transactions.py) | An atomic money transfer, idempotency tokens, cancellation reasons, transactional reads |
 | [unique_constraints.py](unique_constraints.py) | Unique values, freeing a value by changing it, optimistic locking with retries |

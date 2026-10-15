@@ -10,6 +10,7 @@ Schemas are built lazily, on first use, so models can refer to classes defined l
 
 from __future__ import annotations
 
+import copy
 import functools
 import operator
 import re
@@ -40,7 +41,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from dynamoxy.attributes import FieldPath
+    from dynamoxy.client import Client
     from dynamoxy.codecs import DateTimeFormat
+    from dynamoxy.repository import Repository
 
 __all__ = [
     "FieldSpec",
@@ -52,6 +55,7 @@ __all__ = [
     "ModelState",
     "Projection",
     "Throughput",
+    "bound_repository",
     "schema_of",
 ]
 
@@ -466,18 +470,34 @@ class IndexSpec:
 
 @dataclass(slots=True)
 class ModelState:
-    """What dynamoxy knows about an instance's stored copy.
+    """What dynamoxy knows about an instance's stored copy, and where it is stored.
+
+    Each instance has its own state. Copies (``copy.copy``, ``copy.deepcopy``, pydantic's
+    ``model_copy``) keep the repository; pickles leave it out (it holds the client), so an
+    unpickled instance is loaded but not bound.
 
     Attributes:
         stored: The item as last read or written (stored form), or ``None`` for a new instance.
+        repository: The repository that last read or wrote the instance (``None`` until one
+            did). The instance's own ``save()``, ``delete()``, ``update()``, ... use it.
     """
 
     stored: dict[str, Any] | None = None
+    repository: Repository[Any] | None = None
 
     @property
     def loaded(self) -> bool:
         """Whether the instance was read from or written to DynamoDB."""
         return self.stored is not None
+
+    def __copy__(self) -> ModelState:
+        return ModelState(self.stored, self.repository)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ModelState:
+        return ModelState(copy.deepcopy(self.stored, memo), self.repository)
+
+    def __reduce__(self) -> tuple[type[ModelState], tuple[dict[str, Any] | None]]:
+        return ModelState, (self.stored,)
 
 
 class ModelAdapter(Protocol):
@@ -641,7 +661,7 @@ class ModelSchema:
         self._decoders: dict[str, tuple[str, Callable[[Any], Any] | None, type | None]] = {
             spec.attribute: (spec.name, *_decoding(spec.codec)) for spec in fields
         }
-        self._load_stored: Callable[[dict[str, Any], dict[str, Any]], Any] | None = getattr(
+        self._load_stored: Callable[[dict[str, Any], dict[str, Any], Repository[Any] | None], Any] | None = getattr(
             self.adapter, "load_stored", None
         )
         # (name, settable in the constructor, spec, check of non-None values) in field order.
@@ -785,8 +805,13 @@ class ModelSchema:
         """
         return self._decode(item, dict(item))
 
-    def _decode(self, item: Mapping[str, Any], stored: dict[str, Any]) -> Any:
-        """:meth:`decode`, recording ``stored`` (``item`` or a copy of it) as the stored item."""
+    def _decode(
+        self, item: Mapping[str, Any], stored: dict[str, Any], repository: Repository[Any] | None = None
+    ) -> Any:
+        """:meth:`decode`, recording ``stored`` (``item`` or a copy of it) as the stored item.
+
+        ``repository`` is the repository that read the item (``None`` for :meth:`decode`).
+        """
         values: dict[str, Any] = {}
         errors: list[FieldError] = []
         decoders = self._decoders
@@ -827,7 +852,7 @@ class ModelSchema:
             raise error
         load_stored = self._load_stored
         if load_stored is not None:
-            return load_stored(values, stored)
+            return load_stored(values, stored, repository)
         try:
             instance = self.adapter.load(values)
         except Exception as cause:
@@ -841,6 +866,7 @@ class ModelSchema:
         state = self.adapter.state(instance)
         if state is not None:
             state.stored = stored
+            state.repository = repository
         return instance
 
     def validate(self, instance: Any) -> None:
@@ -1029,6 +1055,21 @@ def schema_of(model: type) -> ModelSchema:
         schema = builder()
     type.__setattr__(model, "__dynamoxy_schema__", schema)
     return schema
+
+
+def bound_repository(target: Any, model: type, client: Client) -> Repository[Any] | None:
+    """The repository an instance of ``model`` is bound to, when it belongs to ``client``.
+
+    Transactions and batch writers write instances through it, so an instance stays bound to
+    the repository (possibly a subclass) that read it. ``None`` for keys and unbound instances.
+    """
+    if not isinstance(target, model):
+        return None
+    state = schema_of(model).state(target)
+    repository = state.repository if state is not None else None
+    if repository is None or repository.client is not client or repository.model_class is not model:
+        return None
+    return repository
 
 
 def resolve_annotations(model: type) -> dict[str, Any]:

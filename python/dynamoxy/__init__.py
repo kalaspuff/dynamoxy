@@ -20,7 +20,9 @@ Quick start::
             await client.ensure_tables(User)
             users = client.repository(User)
             user = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
-            await users.update(user, User.visits.add(1))
+            await user.increment(User.visits)  # atomic, through the repository that wrote it
+            user.name = "Ada Lovelace"
+            await user.save()
 
 Read ``dynamoxy guide`` (or ``python -m dynamoxy guide``) for the full usage guide.
 """

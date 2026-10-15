@@ -90,6 +90,17 @@ rich = await customers.scan().filter(dynamoxy.attr(Customer.credit) > 10).all()
 await customers.update(customer, dynamoxy.attr(Customer.credit).add(Decimal(5)))
 ```
 
+Instances have the same persistence methods as native models (`save()`, `delete()`,
+`update(...)`, `add(...)`, `increment(...)`, `decrement(...)`, `refresh()`), through the
+repository that read or wrote them:
+
+```python
+customer = await customers.get_or_raise("c1")
+customer.name = "Ada"  # validated by pydantic
+await customer.save()
+await customer.increment(dynamoxy.attr(Customer.credit), Decimal(5))
+```
+
 ## Nested models
 
 Plain `pydantic.BaseModel` fields (and lists of them) are stored as maps and validated by pydantic

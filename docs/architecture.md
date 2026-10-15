@@ -13,7 +13,8 @@ preserve. Decisions behind it are recorded in [docs/adr](adr/README.md).
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
 │ Python API  python/dynamoxy                                                              │
 │                                                                                          │
-│  models.py  attributes.py  _pydantic.py   declare models (Attr descriptors / pydantic)   │
+│  models.py  attributes.py  _pydantic.py   declare models (Attr descriptors / pydantic),  │
+│                                           instance methods (save, update, delete, ...)   │
 │  schema.py  codecs.py                     ModelSchema: fields, keys, templates, indexes,  │
 │                                           encode/decode/validate (per model, cached)      │
 │  repository.py  transactions.py  batch.py  plan writes (_WritePlan), run hooks, guards    │
@@ -52,6 +53,10 @@ asyncio bridge only: no logic.
 
 ### A model write (`repository.create/put/save/update/delete`)
 
+The instance methods (`user.save()`, `user.update(...)`, `user.add(...)`, `user.increment(...)`,
+`user.delete()`, ...) call these on the repository the instance is bound to (see "Bound
+instances" below); `add`/`increment`/`decrement` only build the update action.
+
 1. **Python, `repository.py`**: validate the instance (`ModelSchema.validate`: codecs,
    constraints, validators), run `before_*` hooks (model methods, then client hooks), compute
    automatic fields (`created_at`, `updated_at`, `version`) and derived (templated) attributes.
@@ -75,8 +80,19 @@ asyncio bridge only: no logic.
 7. **Backend**: AWS SDK call (errors classified in `aws/errors.rs`) or the in-memory backend.
 8. **Python**: map failures to specific errors (`explain_failure`: `ItemAlreadyExistsError`,
    `VersionConflictError`, `UniqueConstraintError`, `ItemNotFoundError`), finalize the
-   instance (assign the returned item, mark it loaded), run `after_*` hooks, deliver buffered
-   events, record the `OperationRecord` (collectors, OpenTelemetry metrics).
+   instance (assign the returned item, record it and the repository in its `ModelState`), run
+   `after_*` hooks, deliver buffered events, record the `OperationRecord` (collectors,
+   OpenTelemetry metrics).
+
+### Bound instances
+
+Every instance a repository decodes or writes keeps a `ModelState` in its `__dict__`: `stored`,
+the item as last read or written (used for optimistic locking, unique guard transitions and
+derived attributes), and `repository`, the repository that did it. Both are set together, by
+`_decode` for reads and by `_apply`/`_assign` for writes ([ADR 0011](adr/0011-instances-remember-their-repository.md)).
+Transactions and batch writers write an instance through its repository when it belongs to
+their client. Model classes hold no client; instances nobody read or wrote are unbound, and
+pickles drop the repository.
 
 ### A transaction (`client.transaction()`)
 
@@ -136,10 +152,13 @@ These are relied upon across layers; tests cover each of them.
     clients created before the fork refuse to work in the child.
 11. **Clean interpreter exit.** An `atexit` hook stops the runtime before finalization; later
     awaitables raise `ShutdownError` (`tests/unit/test_lifecycle.py`).
-12. **Stored formats are API.** Codecs (`codecs.py`), guard item keys (`constraints.py`), the
+12. **Instances know where they are stored.** Every read and write through a repository
+    records the stored item and the repository on the instance; instance methods, transactions
+    and batch writers write through that repository. Model classes never hold a client.
+13. **Stored formats are API.** Codecs (`codecs.py`), guard item keys (`constraints.py`), the
     entity type attribute (`_type`) and cursors are formats: changing one is a breaking change
     that needs an ADR, a migration path and a changelog entry.
-13. **Secrets and payloads are never logged.** Events carry operation names, table names,
+14. **Secrets and payloads are never logged.** Events carry operation names, table names,
     counts, codes and durations; `Credentials` hide secrets in `repr`; spans record expressions
     only on request and never values.
 

@@ -33,7 +33,7 @@ from dynamoxy.errors import (
     validation_error,
 )
 from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition
-from dynamoxy.schema import schema_of
+from dynamoxy.schema import bound_repository, schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -121,7 +121,11 @@ class Transaction:
     def __len__(self) -> int:
         return len(self._steps)
 
-    def _repository(self, model: type) -> Repository[Any]:
+    def _repository(self, model: type, target: Any = None) -> Repository[Any]:
+        """The repository that plans a write: the one ``target`` is bound to, if it uses this client."""
+        bound = bound_repository(target, model, self.client)
+        if bound is not None:
+            return bound
         repository = self._repositories.get(model)
         if repository is None:
             repository = self._repositories[model] = self.client.repository(model)
@@ -137,17 +141,17 @@ class Transaction:
 
     def create(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Creates an item (fails the transaction if the key exists)."""
-        repository = self._repository(type(item))
+        repository = self._repository(type(item), item)
         return self._add(f"create {type(item).__name__}", lambda: repository._plan_put(item, "create", condition))
 
     def put(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Writes an item, replacing any item with the same key."""
-        repository = self._repository(type(item))
+        repository = self._repository(type(item), item)
         return self._add(f"put {type(item).__name__}", lambda: repository._plan_put(item, "put", condition))
 
     def save(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Writes an item with optimistic locking (versioned models)."""
-        repository = self._repository(type(item))
+        repository = self._repository(type(item), item)
         return self._add(f"save {type(item).__name__}", lambda: repository._plan_put(item, "save", condition))
 
     def update(
@@ -165,7 +169,7 @@ class Transaction:
         does (exact for versioned models; reload other models if concurrent writers matter).
         """
         resolved = model or _model_of(target, actions)
-        repository = self._repository(resolved)
+        repository = self._repository(resolved, target)
         return self._add(
             f"update {resolved.__name__}",
             lambda: repository._plan_update(target, actions, condition, upsert),
@@ -174,7 +178,7 @@ class Transaction:
     def delete(self, target: Any, *, condition: Condition | bool | None = None, model: type | None = None) -> Self:
         """Deletes an item (an instance, or a stored key with ``model=``)."""
         resolved = model or _model_of(target, ())
-        repository = self._repository(resolved)
+        repository = self._repository(resolved, target)
         return self._add(f"delete {resolved.__name__}", lambda: repository._plan_delete(target, condition))
 
     def check(self, model: type, key: Mapping[str, Any] | Any, condition: Condition | bool) -> Self:

@@ -61,6 +61,10 @@ async def add_tag(users: dynamoxy.Repository[User], user_id: str, tag: str) -> U
     raise RuntimeError("too much contention")
 ```
 
+The instance methods check the version the same way: `await user.save()`, `user.update(...)`,
+`user.add(...)`, `user.increment(...)` and `user.delete()` raise `VersionConflictError` for a
+stale instance, and `await user.refresh()` reloads it before you re-apply the change.
+
 Prefer atomic updates when the change does not depend on the current value:
 `await users.update(User.key(user_id), User.tags.add({tag}))` needs no read and no retry.
 

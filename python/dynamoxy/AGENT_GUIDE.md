@@ -19,7 +19,9 @@ optimistic locking · transactions · single-table design · tables · the dict-
    at shutdown (`async with client:` or `await client.close()`).
 2. **Use repositories for models.** `client.repository(User)` gives typed `get`, `query`,
    `create`, `update`, ... Keep DynamoDB access behind repositories (or your own subclasses of
-   `dynamoxy.Repository`) instead of scattering raw calls.
+   `dynamoxy.Repository`) instead of scattering raw calls. Instances a repository read or wrote
+   write themselves through it: `await user.save()`, `await user.increment(User.visits)`,
+   `await user.delete()`.
 3. **Pick the write that states your intent.** `create()` fails if the key exists, `save()`
    checks the version (optimistic locking), `put()` overwrites, and `update()` changes attributes
    in place without reading. Prefer `update()` with atomic actions (`User.visits.add(1)`) over
@@ -192,7 +194,8 @@ Rules that are easy to miss:
 - Assigning a field validates it immediately (`user.age = -1` raises `ValidationError`), and so
   does the constructor. `ValidationError.errors` lists every `FieldError`.
 - Field names cannot shadow the model API (`key`, `primary_key`, `validate`, `to_item`,
-  `copy`, ...). Name the field differently and keep the stored name with `attribute_name=`.
+  `copy`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`, ...). Name the
+  field differently and keep the stored name with `attribute_name=`.
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
@@ -223,11 +226,11 @@ class Booking(dynamoxy.Model, table="bookings"):
         ...
 
     @dynamoxy.after_save
-    async def announce(self) -> None:  # after create, put, save and batch puts
+    async def announce(self) -> None:  # after create, put, save (also booking.save()), batch puts
         ...
 
     @dynamoxy.after_update
-    def forget(self) -> None:  # after update() of an instance
+    def forget(self) -> None:  # after update(), add(), increment(), decrement() of an instance
         ...
 
     @dynamoxy.after_load
@@ -236,10 +239,11 @@ class Booking(dynamoxy.Model, table="bookings"):
 ```
 
 Hook points: `before_save`, `after_save` (create, put, save, batch puts), `before_update`,
-`after_update` (updates of instances), `before_delete`, `after_delete`, `after_load`. They run in
-repositories and transactions alike; writes by key run none. `before_update` hooks can abort, but
-the update only writes its actions, so changes they make to the instance are not stored. Client
-hooks apply to any model and receive a `HookContext` (operation, model, client):
+`after_update` (updates of instances: `update()` and the instance's `add()`, `increment()`,
+`decrement()`), `before_delete`, `after_delete`, `after_load`. They run in repositories and
+transactions alike; writes by key run none. `before_update` hooks can abort, but the update only
+writes its actions, so changes they make to the instance are not stored. Client hooks apply to
+any model and receive a `HookContext` (operation, model, client):
 
 ```python
 @client.hook("after_save", User)
@@ -417,6 +421,31 @@ actions, typically with `set_if_not_exists(...)`. Otherwise dynamoxy raises `Val
 any I/O. For templated keys, pass the key as field values
 (`orders.update({"customer_id": "c1", "order_id": "o1"}, ..., upsert=True)`).
 
+### Writing through an instance
+
+An instance that a repository read or wrote (`get`, queries, scans, `create`, `save`,
+transactions, ...) remembers that repository and writes itself through it, with the same
+semantics (validation, hooks, versions, unique guards, overrides of repository subclasses):
+
+```python
+user = await users.get_or_raise("u1")
+user.name = "Robert"
+await user.save()  # users.save(user): create or replace, version-checked
+await user.increment(User.visits)  # users.update(user, User.visits.increment()); a missing number counts as 0
+await user.decrement(User.visits, 2, condition=User.visits >= 2)
+await user.add(User.tags, "vip")  # a set element, or a set of them
+await user.update(User.name.set("Bob"), User.tags.delete({"vip"}))  # any update actions
+await user.refresh()  # reload in place
+deleted = await user.delete()  # users.delete(user)
+```
+
+`add(path, value)` adds to numbers, adds set elements and appends one element to lists (creating
+missing lists). `add`, `increment` and `decrement` take nested paths too
+(`player.increment(Player.stats["wins"])`) and validate the value against the attribute before
+any I/O. New instances, `copy()` results and unpickled instances are not bound: write them with
+a repository first (`await users.create(user)`); their methods raise `RuntimeError` before any
+I/O. Instance updates check the version of versioned models; update hot counters by key instead.
+
 ### Batches
 
 ```python
@@ -459,13 +488,13 @@ one it was loaded with:
 
 ```python
 async def rename(user_id: str, name: str) -> User:
+    user = await users.get_or_raise(user_id)
     for _ in range(3):
-        user = await users.get_or_raise(user_id)
         user.name = name
         try:
-            return await users.save(user)
+            return await user.save()
         except dynamoxy.VersionConflictError:
-            continue  # somebody else saved it meanwhile: reload and re-apply
+            await user.refresh()  # somebody else saved it meanwhile: reload and re-apply
     raise RuntimeError("too much contention")
 ```
 
@@ -629,7 +658,9 @@ class SignupService:
             raise EmailTakenError(email) from None
 ```
 
-Build repositories once from the shared client: `UserRepository(client)`.
+Build repositories once from the shared client: `UserRepository(client)`. Instances read
+through a repository subclass write through it too (`await user.save()` calls
+`UserRepository.save`), so overrides for auditing or tenant checks apply to them.
 
 ### Unit of work
 
