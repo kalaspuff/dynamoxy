@@ -61,6 +61,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Fixed
 
+- `.hydrate()` fetched the full items of a `.consistent()` query or scan with eventually
+  consistent reads, so it could return an older version of an item, or leave out an item written
+  just before. It now reads them as consistently as the query.
 - `Model.copy()` kept the copied `version` (and timestamps), so saving a copy of a versioned
   instance under a new key failed with `VersionConflictError`. Copies now start with empty
   automatic fields, as the documentation promised: saving one writes a new item.
