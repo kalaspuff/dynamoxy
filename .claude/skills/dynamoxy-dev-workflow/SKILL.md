@@ -38,4 +38,6 @@ description: Default workflow for any change to the dynamoxy library (Rust core,
    cargo test --workspace && uv run pytest
    ```
 7. **Commit** with a conventional commit message (`feat(repository): ...`, `fix(core): ...`);
-   breaking changes use `feat!:` and explain the migration - they feed the changelog.
+   breaking changes use `feat!:` and explain the migration - they feed the changelog. Open the
+   pull request (or a stack of them, or a publish kit when you cannot push) with
+   `dynamoxy-pull-requests`.
