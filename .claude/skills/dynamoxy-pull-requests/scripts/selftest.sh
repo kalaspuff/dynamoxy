@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPTS=$(cd "$(dirname "$0")" && pwd -P)
 RUN_BASH=bash
 if [ "${1:-}" = --bash ]; then RUN_BASH=${2:?--bash needs a bash}; fi
-T=$(mktemp -d "${TMPDIR:-/tmp}/kit-selftest.XXXXXX")
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/kit-selftest.XXXXXX")" && pwd -P) # kit.py prints resolved paths
 OUT=$T/out.txt
 mkdir -p "$T/tmp"
 export TMPDIR=$T/tmp # the tools' temporary files, which must all be gone at the end
