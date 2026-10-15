@@ -22,13 +22,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 VALUE_OPTIONS = {"--base", "--body", "--body-file", "--head", "--jq", "--json", "--limit", "--state", "--title"}
 FLAG_OPTIONS = {"--delete-branch", "--squash"}
 
 
-def fail(message: str, code: int = 1) -> None:
+def fail(message: str, code: int = 1) -> NoReturn:
     print(f"gh (stub): {message}", file=sys.stderr)
     raise SystemExit(code)
 
