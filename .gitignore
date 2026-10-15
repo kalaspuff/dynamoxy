@@ -20,6 +20,9 @@ dist/
 build/
 wheelhouse/
 
+# Publish kits of agents that cannot push (.claude/skills/dynamoxy-pull-requests)
+/.stacks/
+
 # Editors / OS
 .idea/
 .vscode/
