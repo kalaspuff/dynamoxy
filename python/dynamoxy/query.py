@@ -81,7 +81,7 @@ class _Reader[T]:
         model: type | None = None,
         index: str | None = None,
         key_condition: Condition | None = None,
-        hydrate: Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]] | None = None,
+        hydrate: Callable[[list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]] | None = None,
         decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
     ) -> None:
         self._client = client
@@ -159,7 +159,8 @@ class _Reader[T]:
     def hydrate(self) -> Self:
         """Fetches full items for index entries that hold only some attributes.
 
-        For ``KEYS_ONLY`` / ``INCLUDE`` projections; uses ``BatchGetItem``. Model queries only.
+        For ``KEYS_ONLY`` / ``INCLUDE`` projections; uses ``BatchGetItem``, strongly consistent
+        when the query is. Model queries only.
         """
         if self._hydrator is None:
             raise TypeError("hydrate() needs a model query (repository.query / repository.scan)")
@@ -200,7 +201,7 @@ class _Reader[T]:
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
         raw_items = output["items"]
         if self._hydrate and self._hydrator is not None and raw_items:
-            raw_items = await self._hydrator(raw_items)
+            raw_items = await self._hydrator(raw_items, self._consistent)
         capacity = output["consumed_capacity"]
         last = output["last_evaluated_key"]
         decode_page = self._decode_page

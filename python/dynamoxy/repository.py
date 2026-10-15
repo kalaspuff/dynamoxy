@@ -407,9 +407,9 @@ class Repository[M]:
             return F(spec.attribute) == template.template, remaining
         return None, remaining
 
-    async def _hydrate(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _hydrate(self, items: list[dict[str, Any]], consistent: bool) -> list[dict[str, Any]]:
         keys = [self.schema.key_values(item) for item in items]
-        full = await self.table.batch_get(keys, consistent=False)
+        full = await self.table.batch_get(keys, consistent=consistent)
         identity = self.schema._key_identity
         by_key = {identity(item): item for item in full}
         result = []

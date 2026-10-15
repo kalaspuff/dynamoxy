@@ -10,7 +10,7 @@ import pytest
 import dynamoxy
 from dynamoxy import F
 from tests.conftest import ClientFactory
-from tests.helpers import at
+from tests.helpers import at, record_consistent_reads
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
 
 
@@ -338,6 +338,17 @@ async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -
         await query.all()
     hydrated = await query.hydrate().all()
     assert sorted(user.name for user in hydrated) == ["U0", "U1", "U2"]
+
+
+async def test_hydration_reads_as_consistently_as_the_query(
+    client: dynamoxy.Client, events: dynamoxy.Repository[Event]
+) -> None:
+    await events.batch_put([Event(stream="h", seq=index, kind="k") for index in range(2)])
+    sent = record_consistent_reads(client)
+    hydrated = events.query(index=Event.by_kind_local, stream="h").hydrate()
+    assert len(await hydrated.all()) == 2
+    assert len(await hydrated.consistent().all()) == 2
+    assert sent == [("Query", False), ("BatchGetItem", False), ("Query", True), ("BatchGetItem", True)]
 
 
 async def test_scans_filters_and_segments(events: dynamoxy.Repository[Event]) -> None:
