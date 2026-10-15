@@ -469,6 +469,49 @@ async def test_hooks_can_abort_writes(client: dynamoxy.Client) -> None:
     assert await repository.get("x") is None
 
 
+async def test_update_hooks_run_for_updates_of_instances(client: dynamoxy.Client) -> None:
+    calls: list[str] = []
+
+    class Counted(dynamoxy.Model, table="counted"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+        visits: dynamoxy.Attr[int] = dynamoxy.field(default=0)
+
+        @dynamoxy.before_update
+        def checking(self) -> None:
+            calls.append(f"before_update {self.visits}")
+            if self.pk == "frozen":
+                raise PermissionError("frozen")
+
+        @dynamoxy.after_update
+        async def updated(self) -> None:
+            calls.append(f"after_update {self.visits}")
+
+    @client.hook("after_update", Counted)
+    def audit(item: Counted, context: dynamoxy.HookContext) -> None:
+        calls.append(f"client after_update ({context.operation})")
+
+    await client.create_tables(Counted)
+    counted = client.repository(Counted)
+    item = await counted.create(Counted(pk="c"))
+    await counted.update(item, Counted.visits.add(1))
+    async with client.transaction() as tx:
+        tx.update(item, Counted.visits.add(2))
+    await counted.update(Counted.key("c"), Counted.visits.add(1))  # by key: no instance, so no hooks
+    assert calls == [
+        "before_update 0",
+        "after_update 1",
+        "client after_update (update)",
+        "before_update 1",
+        "after_update 3",
+        "client after_update (update)",
+    ]
+    frozen = await counted.create(Counted(pk="frozen"))
+    with dynamoxy.collect() as usage, pytest.raises(PermissionError):
+        await counted.update(frozen, Counted.visits.add(1))
+    assert usage.calls == 0, "refused before any I/O"
+    assert (await counted.get_or_raise("frozen")).visits == 0
+
+
 async def test_repository_subclasses(client: dynamoxy.Client) -> None:
     class UserRepository(dynamoxy.Repository[User]):
         async def by_email(self, email: str) -> User | None:

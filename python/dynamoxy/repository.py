@@ -648,11 +648,14 @@ class Repository[M]:
     ) -> _WritePlan:
         schema = self.schema
         instance = target if isinstance(target, self.model_class) else None
-        key = self._target_key(target)
-        state = schema.state(instance) if instance is not None else None
         actions_list = list(actions)
         if not actions_list:
             raise ValueError("update() needs at least one action, e.g. User.visits.add(1)")
+        hooks = self.client.hooks
+        if instance is not None and hooks.has("before_update", type(instance)):
+            await hooks.run("before_update", instance, self._context("update"))
+        key = self._target_key(target)
+        state = schema.state(instance) if instance is not None else None
         touched: dict[str, FieldSpec] = {}
         literals: dict[str, Any] = {}
         attributes = schema.attributes
@@ -811,6 +814,8 @@ class Repository[M]:
             if attributes is None:  # in a transaction, which returns nothing
                 attributes = self._updated_locally(stored_old, instance, actions_list)
             self._assign(instance, self._load(attributes), attributes)
+            if hooks.has("after_update", type(instance)):
+                await hooks.run("after_update", instance, self._context("update"))
 
         return _WritePlan(self, plan, "update", key, expected, finalize, upsert=upsert, instance=instance)
 

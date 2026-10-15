@@ -154,10 +154,39 @@ class Order(dynamoxy.Model, table="orders"):
 
 ## Lifecycle hooks
 
-Model methods decorated with `@dynamoxy.before_save`, `after_save`, `before_delete`,
-`after_delete` (sync or async) and `after_load` (sync) run around persistence. Client-level hooks
-(`@client.hook("before_save", User)`) receive `(instance, HookContext)` and suit cross-cutting
-concerns such as auditing. `before_*` hooks may change the instance or raise to abort the write.
+Decorated model methods run around persistence, sync or async (`after_load` hooks are sync):
+
+```python
+class Customer(dynamoxy.Model, table="customers"):
+    customer_id: Attr[str] = partition_key()
+    email: Attr[str]
+    visits: Attr[int] = field(default=0)
+
+    @dynamoxy.before_save
+    def normalize(self) -> None:  # may change the instance; raising aborts the write
+        self.email = self.email.strip().lower()
+
+    @dynamoxy.after_save
+    async def announce(self) -> None:
+        await outbox.publish("customer.saved", self.customer_id)
+
+    @dynamoxy.after_update
+    def forget(self) -> None:  # the refreshed instance, after an update
+        cache.pop(self.customer_id, None)
+```
+
+| Hooks | Run for | Notes |
+| --- | --- | --- |
+| `before_save`, `after_save` | `create`, `put`, `save`, batch puts, transactions | `before_save` may change the instance, and runs before validation |
+| `before_update`, `after_update` | `update()` of an instance, in repositories and transactions | the update writes its actions only, so changes `before_update` makes to the instance are not stored; `after_update` sees the refreshed instance |
+| `before_delete`, `after_delete` | `delete()` of an instance, batch deletes, transactions | |
+| `after_load` | every item a repository decodes | migrate old shapes in memory |
+
+Raising in a `before_*` hook aborts the write (in a transaction, the whole transaction). Writes
+by key (`customers.update(Customer.key("c1"), ...)`, `customers.delete("c1")`) have no instance
+and run no hooks. Client-level hooks (`@client.hook("after_update", Customer)`, or without a
+model for every model) receive `(instance, HookContext)` (`operation`, `model`, `client`), run
+after the model's own and suit cross-cutting concerns such as auditing.
 
 ## Names to avoid
 

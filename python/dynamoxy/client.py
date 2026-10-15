@@ -420,8 +420,9 @@ class Client:
     def hook(self, point: HookPoint, model: type | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator registering a lifecycle hook for ``model`` (or every model).
 
-        The hook receives ``(instance, context)`` and may be sync or async (``after_load`` hooks
-        must be sync).
+        Points: ``before_save``, ``after_save``, ``before_update``, ``after_update``,
+        ``before_delete``, ``after_delete`` and ``after_load``. The hook receives
+        ``(instance, context)`` and may be sync or async (``after_load`` hooks must be sync).
 
         Example::
 

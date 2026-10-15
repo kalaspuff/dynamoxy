@@ -8,6 +8,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Features
+
+- Lifecycle hooks for updates: `@dynamoxy.before_update` and `@dynamoxy.after_update` (and
+  `client.hook("after_update", Model)`) run around updates of instances, in repositories and
+  transactions.
+
 ### Performance
 
 - Overall, an in-memory `get` takes under 10 µs instead of about 60 µs, and against an emulated

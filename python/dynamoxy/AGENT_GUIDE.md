@@ -219,7 +219,15 @@ class Booking(dynamoxy.Model, table="bookings"):
             raise ValueError("too many guests for this stay")
 
     @dynamoxy.before_save
-    async def normalize(self) -> None:  # sync or async; raising aborts the write
+    async def normalize(self) -> None:  # sync or async; may change the instance; raising aborts the write
+        ...
+
+    @dynamoxy.after_save
+    async def announce(self) -> None:  # after create, put, save and batch puts
+        ...
+
+    @dynamoxy.after_update
+    def forget(self) -> None:  # after update() of an instance
         ...
 
     @dynamoxy.after_load
@@ -227,7 +235,10 @@ class Booking(dynamoxy.Model, table="bookings"):
         ...
 ```
 
-Hook points: `before_save`, `after_save`, `before_delete`, `after_delete`, `after_load`. Client
+Hook points: `before_save`, `after_save` (create, put, save, batch puts), `before_update`,
+`after_update` (updates of instances), `before_delete`, `after_delete`, `after_load`. They run in
+repositories and transactions alike; writes by key run none. `before_update` hooks can abort, but
+the update only writes its actions, so changes they make to the instance are not stored. Client
 hooks apply to any model and receive a `HookContext` (operation, model, client):
 
 ```python

@@ -15,11 +15,12 @@ the parameters of the call, which it may change) and returns the :class:`Respons
 
 Typical uses: auditing, access control, caching ``GetItem``, custom retries, fault injection.
 
-**Lifecycle hooks** run around model persistence: ``before_save``, ``after_save``,
-``before_delete``, ``after_delete`` and ``after_load``. Declare them on the model (decorated
+**Lifecycle hooks** run around model persistence: ``before_save``/``after_save`` (create, put,
+save, batch puts), ``before_update``/``after_update`` (updates of instances),
+``before_delete``/``after_delete`` and ``after_load``. Declare them on the model (decorated
 methods, see :func:`dynamoxy.before_save`) or on the client for any model::
 
-    @client.hook("before_save", User)
+    @client.hook("after_update", User)
     async def audit(user: User, context: dynamoxy.HookContext) -> None: ...
 """
 
@@ -84,7 +85,8 @@ class HookContext:
 
     Attributes:
         operation: ``"create"``, ``"put"``, ``"save"``, ``"update"``, ``"delete"``,
-            ``"batch_put"``, ``"batch_delete"``, ``"transaction"`` or ``"load"``.
+            ``"batch_put"``, ``"batch_delete"`` or ``"load"`` (a write in a transaction reports
+            its own operation).
         model: The model class.
         client: The client.
     """
