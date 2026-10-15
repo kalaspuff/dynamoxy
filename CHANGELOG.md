@@ -8,6 +8,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
 ### Features
 
 - Queries and scans take `consistent=True` for strongly consistent reads, like `get()`:
@@ -81,6 +83,32 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   score. It is now rendered from the update evaluated on the item as last read.
 - The in-memory backend compared binary values by length only when it checked that a reused
   transaction idempotency token belonged to the same request.
+
+### Features
+
+- **models:** Before_update and after_update lifecycle hooks (#11) (#11)
+- **models:** [**breaking**] Model instances save, update and delete themselves through their repository (#12) (#12)
+- **query:** Consistent=True for queries and scans (#18) (#18)
+
+### Bug fixes
+
+- Compare binary values when the in-memory backend matches transaction idempotency tokens (#3) (#3)
+- **repository:** Render templated attributes from the new value after arithmetic updates (#9) (#9)
+- **models:** Copy() makes new instances, and copies keep their own persistence state (#10) (#10)
+- **query:** Hydrate() reads full items as consistently as its query (#17) (#17)
+
+### Performance
+
+- Faster in-memory backend, expression parser and numbers (#4) (#4)
+- Replace pyo3-async-runtimes with an own asyncio bridge (#5) (#5)
+- Skip unused work in the call pipeline (#6) (#6)
+- Precomputed model plans, faster repositories and queries (#7) (#7)
+
+### Documentation
+
+- Document how credentials and region are resolved (#14) (#14)
+- A skill for pull requests, stacks and publish kits (#15) (#15)
+- Document table_prefix for environments sharing an AWS account (#16) (#16)
 
 ## [0.1.0] - 2026-10-13
 
