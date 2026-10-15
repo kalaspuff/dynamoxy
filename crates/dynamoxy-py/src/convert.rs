@@ -15,7 +15,8 @@
 //!
 //! Anything else raises `ValidationError` naming the accepted types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use dynamoxy_core::types::{
     BackupDescription, BackupDetails, BackupSummary, Capacity, ConsumedCapacity, ContinuousBackupsDescription,
@@ -24,6 +25,7 @@ use dynamoxy_core::types::{
 };
 use dynamoxy_core::{AttributeValue, Item, Number, OperationStats};
 use pyo3::exceptions::PyTypeError;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{
@@ -44,7 +46,37 @@ fn mapping_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     MAPPING.import(py, "collections.abc", "Mapping")
 }
 
-fn number(text: &str, path: &str) -> PyResult<Number> {
+/// Where a value is in the argument being converted, for error messages (`tags[2]`,
+/// `address.city`). Rendered only when there is an error.
+#[derive(Clone, Copy)]
+enum ValuePath<'a> {
+    Root(&'a str),
+    Member(&'a ValuePath<'a>, &'a str),
+    Element(&'a ValuePath<'a>, usize),
+}
+
+impl ValuePath<'_> {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Root(name) => name.is_empty(),
+            Self::Member(parent, name) => parent.is_empty() && name.is_empty(),
+            Self::Element(..) => false,
+        }
+    }
+}
+
+impl std::fmt::Display for ValuePath<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Root(name) => f.write_str(name),
+            Self::Member(parent, name) if parent.is_empty() => f.write_str(name),
+            Self::Member(parent, name) => write!(f, "{parent}.{name}"),
+            Self::Element(parent, index) => write!(f, "{parent}[{index}]"),
+        }
+    }
+}
+
+fn number(text: &str, path: &ValuePath<'_>) -> PyResult<Number> {
     Number::parse(text).map_err(|error| ValidationError::new_err(format!("{path}: {error}")))
 }
 
@@ -54,6 +86,10 @@ fn type_name(value: &Bound<'_, PyAny>) -> String {
 
 /// Converts a Python value to an attribute value. `path` names the value in error messages.
 pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
+    to_av(value, &ValuePath::Root(path))
+}
+
+fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeValue> {
     let py = value.py();
     if value.is_none() {
         return Ok(AttributeValue::Null);
@@ -77,18 +113,19 @@ pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue
                 "{path}: DynamoDB numbers cannot be NaN or infinite, got {float}"
             )));
         }
-        return Ok(AttributeValue::N(number(&float.to_string(), path)?));
+        return Number::parse_owned(float.to_string())
+            .map(AttributeValue::N)
+            .map_err(|error| ValidationError::new_err(format!("{path}: {error}")));
     }
     if let Ok(dict) = value.cast::<PyDict>() {
         return Ok(AttributeValue::M(dict_to_item(dict, path)?));
     }
     if let Ok(list) = value.cast::<PyList>() {
-        return list
-            .iter()
-            .enumerate()
-            .map(|(index, element)| py_to_av(&element, &format!("{path}[{index}]")))
-            .collect::<PyResult<_>>()
-            .map(AttributeValue::L);
+        let mut values = Vec::with_capacity(list.len());
+        for (index, element) in list.iter().enumerate() {
+            values.push(to_av(&element, &ValuePath::Element(path, index))?);
+        }
+        return Ok(AttributeValue::L(values));
     }
     if let Ok(text) = value.cast::<PyString>() {
         return Ok(AttributeValue::S(text.to_str()?.to_owned()));
@@ -113,12 +150,11 @@ pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue
         return Ok(AttributeValue::N(number(&value.str()?.to_cow()?, path)?));
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
-        return tuple
-            .iter()
-            .enumerate()
-            .map(|(index, element)| py_to_av(&element, &format!("{path}[{index}]")))
-            .collect::<PyResult<_>>()
-            .map(AttributeValue::L);
+        let mut values = Vec::with_capacity(tuple.len());
+        for (index, element) in tuple.iter().enumerate() {
+            values.push(to_av(&element, &ValuePath::Element(path, index))?);
+        }
+        return Ok(AttributeValue::L(values));
     }
     if value.is_instance_of::<PySet>() || value.is_instance_of::<PyFrozenSet>() {
         return set_to_av(value, path);
@@ -137,14 +173,14 @@ pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue
     )))
 }
 
-fn set_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
+fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeValue> {
     let elements: Vec<Bound<'_, PyAny>> = value.try_iter()?.collect::<PyResult<_>>()?;
     if elements.is_empty() {
         return Err(ValidationError::new_err(format!(
             "{path}: DynamoDB does not store empty sets; leave the attribute out (or use None or an empty list)"
         )));
     }
-    let converted = elements.iter().map(|element| py_to_av(element, path)).collect::<PyResult<Vec<_>>>()?;
+    let converted = elements.iter().map(|element| to_av(element, path)).collect::<PyResult<Vec<_>>>()?;
     match converted[0] {
         AttributeValue::S(_) => converted
             .into_iter()
@@ -186,14 +222,14 @@ fn set_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
     }
 }
 
-fn mixed_set(path: &str, value: &AttributeValue) -> PyErr {
+fn mixed_set(path: &ValuePath<'_>, value: &AttributeValue) -> PyErr {
     ValidationError::new_err(format!(
         "{path}: all elements of a set must have the same type (str, numbers or bytes); found a {} element",
         value.value_type()
     ))
 }
 
-fn dict_to_item(dict: &Bound<'_, PyDict>, path: &str) -> PyResult<Item> {
+fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>) -> PyResult<Item> {
     let mut item = Item::new();
     for (key, value) in dict.iter() {
         let Ok(name) = key.cast::<PyString>() else {
@@ -203,8 +239,8 @@ fn dict_to_item(dict: &Bound<'_, PyDict>, path: &str) -> PyResult<Item> {
             )));
         };
         let name = name.to_str()?;
-        let child = if path.is_empty() { name.to_owned() } else { format!("{path}.{name}") };
-        item.insert(name.to_owned(), py_to_av(&value, &child)?);
+        let converted = to_av(&value, &ValuePath::Member(path, name))?;
+        item.insert(name.to_owned(), converted);
     }
     Ok(item)
 }
@@ -212,7 +248,7 @@ fn dict_to_item(dict: &Bound<'_, PyDict>, path: &str) -> PyResult<Item> {
 /// Converts a Python mapping (an item or a key) to an [`Item`].
 pub fn py_to_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Item> {
     if let Ok(dict) = value.cast::<PyDict>() {
-        return dict_to_item(dict, "");
+        return dict_to_item(dict, &ValuePath::Root(""));
     }
     match py_to_av(value, what)? {
         AttributeValue::M(item) => Ok(item),
@@ -223,38 +259,115 @@ pub fn py_to_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Item> {
     }
 }
 
+/// FNV-1a: a fast hash for the short strings of [`ToPython`]'s caches.
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+type FnvMap<K, V> = HashMap<K, V, BuildHasherDefault<Fnv>>;
+
+/// Converts attribute values to Python objects. Converting many items (a page of a query), it
+/// creates each attribute name string and each decimal once and shares them between the items
+/// (both are immutable in Python), which also saves Python from hashing every key again.
+struct ToPython<'py, 'i> {
+    py: Python<'py>,
+    shared: Option<Shared<'py, 'i>>,
+}
+
+/// Attribute name strings and decimals created so far, by their text.
+type Shared<'py, 'i> = (FnvMap<&'i str, Bound<'py, PyString>>, FnvMap<&'i str, Bound<'py, PyAny>>);
+
+impl<'py, 'i> ToPython<'py, 'i> {
+    fn new(py: Python<'py>, share: bool) -> Self {
+        Self { py, shared: share.then(Default::default) }
+    }
+
+    fn name(&mut self, name: &'i str) -> Bound<'py, PyString> {
+        match &mut self.shared {
+            Some((names, _)) => names.entry(name).or_insert_with(|| PyString::new(self.py, name)).clone(),
+            None => PyString::new(self.py, name),
+        }
+    }
+
+    fn number(&mut self, number: &'i Number) -> PyResult<Bound<'py, PyAny>> {
+        if number.is_integer() {
+            return number_to_py(self.py, number);
+        }
+        match &mut self.shared {
+            Some((_, decimals)) => {
+                if let Some(decimal) = decimals.get(number.as_str()) {
+                    return Ok(decimal.clone());
+                }
+                let decimal = number_to_py(self.py, number)?;
+                decimals.insert(number.as_str(), decimal.clone());
+                Ok(decimal)
+            }
+            None => number_to_py(self.py, number),
+        }
+    }
+
+    fn item(&mut self, item: &'i Item) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(self.py);
+        for (name, value) in item {
+            dict.set_item(self.name(name), self.value(value)?)?;
+        }
+        Ok(dict)
+    }
+
+    fn value(&mut self, value: &'i AttributeValue) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py;
+        Ok(match value {
+            AttributeValue::S(text) => PyString::new(py, text).into_any(),
+            AttributeValue::N(number) => self.number(number)?,
+            AttributeValue::B(bytes) => PyBytes::new(py, bytes).into_any(),
+            AttributeValue::Bool(flag) => PyBool::new(py, *flag).to_owned().into_any(),
+            AttributeValue::Null => py.None().into_bound(py),
+            AttributeValue::L(values) => {
+                let list = PyList::empty(py);
+                for value in values {
+                    list.append(self.value(value)?)?;
+                }
+                list.into_any()
+            }
+            AttributeValue::M(values) => self.item(values)?.into_any(),
+            AttributeValue::Ss(values) => PySet::new(py, values)?.into_any(),
+            AttributeValue::Ns(values) => {
+                let set = PySet::empty(py)?;
+                for number in values {
+                    set.add(self.number(number)?)?;
+                }
+                set.into_any()
+            }
+            AttributeValue::Bs(values) => {
+                let set = PySet::empty(py)?;
+                for bytes in values {
+                    set.add(PyBytes::new(py, bytes))?;
+                }
+                set.into_any()
+            }
+        })
+    }
+}
+
 /// Converts an attribute value to a Python object.
 pub fn av_to_py<'py>(py: Python<'py>, value: &AttributeValue) -> PyResult<Bound<'py, PyAny>> {
-    Ok(match value {
-        AttributeValue::S(text) => PyString::new(py, text).into_any(),
-        AttributeValue::N(number) => number_to_py(py, number)?,
-        AttributeValue::B(bytes) => PyBytes::new(py, bytes).into_any(),
-        AttributeValue::Bool(flag) => PyBool::new(py, *flag).to_owned().into_any(),
-        AttributeValue::Null => py.None().into_bound(py),
-        AttributeValue::L(values) => {
-            let list = PyList::empty(py);
-            for value in values {
-                list.append(av_to_py(py, value)?)?;
-            }
-            list.into_any()
-        }
-        AttributeValue::M(values) => item_to_py(py, values)?.into_any(),
-        AttributeValue::Ss(values) => PySet::new(py, values)?.into_any(),
-        AttributeValue::Ns(values) => {
-            let set = PySet::empty(py)?;
-            for number in values {
-                set.add(number_to_py(py, number)?)?;
-            }
-            set.into_any()
-        }
-        AttributeValue::Bs(values) => {
-            let set = PySet::empty(py)?;
-            for bytes in values {
-                set.add(PyBytes::new(py, bytes))?;
-            }
-            set.into_any()
-        }
-    })
+    ToPython::new(py, false).value(value)
 }
 
 /// A number as `int` when it is integral, otherwise as `decimal.Decimal`.
@@ -270,11 +383,7 @@ pub fn number_to_py<'py>(py: Python<'py>, number: &Number) -> PyResult<Bound<'py
 
 /// Converts an item to a Python `dict`.
 pub fn item_to_py<'py>(py: Python<'py>, item: &Item) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (name, value) in item {
-        dict.set_item(name, av_to_py(py, value)?)?;
-    }
-    Ok(dict)
+    ToPython::new(py, false).item(item)
 }
 
 /// Converts an optional item.
@@ -285,11 +394,12 @@ pub fn optional_item<'py>(py: Python<'py>, item: Option<&Item>) -> PyResult<Boun
     }
 }
 
-/// Converts a list of items.
+/// Converts a list of items (sharing attribute names and decimals between them).
 pub fn items_to_py<'py>(py: Python<'py>, items: &[Item]) -> PyResult<Bound<'py, PyList>> {
+    let mut convert = ToPython::new(py, items.len() > 1);
     let list = PyList::empty(py);
     for item in items {
-        list.append(item_to_py(py, item)?)?;
+        list.append(convert.item(item)?)?;
     }
     Ok(list)
 }
@@ -338,7 +448,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyValueList {
         value
             .try_iter()?
             .enumerate()
-            .map(|(index, element)| py_to_av(&element?, &format!("parameters[{index}]")))
+            .map(|(index, element)| to_av(&element?, &ValuePath::Element(&ValuePath::Root("parameters"), index)))
             .collect::<PyResult<_>>()
             .map(Self)
     }
@@ -354,9 +464,9 @@ pub fn stats(stats: &OperationStats) -> Stats {
 
 fn capacity_dict<'py>(py: Python<'py>, capacity: &Capacity) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
-    dict.set_item("read_capacity_units", capacity.read_capacity_units)?;
-    dict.set_item("write_capacity_units", capacity.write_capacity_units)?;
-    dict.set_item("capacity_units", capacity.capacity_units)?;
+    dict.set_item(intern!(py, "read_capacity_units"), capacity.read_capacity_units)?;
+    dict.set_item(intern!(py, "write_capacity_units"), capacity.write_capacity_units)?;
+    dict.set_item(intern!(py, "capacity_units"), capacity.capacity_units)?;
     Ok(dict)
 }
 
@@ -371,13 +481,13 @@ fn capacity_map<'py>(py: Python<'py>, map: &BTreeMap<String, Capacity>) -> PyRes
 /// Converts consumed capacity.
 pub fn consumed_capacity<'py>(py: Python<'py>, capacity: &ConsumedCapacity) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
-    dict.set_item("table_name", &capacity.table_name)?;
-    dict.set_item("capacity_units", capacity.capacity_units)?;
-    dict.set_item("read_capacity_units", capacity.read_capacity_units)?;
-    dict.set_item("write_capacity_units", capacity.write_capacity_units)?;
-    dict.set_item("table", capacity.table.as_ref().map(|table| capacity_dict(py, table)).transpose()?)?;
-    dict.set_item("global_secondary_indexes", capacity_map(py, &capacity.global_secondary_indexes)?)?;
-    dict.set_item("local_secondary_indexes", capacity_map(py, &capacity.local_secondary_indexes)?)?;
+    dict.set_item(intern!(py, "table_name"), &capacity.table_name)?;
+    dict.set_item(intern!(py, "capacity_units"), capacity.capacity_units)?;
+    dict.set_item(intern!(py, "read_capacity_units"), capacity.read_capacity_units)?;
+    dict.set_item(intern!(py, "write_capacity_units"), capacity.write_capacity_units)?;
+    dict.set_item(intern!(py, "table"), capacity.table.as_ref().map(|table| capacity_dict(py, table)).transpose()?)?;
+    dict.set_item(intern!(py, "global_secondary_indexes"), capacity_map(py, &capacity.global_secondary_indexes)?)?;
+    dict.set_item(intern!(py, "local_secondary_indexes"), capacity_map(py, &capacity.local_secondary_indexes)?)?;
     Ok(dict)
 }
 
@@ -555,10 +665,10 @@ pub fn write_request_to_py<'py>(py: Python<'py>, request: &WriteRequest) -> PyRe
 /// Keys and read settings of one table (`unprocessed_keys`).
 pub fn keys_and_attributes<'py>(py: Python<'py>, request: &KeysAndAttributes) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
-    dict.set_item("keys", items_to_py(py, &request.keys)?)?;
-    dict.set_item("consistent_read", request.consistent_read)?;
-    dict.set_item("projection_expression", &request.projection_expression)?;
-    dict.set_item("expression_attribute_names", request.expression_attribute_names.clone())?;
+    dict.set_item(intern!(py, "keys"), items_to_py(py, &request.keys)?)?;
+    dict.set_item(intern!(py, "consistent_read"), request.consistent_read)?;
+    dict.set_item(intern!(py, "projection_expression"), &request.projection_expression)?;
+    dict.set_item(intern!(py, "expression_attribute_names"), request.expression_attribute_names.clone())?;
     Ok(dict)
 }
 
@@ -637,7 +747,7 @@ pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeV
     let kind: String = kind.extract()?;
     Ok(match kind.as_str() {
         "S" => AttributeValue::S(inner.extract()?),
-        "N" => AttributeValue::N(number(&inner.extract::<String>()?, path)?),
+        "N" => AttributeValue::N(number(&inner.extract::<String>()?, &ValuePath::Root(path))?),
         "B" => AttributeValue::B(wire_binary(&inner, path)?),
         "BOOL" => AttributeValue::Bool(inner.extract()?),
         "NULL" => AttributeValue::Null,
@@ -651,7 +761,11 @@ pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeV
         "M" => AttributeValue::M(item_from_wire(&inner, path)?),
         "SS" => AttributeValue::Ss(inner.extract()?),
         "NS" => AttributeValue::Ns(
-            inner.extract::<Vec<String>>()?.iter().map(|text| number(text, path)).collect::<PyResult<_>>()?,
+            inner
+                .extract::<Vec<String>>()?
+                .iter()
+                .map(|text| number(text, &ValuePath::Root(path)))
+                .collect::<PyResult<_>>()?,
         ),
         "BS" => {
             AttributeValue::Bs(inner.try_iter()?.map(|element| wire_binary(&element?, path)).collect::<PyResult<_>>()?)

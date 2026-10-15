@@ -155,9 +155,10 @@ The README stays short and links to the docs.
 
 ## Things to avoid
 
-* Calling into Python from Rust threads (events are pulled by Python).
+* Calling into Python (or taking the GIL) from Rust threads: events are pulled by Python, and a
+  call's future returns a `runtime::Deferred` that builds its result on the event loop's thread.
 * Threads or Tokio runtimes outside `crates/dynamoxy-py/src/runtime.rs`, or awaitables not created
-  with `runtime::future_into_py`.
+  with `runtime::future_into_py` (`PyCoreClient::run` picks it or `future_into_py_inline`).
 * Holding a `parking_lot` lock across `.await`.
 * Putting values into expression strings, or attribute names without placeholders.
 * Long timeouts in tests; `time.sleep` in async code; global mutable state in Python modules.

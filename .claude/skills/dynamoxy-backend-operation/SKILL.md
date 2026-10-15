@@ -20,7 +20,9 @@ description: Add or change a DynamoDB operation in dynamoxy end to end - Backend
 6. **Parity**: a scenario in `crates/dynamoxy-core/tests/emulator.rs` (runs on memory and, with
    `DYNAMOXY_TEST_ENDPOINT_URL`, on MiniStack).
 7. **Binding**: a method on `PyCoreClient` (`crates/dynamoxy-py/src/client.rs`) returning
-   `runtime::future_into_py`, conversions in `convert.rs`; the stub in
+   `self.run(py, async move { finish(client.operation(input).await, convert) })`: `finish` builds
+   a `runtime::Deferred`, so `convert` runs on the event loop's thread (never take the GIL in the
+   future). Conversions in `convert.rs` (intern constant dict keys with `intern!`); the stub in
    `python/dynamoxy/_core.pyi`.
 8. **Python**: a wrapper (repository, `Table`, or `Client`) calling `client.call(method,
    Operation, ...)`; tests in `tests/integration/` (both backends).

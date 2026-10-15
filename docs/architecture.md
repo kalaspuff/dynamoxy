@@ -63,7 +63,9 @@ asyncio bridge only: no logic.
 3. **Python, `expressions.py`**: render conditions and update actions to expression strings
    with `#aN`/`:vN` placeholders. No user value ever appears in an expression string.
 4. **Python, `client.call`**: middleware chain → `_invoke`: OpenTelemetry span, native call.
-5. **Binding**: convert parameters to core types, run the future on the Tokio runtime.
+5. **Binding**: convert parameters to core types, run the future on the Tokio runtime (in-memory
+   clients poll it once on the calling thread first); the result is converted to Python on the
+   event loop's thread (see the concurrency model).
 6. **Core, `client.rs`**: validate, send through the backend with a per-attempt timeout; retry
    retryable errors (throttling, 5xx, transaction conflicts, timeouts) with exponential backoff
    and full jitter; emit events; record metrics; return the output with `OperationStats`.
@@ -142,7 +144,15 @@ These are relied upon across layers; tests cover each of them.
 
 - **One Tokio multi-thread runtime per process** (`runtime.rs`), created lazily, reset after
   `fork()`, shut down at exit. Every awaitable from `_core` runs there and resolves on the asyncio
-  loop that awaited it (pyo3-async-runtimes).
+  loop that awaited it ([ADR 0010](adr/0010-asyncio-bridge.md)).
+- **The asyncio bridge** (`runtime.rs`): runtime threads never take the GIL. A finished call's
+  outcome (a `Deferred` that builds the Python result) is queued on the `Port` of its event loop;
+  the first one after a drain writes a byte to a socket pair the loop watches (`add_reader`),
+  and the loop's thread builds every queued result and resolves the futures. Loops without
+  `add_reader` are woken with `call_soon_threadsafe` from a blocking thread. In-memory clients
+  poll each call once on the calling thread (without the GIL); a call that finishes there needs
+  no thread at all, and its awaitable (`Ready`) still yields to the loop once, like real I/O.
+  Cancelling an awaitable aborts its task.
 - **The core client is `Send + Sync`**: the backend is shared behind `Arc`, metrics are atomics,
   the event buffer is a `parking_lot::Mutex<VecDeque>` held only for push/drain (never across
   `.await`), with a `tokio::sync::Notify` for waiters.

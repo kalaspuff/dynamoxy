@@ -5,6 +5,7 @@
 //! `(attempts, throttles, requests, duration_seconds)`. Errors carry `.attempts` and `.duration`.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::time::Duration;
 
 use dynamoxy_core::backend::memory::{Fault, FaultKind, MemoryBackend};
@@ -12,8 +13,10 @@ use dynamoxy_core::events::{Event, EventKind};
 use dynamoxy_core::metrics::LATENCY_BUCKETS_MS;
 use dynamoxy_core::types::*;
 use dynamoxy_core::{Call, Client, ClientConfig};
+use pyo3::IntoPyObjectExt;
+use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyString};
 use pythonize::depythonize;
 
 use crate::convert::{
@@ -21,8 +24,8 @@ use crate::convert::{
     continuous_backups, items_to_py, keys_and_attributes, optional_capacity, optional_item, py_to_item, stats,
     table_description, ttl_to_py, write_request_to_py,
 };
-use crate::errors::{ConfigurationError, ShutdownError, ValidationError, call_error, to_py_err};
-use crate::runtime::future_into_py;
+use crate::errors::{ConfigurationError, ShutdownError, ValidationError, call_error_in, error_in, to_py_err};
+use crate::runtime::{Deferred, future_into_py, future_into_py_in, future_into_py_inline};
 
 /// Parses a DynamoDB string constant (`"ALL_OLD"`, ...), naming the allowed values on error.
 macro_rules! constant {
@@ -53,19 +56,21 @@ fn values(values: Option<PyValues>) -> BTreeMap<String, dynamoxy_core::Attribute
     values.map(|values| values.0).unwrap_or_default()
 }
 
-/// Converts a finished call: `(output, stats)` or the exception (with `.attempts`, `.duration`).
-fn finish<T>(
+/// The outcome of a finished call: `(output, stats)` or the exception (with `.attempts`,
+/// `.duration`), converted to Python on the event loop's thread.
+fn finish<T: Send + 'static>(
     call: Call<T>,
-    convert: impl FnOnce(Python<'_>, T) -> PyResult<Py<PyAny>>,
-) -> PyResult<(Py<PyAny>, crate::convert::Stats)> {
-    let stats_tuple = stats(&call.stats);
-    match call.result {
-        Ok(output) => Python::attach(|py| Ok((convert(py, output)?, stats_tuple))),
-        Err(error) => Err(call_error(error, &call.stats)),
-    }
+    convert: impl for<'py> FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>> + Send + 'static,
+) -> Deferred {
+    let call_stats = call.stats;
+    Deferred::new(move |py| match call.result {
+        Ok(output) => (convert(py, output)?, stats(&call_stats)).into_py_any(py),
+        Err(error) => Err(call_error_in(py, error, &call_stats)),
+    })
 }
 
-fn dict<'py>(py: Python<'py>, entries: &[(&str, Bound<'py, PyAny>)]) -> PyResult<Py<PyAny>> {
+/// A dict of output fields (the keys are interned: `intern!(py, "items")`).
+fn dict<'py>(py: Python<'py>, entries: &[(&Bound<'py, PyString>, Bound<'py, PyAny>)]) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     for (key, value) in entries {
         dict.set_item(*key, value)?;
@@ -77,9 +82,9 @@ fn write_output(py: Python<'_>, output: WriteItemOutput) -> PyResult<Py<PyAny>> 
     dict(
         py,
         &[
-            ("attributes", optional_item(py, output.attributes.as_ref())?),
-            ("consumed_capacity", optional_capacity(py, output.consumed_capacity.as_ref())?),
-            ("item_collection_metrics", collection_metrics(py, output.item_collection_metrics.as_ref())?),
+            (intern!(py, "attributes"), optional_item(py, output.attributes.as_ref())?),
+            (intern!(py, "consumed_capacity"), optional_capacity(py, output.consumed_capacity.as_ref())?),
+            (intern!(py, "item_collection_metrics"), collection_metrics(py, output.item_collection_metrics.as_ref())?),
         ],
     )
 }
@@ -88,11 +93,11 @@ fn query_output(py: Python<'_>, output: QueryOutput) -> PyResult<Py<PyAny>> {
     dict(
         py,
         &[
-            ("items", items_to_py(py, &output.items)?.into_any()),
-            ("count", output.count.into_pyobject(py)?.into_any()),
-            ("scanned_count", output.scanned_count.into_pyobject(py)?.into_any()),
-            ("last_evaluated_key", optional_item(py, output.last_evaluated_key.as_ref())?),
-            ("consumed_capacity", optional_capacity(py, output.consumed_capacity.as_ref())?),
+            (intern!(py, "items"), items_to_py(py, &output.items)?.into_any()),
+            (intern!(py, "count"), output.count.into_pyobject(py)?.into_any()),
+            (intern!(py, "scanned_count"), output.scanned_count.into_pyobject(py)?.into_any()),
+            (intern!(py, "last_evaluated_key"), optional_item(py, output.last_evaluated_key.as_ref())?),
+            (intern!(py, "consumed_capacity"), optional_capacity(py, output.consumed_capacity.as_ref())?),
         ],
     )
 }
@@ -319,9 +324,9 @@ fn batch_get_output(py: Python<'_>, output: BatchGetItemOutput) -> PyResult<Py<P
     dict(
         py,
         &[
-            ("responses", responses.into_any()),
-            ("unprocessed_keys", unprocessed.into_any()),
-            ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+            (intern!(py, "responses"), responses.into_any()),
+            (intern!(py, "unprocessed_keys"), unprocessed.into_any()),
+            (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
         ],
     )
 }
@@ -406,6 +411,9 @@ pub struct PyCoreClient {
     client: Client,
     /// The process that created the client (a fork() child must create its own).
     pid: u32,
+    /// Poll calls once on the calling thread before handing them to the runtime (in-memory
+    /// backend: most calls finish without a thread hop).
+    inline: bool,
 }
 
 impl PyCoreClient {
@@ -416,6 +424,15 @@ impl PyCoreClient {
             ));
         }
         Ok(self.client.clone())
+    }
+
+    /// An awaitable for a call's outcome (after `client()` checked that this is the client's
+    /// process).
+    fn run<'py, F>(&self, py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+    where
+        F: Future<Output = Deferred> + Send + 'static,
+    {
+        if self.inline { future_into_py_inline(py, self.pid, fut) } else { future_into_py_in(py, self.pid, fut) }
     }
 }
 
@@ -431,7 +448,7 @@ impl PyCoreClient {
     fn memory(config: &Bound<'_, PyAny>, store: Option<&PyMemoryStore>) -> PyResult<Self> {
         let config = parse_config(config)?;
         let client = Client::memory(config, store.map(|store| store.backend.clone())).map_err(to_py_err)?;
-        Ok(Self { client, pid: std::process::id() })
+        Ok(Self { client, pid: std::process::id(), inline: true })
     }
 
     /// Connects to DynamoDB through the AWS SDK (awaitable, returns a `CoreClient`).
@@ -440,8 +457,10 @@ impl PyCoreClient {
         let config = parse_config(config)?;
         config.validate().map_err(to_py_err)?;
         future_into_py(py, async move {
-            let client = Client::connect(config).await.map_err(to_py_err)?;
-            Ok(PyCoreClient { client, pid: std::process::id() })
+            match Client::connect(config).await {
+                Ok(client) => Deferred::value(PyCoreClient { client, pid: std::process::id(), inline: false }),
+                Err(error) => Deferred::new(move |py| Err(error_in(py, error))),
+            }
         })
     }
 
@@ -494,13 +513,13 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.get_item(input).await, |py, output| {
                 dict(
                     py,
                     &[
-                        ("item", optional_item(py, output.item.as_ref())?),
-                        ("consumed_capacity", optional_capacity(py, output.consumed_capacity.as_ref())?),
+                        (intern!(py, "item"), optional_item(py, output.item.as_ref())?),
+                        (intern!(py, "consumed_capacity"), optional_capacity(py, output.consumed_capacity.as_ref())?),
                     ],
                 )
             })
@@ -543,7 +562,7 @@ impl PyCoreClient {
             )?,
             return_item_collection_metrics,
         };
-        future_into_py(py, async move { finish(client.put_item(input).await, write_output) })
+        self.run(py, async move { finish(client.put_item(input).await, write_output) })
     }
 
     /// `UpdateItem`.
@@ -584,7 +603,7 @@ impl PyCoreClient {
             )?,
             return_item_collection_metrics,
         };
-        future_into_py(py, async move { finish(client.update_item(input).await, write_output) })
+        self.run(py, async move { finish(client.update_item(input).await, write_output) })
     }
 
     /// `DeleteItem`.
@@ -623,7 +642,7 @@ impl PyCoreClient {
             )?,
             return_item_collection_metrics,
         };
-        future_into_py(py, async move { finish(client.delete_item(input).await, write_output) })
+        self.run(py, async move { finish(client.delete_item(input).await, write_output) })
     }
 
     /// `Query` (one page).
@@ -666,7 +685,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move { finish(client.query(input).await, query_output) })
+        self.run(py, async move { finish(client.query(input).await, query_output) })
     }
 
     /// `Scan` (one page).
@@ -709,7 +728,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move { finish(client.scan(input).await, query_output) })
+        self.run(py, async move { finish(client.scan(input).await, query_output) })
     }
 
     /// `BatchGetItem`: one request (at most 100 keys). See `batch_get` for any number of keys.
@@ -729,7 +748,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move { finish(client.batch_get_item(input).await, batch_get_output) })
+        self.run(py, async move { finish(client.batch_get_item(input).await, batch_get_output) })
     }
 
     /// `BatchWriteItem`: one request (at most 25 writes) of `("put", item)` / `("delete", key)`
@@ -762,7 +781,7 @@ impl PyCoreClient {
             )?,
             return_item_collection_metrics,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.batch_write_item(input).await, |py, output| {
                 let unprocessed = PyDict::new(py);
                 for (table, requests) in &output.unprocessed_items {
@@ -775,8 +794,8 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("unprocessed_items", unprocessed.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "unprocessed_items"), unprocessed.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -794,7 +813,7 @@ impl PyCoreClient {
         let client = self.client()?;
         let request_items = request_items.into_iter().map(|(table, keys)| (table, keys.into_core())).collect();
         let capacity = constant!(return_consumed_capacity, ReturnConsumedCapacity, "return_consumed_capacity")?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.batch_get(request_items, capacity).await, |py, output| {
                 let items = PyDict::new(py);
                 for (table, found) in &output.items {
@@ -807,9 +826,9 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("items", items.into_any()),
-                        ("unprocessed_keys", unprocessed.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "items"), items.into_any()),
+                        (intern!(py, "unprocessed_keys"), unprocessed.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -832,7 +851,7 @@ impl PyCoreClient {
             converted.push((table, write_request(&kind, &item)?));
         }
         let capacity = constant!(return_consumed_capacity, ReturnConsumedCapacity, "return_consumed_capacity")?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.batch_write(converted, capacity).await, |py, output| {
                 let unprocessed = PyList::empty(py);
                 for (table, request) in &output.unprocessed {
@@ -842,8 +861,8 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("unprocessed", unprocessed.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "unprocessed"), unprocessed.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -875,7 +894,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.transact_get_items(input).await, |py, output| {
                 let responses = PyList::empty(py);
                 for item in &output.responses {
@@ -884,8 +903,8 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("responses", responses.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "responses"), responses.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -917,9 +936,9 @@ impl PyCoreClient {
             )?,
             return_item_collection_metrics,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.transact_write_items(input).await, |py, output| {
-                dict(py, &[("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any())])
+                dict(py, &[(intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any())])
             })
         })
     }
@@ -956,15 +975,15 @@ impl PyCoreClient {
                 "return_values_on_condition_check_failure"
             )?,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.execute_statement(input).await, |py, output| {
                 dict(
                     py,
                     &[
-                        ("items", items_to_py(py, &output.items)?.into_any()),
-                        ("next_token", output.next_token.into_pyobject(py)?.into_any()),
-                        ("last_evaluated_key", optional_item(py, output.last_evaluated_key.as_ref())?),
-                        ("consumed_capacity", optional_capacity(py, output.consumed_capacity.as_ref())?),
+                        (intern!(py, "items"), items_to_py(py, &output.items)?.into_any()),
+                        (intern!(py, "next_token"), output.next_token.into_pyobject(py)?.into_any()),
+                        (intern!(py, "last_evaluated_key"), optional_item(py, output.last_evaluated_key.as_ref())?),
+                        (intern!(py, "consumed_capacity"), optional_capacity(py, output.consumed_capacity.as_ref())?),
                     ],
                 )
             })
@@ -988,7 +1007,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.batch_execute_statement(input).await, |py, output| {
                 let responses = PyList::empty(py);
                 for response in &output.responses {
@@ -1009,8 +1028,8 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("responses", responses.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "responses"), responses.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -1036,7 +1055,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.execute_transaction(input).await, |py, output| {
                 let responses = PyList::empty(py);
                 for item in &output.responses {
@@ -1045,8 +1064,8 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("responses", responses.into_any()),
-                        ("consumed_capacity", capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "responses"), responses.into_any()),
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
                     ],
                 )
             })
@@ -1106,19 +1125,19 @@ impl PyCoreClient {
             table_class: optional_constant(table_class, |value| constant!(value, TableClass, "table_class"))?,
             deletion_protection_enabled,
         };
-        future_into_py(py, async move { finish(client.create_table(input).await, table_output) })
+        self.run(py, async move { finish(client.create_table(input).await, table_output) })
     }
 
     /// `DeleteTable`.
     fn delete_table<'py>(&self, py: Python<'py>, table_name: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move { finish(client.delete_table(&table_name).await, table_output) })
+        self.run(py, async move { finish(client.delete_table(&table_name).await, table_output) })
     }
 
     /// `DescribeTable`.
     fn describe_table<'py>(&self, py: Python<'py>, table_name: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move { finish(client.describe_table(&table_name).await, table_output) })
+        self.run(py, async move { finish(client.describe_table(&table_name).await, table_output) })
     }
 
     /// `UpdateTable`. Index changes are dicts: `{"create": {...}}`, `{"update": {"index_name": ...,
@@ -1188,7 +1207,7 @@ impl PyCoreClient {
             table_class: optional_constant(table_class, |value| constant!(value, TableClass, "table_class"))?,
             deletion_protection_enabled,
         };
-        future_into_py(py, async move { finish(client.update_table(input).await, table_output) })
+        self.run(py, async move { finish(client.update_table(input).await, table_output) })
     }
 
     /// `ListTables` (one page).
@@ -1201,13 +1220,16 @@ impl PyCoreClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
         let input = ListTablesInput { exclusive_start_table_name, limit };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.list_tables(input).await, |py, output| {
                 dict(
                     py,
                     &[
-                        ("table_names", output.table_names.into_pyobject(py)?.into_any()),
-                        ("last_evaluated_table_name", output.last_evaluated_table_name.into_pyobject(py)?.into_any()),
+                        (intern!(py, "table_names"), output.table_names.into_pyobject(py)?.into_any()),
+                        (
+                            intern!(py, "last_evaluated_table_name"),
+                            output.last_evaluated_table_name.into_pyobject(py)?.into_any(),
+                        ),
                     ],
                 )
             })
@@ -1226,11 +1248,12 @@ impl PyCoreClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
         let timeout = duration(timeout, "timeout")?;
-        future_into_py(py, async move {
-            let description = client.wait_for_table(&table_name, exists, timeout).await.map_err(to_py_err)?;
-            Python::attach(|py| match description {
-                Some(description) => Ok(table_description(py, &description)?.into_any().unbind()),
-                None => Ok(py.None()),
+        self.run(py, async move {
+            let waited = client.wait_for_table(&table_name, exists, timeout).await;
+            Deferred::new(move |py| match waited {
+                Ok(Some(description)) => Ok(table_description(py, &description)?.into_any().unbind()),
+                Ok(None) => Ok(py.None()),
+                Err(error) => Err(error_in(py, error)),
             })
         })
     }
@@ -1246,7 +1269,7 @@ impl PyCoreClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
         let input = UpdateTimeToLiveInput { table_name, enabled, attribute_name };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.update_time_to_live(input).await, |py, output| {
                 Ok(ttl_to_py(&output).into_pyobject(py)?.into_any().unbind())
             })
@@ -1256,7 +1279,7 @@ impl PyCoreClient {
     /// `DescribeTimeToLive`; returns `(status, attribute_name)`.
     fn describe_time_to_live<'py>(&self, py: Python<'py>, table_name: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.describe_time_to_live(&table_name).await, |py, output| {
                 Ok(ttl_to_py(&output).into_pyobject(py)?.into_any().unbind())
             })
@@ -1285,15 +1308,16 @@ impl PyCoreClient {
         tag_keys: Vec<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
-            finish(client.untag_resource(&resource_arn, tag_keys).await, |py, ()| Ok(py.None()))
-        })
+        self.run(
+            py,
+            async move { finish(client.untag_resource(&resource_arn, tag_keys).await, |py, ()| Ok(py.None())) },
+        )
     }
 
     /// `ListTagsOfResource` (every page); returns a dict of tags.
     fn list_tags_of_resource<'py>(&self, py: Python<'py>, resource_arn: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.list_tags_of_resource(&resource_arn).await, |py, output| {
                 Ok(output.tags.into_pyobject(py)?.into_any().unbind())
             })
@@ -1303,7 +1327,7 @@ impl PyCoreClient {
     /// `DescribeContinuousBackups`.
     fn describe_continuous_backups<'py>(&self, py: Python<'py>, table_name: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.describe_continuous_backups(&table_name).await, |py, output| {
                 Ok(continuous_backups(py, &output)?.into_any().unbind())
             })
@@ -1320,7 +1344,7 @@ impl PyCoreClient {
         recovery_period_in_days: Option<i64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(
                 client.update_continuous_backups(&table_name, enabled, recovery_period_in_days).await,
                 |py, output| Ok(continuous_backups(py, &output)?.into_any().unbind()),
@@ -1336,7 +1360,7 @@ impl PyCoreClient {
         backup_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.create_backup(&table_name, &backup_name).await, |py, output| {
                 Ok(backup_details(py, &output)?.into_any().unbind())
             })
@@ -1346,7 +1370,7 @@ impl PyCoreClient {
     /// `DescribeBackup`.
     fn describe_backup<'py>(&self, py: Python<'py>, backup_arn: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.describe_backup(&backup_arn).await, |py, output| {
                 Ok(backup_description(py, &output)?.into_any().unbind())
             })
@@ -1356,7 +1380,7 @@ impl PyCoreClient {
     /// `DeleteBackup`.
     fn delete_backup<'py>(&self, py: Python<'py>, backup_arn: String) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.delete_backup(&backup_arn).await, |py, output| {
                 Ok(backup_description(py, &output)?.into_any().unbind())
             })
@@ -1385,7 +1409,7 @@ impl PyCoreClient {
             time_range_lower_bound,
             time_range_upper_bound,
         };
-        future_into_py(py, async move {
+        self.run(py, async move {
             finish(client.list_backups(input).await, |py, output| {
                 let backups = PyList::empty(py);
                 for backup in &output.backups {
@@ -1394,8 +1418,11 @@ impl PyCoreClient {
                 dict(
                     py,
                     &[
-                        ("backups", backups.into_any()),
-                        ("last_evaluated_backup_arn", output.last_evaluated_backup_arn.into_pyobject(py)?.into_any()),
+                        (intern!(py, "backups"), backups.into_any()),
+                        (
+                            intern!(py, "last_evaluated_backup_arn"),
+                            output.last_evaluated_backup_arn.into_pyobject(py)?.into_any(),
+                        ),
                     ],
                 )
             })
@@ -1423,7 +1450,7 @@ impl PyCoreClient {
                 sse_specification: sse(sse_specification),
             },
         };
-        future_into_py(py, async move { finish(client.restore_table_from_backup(input).await, table_output) })
+        self.run(py, async move { finish(client.restore_table_from_backup(input).await, table_output) })
     }
 
     /// `RestoreTableToPointInTime`.
@@ -1452,7 +1479,7 @@ impl PyCoreClient {
                 sse_specification: sse(sse_specification),
             },
         };
-        future_into_py(py, async move { finish(client.restore_table_to_point_in_time(input).await, table_output) })
+        self.run(py, async move { finish(client.restore_table_to_point_in_time(input).await, table_output) })
     }
 
     /// Records exactly these event kinds (names); all others cost one atomic load.
@@ -1477,7 +1504,7 @@ impl PyCoreClient {
     fn wait_events<'py>(&self, py: Python<'py>, timeout: f64) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
         let timeout = duration(timeout, "timeout")?;
-        future_into_py(py, async move { Ok(client.events().wait(timeout).await) })
+        self.run(py, async move { Deferred::value(client.events().wait(timeout).await) })
     }
 
     /// Returns and resets the number of events dropped because the buffer was full.
