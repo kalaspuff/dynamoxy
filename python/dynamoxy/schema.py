@@ -10,14 +10,31 @@ Schemas are built lazily, on first use, so models can refer to classes defined l
 
 from __future__ import annotations
 
+import functools
+import operator
+import re
 import string
 import typing
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from dynamoxy._utils import MISSING
-from dynamoxy.codecs import Codec, DateTimeCodec, OptionalCodec, _check_datetime_format, resolve_codec
+from dynamoxy.codecs import (
+    AnyCodec,
+    BoolCodec,
+    Codec,
+    DateTimeCodec,
+    DecimalCodec,
+    IntCodec,
+    OptionalCodec,
+    StrCodec,
+    _check_datetime_format,
+    _decoder,
+    resolve_codec,
+)
 from dynamoxy.errors import FieldError, ItemDecodeError, validation_error
+from dynamoxy.expressions import Path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -275,6 +292,11 @@ class LocalIndex(_IndexDeclaration):
         super().__init__(name, partition_key=None, sort_key=sort_key, projection=projection, throughput=None)
 
 
+@functools.cache
+def _regex(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
 @dataclass(eq=False)
 class Constraints:
     """Validation constraints of a field (``None`` means unconstrained)."""
@@ -291,26 +313,28 @@ class Constraints:
         """A message describing the violated constraint, or ``None``."""
         if value is None:
             return None
-        if self.min_length is not None or self.max_length is not None:
+        min_length, max_length = self.min_length, self.max_length
+        if min_length is not None or max_length is not None:
             try:
                 length = len(value)
             except TypeError:
                 length = None
             if length is not None:
-                if self.min_length is not None and length < self.min_length:
-                    return f"must have at least {self.min_length} characters/elements, has {length}"
-                if self.max_length is not None and length > self.max_length:
-                    return f"must have at most {self.max_length} characters/elements, has {length}"
-        if self.pattern is not None and isinstance(value, str):
-            import re
-
-            if re.fullmatch(self.pattern, value) is None:
-                return f"must match the pattern {self.pattern!r}"
+                if min_length is not None and length < min_length:
+                    return f"must have at least {min_length} characters/elements, has {length}"
+                if max_length is not None and length > max_length:
+                    return f"must have at most {max_length} characters/elements, has {length}"
+        pattern = self.pattern
+        if pattern is not None and isinstance(value, str) and _regex(pattern).fullmatch(value) is None:
+            return f"must match the pattern {pattern!r}"
+        ge, gt, le, lt = self.ge, self.gt, self.le, self.lt
+        if ge is None and gt is None and le is None and lt is None:
+            return None
         for bound, check, words in (
-            (self.ge, lambda v, b: v >= b, "greater than or equal to"),
-            (self.gt, lambda v, b: v > b, "greater than"),
-            (self.le, lambda v, b: v <= b, "less than or equal to"),
-            (self.lt, lambda v, b: v < b, "less than"),
+            (ge, operator.ge, "greater than or equal to"),
+            (gt, operator.gt, "greater than"),
+            (le, operator.le, "less than or equal to"),
+            (lt, operator.lt, "less than"),
         ):
             if bound is not None:
                 try:
@@ -578,6 +602,53 @@ class ModelSchema:
         for declaration in index_declarations:
             self._add_index(declaration)
         self.codecs = {spec.name: spec.codec for spec in fields}
+        self._plan(fields)
+
+    def _plan(self, fields: list[FieldSpec]) -> None:
+        """Precomputes what every validation, encoding and decoding does (fields never change)."""
+        automatic = ("created_at", "updated_at", "version")
+        self._key_specs: tuple[FieldSpec, ...] = tuple(self.key_fields())
+        self._key_attributes: tuple[str, ...] = tuple(spec.attribute for spec in self._key_specs)
+        self._key_attribute_set: frozenset[str] = frozenset(self._key_attributes)
+        # A hashable identity of a stored key or of the item that has it (both hold every key
+        # attribute): the key values, in key order.
+        self._key_identity: Callable[[Mapping[str, Any]], Any] = (
+            operator.itemgetter(*self._key_attributes) if self._key_attributes else lambda _: ()
+        )
+        self._derived: tuple[FieldSpec, ...] = tuple(spec for spec in fields if spec.template is not None)
+        # (name, check of non-None values, optional) of the fields `validate` checks.
+        self._validated: tuple[tuple[str, Callable[[Any], Any], bool], ...] = tuple(
+            (spec.name, _value_check(spec), spec.optional)
+            for spec in fields
+            if spec.template is None and spec.auto not in automatic
+        )
+        # (name, attribute, encode, spec) in field order.
+        self._encoders: tuple[tuple[str, str, Callable[[Any], Any], FieldSpec], ...] = tuple(
+            (spec.name, spec.attribute, spec.codec.encode, spec) for spec in fields
+        )
+        # attribute -> (name, decode (None: values are stored as they are), type the decoder
+        # returns unchanged, so values of exactly that type skip it)
+        self._decoders: dict[str, tuple[str, Callable[[Any], Any] | None, type | None]] = {
+            spec.attribute: (spec.name, *_decoding(spec.codec)) for spec in fields
+        }
+        self._load_stored: Callable[[dict[str, Any], dict[str, Any]], Any] | None = getattr(
+            self.adapter, "load_stored", None
+        )
+        # (name, settable in the constructor, spec, check of non-None values) in field order.
+        self._init_plan: tuple[tuple[str, bool, FieldSpec, Callable[[Any], Any]], ...] = tuple(
+            (spec.name, spec.settable_in_init, spec, _value_check(spec)) for spec in fields
+        )
+        self._timestamps = self.created_at_field is not None or self.updated_at_field is not None
+        self._settable: frozenset[str] = frozenset(spec.name for spec in fields if spec.settable_in_init)
+        self._dict_backed: bool = bool(getattr(self.adapter, "dict_backed", False))
+        self._paths: dict[str, Path[Any]] = {}
+
+    def _path(self, attribute: str) -> Path[Any]:
+        """The expression path of a top-level attribute (paths are immutable: one per attribute)."""
+        path = self._paths.get(attribute)
+        if path is None:
+            path = self._paths[attribute] = Path(attribute)
+        return path
 
     def _single(self, fields: list[FieldSpec], auto: AutoField) -> FieldSpec | None:
         matching = [spec for spec in fields if spec.auto == auto]
@@ -627,7 +698,11 @@ class ModelSchema:
 
     def values(self, instance: Any) -> dict[str, Any]:
         """Python values of every field."""
-        return {name: self.adapter.get(instance, name) for name in self.fields}
+        if self._dict_backed:
+            stored = instance.__dict__
+            return {name: stored.get(name) for name in self.fields}
+        get = self.adapter.get
+        return {name: get(instance, name) for name in self.fields}
 
     def state(self, instance: Any) -> ModelState | None:
         """The persistence state of an instance."""
@@ -635,11 +710,8 @@ class ModelSchema:
 
     def render_derived(self, values: Mapping[str, Any]) -> dict[str, Any]:
         """Values of derived (templated) fields for ``values``."""
-        derived: dict[str, Any] = {}
-        for spec in self.fields.values():
-            if spec.template is not None:
-                derived[spec.name] = spec.template.render(values, self.codecs)
-        return derived
+        codecs = self.codecs
+        return {spec.name: spec.template.render(values, codecs) for spec in self._derived}  # type: ignore[union-attr]
 
     def encode(self, instance: Any, *, include_type: bool = True) -> dict[str, Any]:
         """The stored form of an instance (``None`` values and empty sets are left out).
@@ -657,32 +729,40 @@ class ModelSchema:
         Raises:
             ValueError: A key component is missing.
         """
-        values = {**values, **self.render_derived(values)}
+        if self._derived:
+            values = {**values, **self.render_derived(values)}
+        return self._encode_rendered(values, include_type=include_type)
+
+    def _encode_rendered(self, values: Mapping[str, Any], *, include_type: bool = True) -> dict[str, Any]:
+        """:meth:`encode_values` for values that already hold their derived fields."""
         item: dict[str, Any] = {}
-        for spec in self.fields.values():
-            value = values.get(spec.name)
+        for name, attribute, encode, spec in self._encoders:
+            value = values.get(name)
             if value is None:
                 if spec.role is not None:
-                    missing = [
-                        name for name in (spec.template.fields if spec.template else ()) if values.get(name) is None
-                    ]
-                    detail = f" ({', '.join(missing)} not set)" if missing else ""
-                    raise ValueError(f"{self.model.__name__}.{spec.name} (a key attribute) has no value{detail}")
+                    self._missing_key(spec, values)
                 continue
-            encoded = spec.codec.encode(value)
+            encoded = encode(value)
             if encoded is not None:
-                item[spec.attribute] = encoded
+                item[attribute] = encoded
         if include_type and self.type_attribute is not None and self.entity is not None:
             item[self.type_attribute] = self.entity
         return item
 
+    def _missing_key(self, spec: FieldSpec, values: Mapping[str, Any]) -> typing.NoReturn:
+        missing = [name for name in (spec.template.fields if spec.template else ()) if values.get(name) is None]
+        detail = f" ({', '.join(missing)} not set)" if missing else ""
+        raise ValueError(f"{self.model.__name__}.{spec.name} (a key attribute) has no value{detail}")
+
     def decode_values(self, item: Mapping[str, Any]) -> dict[str, Any]:
         """Python values by field name of the attributes present in a stored item."""
         values: dict[str, Any] = {}
+        decoders = self._decoders
         for attribute, raw in item.items():
-            spec = self.attributes.get(attribute)
-            if spec is not None:
-                values[spec.name] = spec.codec.decode(raw)
+            entry = decoders.get(attribute)
+            if entry is not None:
+                name, decode, unchanged = entry
+                values[name] = raw if decode is None or raw.__class__ is unchanged else decode(raw)
         return values
 
     def decode(self, item: Mapping[str, Any]) -> Any:
@@ -691,28 +771,38 @@ class ModelSchema:
         Raises:
             ItemDecodeError: The item does not fit the model.
         """
+        return self._decode(item, dict(item))
+
+    def _decode(self, item: Mapping[str, Any], stored: dict[str, Any]) -> Any:
+        """:meth:`decode`, recording ``stored`` (``item`` or a copy of it) as the stored item."""
         values: dict[str, Any] = {}
         errors: list[FieldError] = []
+        decoders = self._decoders
         for attribute, raw in item.items():
-            spec = self.attributes.get(attribute)
-            if spec is None:
+            entry = decoders.get(attribute)
+            if entry is None:
+                continue
+            name, decode, unchanged = entry
+            if decode is None or raw.__class__ is unchanged:
+                values[name] = raw
                 continue
             try:
-                values[spec.name] = spec.codec.decode(raw)
+                values[name] = decode(raw)
             except (ValueError, TypeError, ArithmeticError) as error:
-                errors.append(FieldError(spec.name, f"cannot decode {raw!r:.60}: {error}"))
-        for spec in self.fields.values():
-            if spec.name in values:
-                continue
-            initial = spec.initial()
-            if initial is not MISSING:
-                values[spec.name] = initial
-            elif spec.optional or spec.auto is not None or spec.template is not None:
-                values[spec.name] = None
-            elif spec.codec.dynamo_type in ("SS", "NS", "BS"):
-                values[spec.name] = spec.codec.decode(None)
-            else:
-                errors.append(FieldError(spec.name, f"the stored item has no {spec.attribute!r} attribute"))
+                errors.append(FieldError(name, f"cannot decode {raw!r:.60}: {error}"))
+        if len(values) < len(self._encoders):
+            for name, _, _, spec in self._encoders:
+                if name in values:
+                    continue
+                initial = spec.initial()
+                if initial is not MISSING:
+                    values[name] = initial
+                elif spec.optional or spec.auto is not None or spec.template is not None:
+                    values[name] = None
+                elif spec.codec.dynamo_type in ("SS", "NS", "BS"):
+                    values[name] = spec.codec.decode(None)
+                else:
+                    errors.append(FieldError(name, f"the stored item has no {spec.attribute!r} attribute"))
         if errors:
             key = self.key_values(item) if self.is_table else None
             error = ItemDecodeError(
@@ -723,6 +813,9 @@ class ModelSchema:
             )
             error.errors = tuple(errors)
             raise error
+        load_stored = self._load_stored
+        if load_stored is not None:
+            return load_stored(values, stored)
         try:
             instance = self.adapter.load(values)
         except Exception as cause:
@@ -735,7 +828,7 @@ class ModelSchema:
             ) from cause
         state = self.adapter.state(instance)
         if state is not None:
-            state.stored = dict(item)
+            state.stored = stored
         return instance
 
     def validate(self, instance: Any) -> None:
@@ -745,17 +838,17 @@ class ModelSchema:
             ValidationError: With ``.errors`` listing every problem.
         """
         errors: list[FieldError] = []
-        for spec in self.fields.values():
-            value = self.adapter.get(instance, spec.name)
-            if spec.template is not None or spec.auto in ("created_at", "updated_at", "version"):
-                continue
-            if value is None and not spec.optional:
-                errors.append(FieldError(spec.name, "is required"))
+        get = instance.__dict__.get if self._dict_backed else functools.partial(self.adapter.get, instance)
+        for name, check, optional in self._validated:
+            value = get(name)
+            if value is None:
+                if not optional:
+                    errors.append(FieldError(name, "is required"))
                 continue
             try:
-                spec.validate(value)
+                check(value)
             except ValueError as error:
-                errors.append(FieldError(spec.name, str(error), value))
+                errors.append(FieldError(name, str(error), value))
         if not errors:
             for validator in self.validators:
                 try:
@@ -775,11 +868,25 @@ class ModelSchema:
 
     def key_values(self, item: Mapping[str, Any]) -> dict[str, Any]:
         """The primary key attributes of a stored item."""
-        return {spec.attribute: item[spec.attribute] for spec in self.key_fields() if spec.attribute in item}
+        return {attribute: item[attribute] for attribute in self._key_attributes if attribute in item}
 
     def key_of(self, instance: Any) -> dict[str, Any]:
-        """The stored primary key of an instance."""
-        return self.key_values(self.encode(instance, include_type=False))
+        """The stored primary key of an instance.
+
+        Raises:
+            ValueError: A key component is missing.
+        """
+        values = self.values(instance)
+        key: dict[str, Any] = {}
+        for spec in self._key_specs:
+            template = spec.template
+            value = template.render(values, self.codecs) if template is not None else values.get(spec.name)
+            if value is None:
+                self._missing_key(spec, values)
+            encoded = spec.codec.encode(value)
+            if encoded is not None:
+                key[spec.attribute] = encoded
+        return key
 
     def _key_value(self, spec: FieldSpec, kwargs: dict[str, Any], positional: list[Any], used: set[str]) -> Any:
         if spec.name in kwargs:
@@ -816,6 +923,16 @@ class ModelSchema:
         """
         if not self.is_table:
             raise TypeError(f"{self.model.__name__} is not stored in a table")
+        if not kwargs and len(args) == len(self._key_specs):
+            # Only positional values (the common case): each key field takes the next one.
+            key: dict[str, Any] = {}
+            for spec, value in zip(self._key_specs, args, strict=True):
+                try:
+                    value = spec.codec.validate(value)
+                except ValueError as error:
+                    raise ValueError(f"{self.model.__name__}.{spec.name}: {error}") from None
+                key[spec.attribute] = spec.codec.encode(value)
+            return key
         positional = list(args)
         remaining = dict(kwargs)
         used: set[str] = set()
@@ -838,6 +955,45 @@ class ModelSchema:
         for name in used:
             remaining.pop(name, None)
         return value, remaining
+
+
+def _value_check(spec: FieldSpec) -> Callable[[Any], Any]:
+    """:meth:`FieldSpec.validate` for values that are not ``None``.
+
+    That is the codec's ``validate`` alone when the field has neither constraints nor validators.
+    """
+    constraints = spec.constraints
+    bounded = (
+        constraints.min_length,
+        constraints.max_length,
+        constraints.pattern,
+        constraints.ge,
+        constraints.gt,
+        constraints.le,
+        constraints.lt,
+    )
+    if spec.validators or any(bound is not None for bound in bounded):
+        return spec.validate
+    return spec.codec.validate
+
+
+def _decoding(codec: Codec[Any]) -> tuple[Callable[[Any], Any] | None, type | None]:
+    """How the schema decodes a codec's values: ``(decode, unchanged type)``.
+
+    ``decode`` is ``None`` for codecs that return stored values as they are; values of exactly
+    the unchanged type are returned as they are by ``decode`` too (``str`` for ``StrCodec``), so
+    the call is skipped for them. Only the built-in codecs are recognized (exact types: a
+    subclass may decode differently).
+    """
+    inner = codec.inner if type(codec) is OptionalCodec else codec
+    kind = type(inner)
+    if kind is AnyCodec or kind is Codec:  # also when optional: None decodes to None
+        return None, None
+    return _decoder(codec), _UNCHANGED.get(kind)
+
+
+#: The type of stored values each built-in codec class decodes to themselves.
+_UNCHANGED: dict[type, type] = {StrCodec: str, IntCodec: int, BoolCodec: bool, DecimalCodec: Decimal}
 
 
 def schema_of(model: type) -> ModelSchema:

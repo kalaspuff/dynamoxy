@@ -63,7 +63,7 @@ from dynamoxy.schema import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from dynamoxy.codecs import DateTimeFormat
 
@@ -130,6 +130,9 @@ def after_load[F: Callable[..., Any]](function: F) -> F:
 class NativeAdapter:
     """Reads and creates instances of native models."""
 
+    #: Field values live in the instance ``__dict__`` (``get`` is ``__dict__.get``).
+    dict_backed = True
+
     def __init__(self, model: type[Document]) -> None:
         self.model = model
 
@@ -144,6 +147,18 @@ class NativeAdapter:
 
     def load(self, values: dict[str, Any]) -> Any:
         instance = object.__new__(self.model)
+        instance.__dict__.update(values)
+        return instance
+
+    def assign(self, instance: Any, source: Any, names: Iterable[str]) -> None:
+        """Sets the fields ``names`` of ``instance`` to those of ``source`` (without validation)."""
+        values = source.__dict__
+        instance.__dict__.update({name: values.get(name) for name in names})
+
+    def load_stored(self, values: dict[str, Any], stored: dict[str, Any]) -> Any:
+        """``load`` and record ``stored`` as the instance's stored item, in one step."""
+        instance = object.__new__(self.model)
+        values[_STATE] = ModelState(stored)
         instance.__dict__.update(values)
         return instance
 
@@ -233,26 +248,28 @@ class Document:
     def __init__(self, **values: Any) -> None:
         schema = schema_of(type(self))
         errors: list[FieldError] = []
+        settable = schema._settable
         for name in values:
-            spec = schema.fields.get(name)
-            if spec is None:
-                raise TypeError(f"{type(self).__name__}() got an unexpected keyword argument {name!r}")
-            if not spec.settable_in_init:
+            if name not in settable:
+                if name not in schema.fields:
+                    raise TypeError(f"{type(self).__name__}() got an unexpected keyword argument {name!r}")
                 raise TypeError(f"{type(self).__name__}.{name} is set automatically; do not pass it to the constructor")
-        for spec in schema.fields.values():
-            if spec.name in values:
-                value = values[spec.name]
-            elif not spec.settable_in_init:
-                value = None
+        stored = self.__dict__
+        for name, settable_in_init, spec, check in schema._init_plan:
+            if name in values:
+                value = values[name]
+            elif not settable_in_init:
+                stored[name] = None
+                continue
             else:
                 value = spec.initial()
                 if value is MISSING:
-                    errors.append(FieldError(spec.name, "is required"))
+                    errors.append(FieldError(name, "is required"))
                     continue
             try:
-                self.__dict__[spec.name] = spec.validate(value) if spec.settable_in_init else value
+                stored[name] = spec.validate(value) if value is None else check(value)
             except ValueError as error:
-                errors.append(FieldError(spec.name, str(error), value))
+                errors.append(FieldError(name, str(error), value))
         if errors:
             raise validation_error(
                 f"{type(self).__name__} is invalid: " + "; ".join(str(problem) for problem in errors), errors

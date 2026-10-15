@@ -69,6 +69,9 @@ __all__ = ["PydanticModel", "build_plain_schema"]
 class PydanticAdapter:
     """Reads and creates instances of pydantic models."""
 
+    #: Field values live in the instance ``__dict__`` (``get`` is ``__dict__.get``).
+    dict_backed = True
+
     def __init__(self, model: type[BaseModel]) -> None:
         self.model = model
 

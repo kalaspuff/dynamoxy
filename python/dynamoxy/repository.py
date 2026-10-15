@@ -53,7 +53,7 @@ from dynamoxy.errors import (
     cancellation_reasons,
     validation_error,
 )
-from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, UpdateAction, Value, and_, as_condition
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition
 from dynamoxy.query import Query, Scan
 from dynamoxy.schema import FieldSpec, IndexSpec, ModelSchema, schema_of
 
@@ -66,6 +66,13 @@ if TYPE_CHECKING:
 __all__ = ["Repository"]
 
 type WriteMode = Literal["create", "put", "save"]
+
+#: Native method, operation name and ``ReturnValues`` of the single operation of a plan, by kind.
+_SINGLE_OPERATIONS = {
+    "put": ("put_item", "PutItem", "NONE"),
+    "update": ("update_item", "UpdateItem", "ALL_NEW"),
+    "delete": ("delete_item", "DeleteItem", "ALL_OLD"),
+}
 
 
 def utcnow() -> datetime:
@@ -131,11 +138,7 @@ class _WritePlan:
         if len(self.plan.operations) == 1:
             operation = dict(self.plan.operations[0])
             kind = operation.pop("kind")
-            method, name, returns = {
-                "put": ("put_item", "PutItem", "NONE"),
-                "update": ("update_item", "UpdateItem", "ALL_NEW"),
-                "delete": ("delete_item", "DeleteItem", "ALL_OLD"),
-            }[kind]
+            method, name, returns = _SINGLE_OPERATIONS[kind]
             try:
                 output = await client.call(
                     method,
@@ -199,11 +202,19 @@ class Repository[M]:
     def _context(self, operation: str) -> Any:
         return self.client.hook_context(operation, self.model_class)
 
-    def _load(self, item: Mapping[str, Any]) -> M:
-        instance = self.schema.decode(item)
-        if self.client.hooks.has("after_load", self.model_class):
-            self.client.hooks.run_sync("after_load", instance, self._context("load"))
+    def _load(self, item: dict[str, Any]) -> M:
+        # Items come straight from responses: the instance's stored copy is the item itself.
+        instance = self.schema._decode(item, item)
+        hooks = self.client.hooks
+        if hooks.has("after_load", self.model_class):
+            hooks.run_sync("after_load", instance, self._context("load"))
         return instance
+
+    def _load_page(self, items: list[dict[str, Any]]) -> list[M]:
+        if self.client.hooks.has("after_load", self.model_class):
+            return [self._load(item) for item in items]
+        decode = self.schema._decode
+        return [decode(item, item) for item in items]
 
     def key(self, *key: Any, **key_values: Any) -> dict[str, Any]:
         """The stored primary key from values.
@@ -216,8 +227,7 @@ class Repository[M]:
         if isinstance(target, self.model_class):
             return self.schema.key_of(target)
         if isinstance(target, dict):
-            key_names = {spec.attribute for spec in self.schema.key_fields()}
-            if set(target) == key_names:
+            if target.keys() == self.schema._key_attribute_set:
                 return dict(target)
             return self.schema.key_from((), target)
         if isinstance(target, tuple):
@@ -225,12 +235,21 @@ class Repository[M]:
         return self.schema.key_from((target,), {})
 
     def _type_filter(self) -> Condition | None:
+        # Conditions are immutable: one per schema.
+        schema = self.schema
+        cached = schema.__dict__.get("_type_filter_condition", MISSING)
+        if cached is not MISSING:
+            return cached
+        schema._type_filter_condition = condition = self._build_type_filter()  # type: ignore[attr-defined]
+        return condition
+
+    def _build_type_filter(self) -> Condition | None:
         schema = self.schema
         parts: list[Condition] = []
         if schema.type_attribute is not None and schema.entity is not None:
-            parts.append(F(schema.type_attribute) == schema.entity)
+            parts.append(schema._path(schema.type_attribute) == schema.entity)
         elif schema.unique_fields and schema.partition_key is not None:
-            parts.append(~F(schema.partition_key.attribute).begins_with(GUARD_PREFIX))
+            parts.append(~schema._path(schema.partition_key.attribute).begins_with(GUARD_PREFIX))
         return and_(*parts) if parts else None
 
     async def _get_raw(self, key: dict[str, Any], *, consistent: bool = True) -> dict[str, Any] | None:
@@ -296,8 +315,12 @@ class Repository[M]:
 
     def _assign(self, instance: M, source: M, item: dict[str, Any]) -> None:
         adapter = self.schema.adapter
-        for name in self.schema.fields:
-            adapter.set(instance, name, adapter.get(source, name))
+        assign = getattr(adapter, "assign", None)
+        if assign is not None:
+            assign(instance, source, self.schema.fields)
+        else:
+            for name in self.schema.fields:
+                adapter.set(instance, name, adapter.get(source, name))
         state = self.schema.state(instance)
         if state is not None:
             state.stored = dict(item)
@@ -340,6 +363,7 @@ class Repository[M]:
             index=spec.name if spec is not None else None,
             key_condition=condition,
             hydrate=self._hydrate,
+            decode_page=self._load_page,
         )
         type_filter = self._type_filter()
         return query.filter(type_filter) if type_filter is not None else query
@@ -379,10 +403,11 @@ class Repository[M]:
     async def _hydrate(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         keys = [self.schema.key_values(item) for item in items]
         full = await self.table.batch_get(keys, consistent=False)
-        by_key = {tuple(sorted(self.schema.key_values(item).items(), key=lambda pair: pair[0])): item for item in full}
+        identity = self.schema._key_identity
+        by_key = {identity(item): item for item in full}
         result = []
         for key in keys:
-            found = by_key.get(tuple(sorted(key.items(), key=lambda pair: pair[0])))
+            found = by_key.get(identity(key))
             if found is not None:
                 result.append(found)
         return result
@@ -400,6 +425,7 @@ class Repository[M]:
             model=self.model_class,
             index=spec.name if spec is not None else None,
             hydrate=self._hydrate,
+            decode_page=self._load_page,
         )
         type_filter = self._type_filter()
         return scan.filter(type_filter) if type_filter is not None else scan
@@ -417,9 +443,10 @@ class Repository[M]:
         tuples.
         """
         stored = [self._target_key(key) for key in keys]
-        unique: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
+        identity = self.schema._key_identity
+        unique: dict[Any, dict[str, Any]] = {}
         for key in stored:
-            unique.setdefault(tuple(sorted(key.items(), key=lambda pair: pair[0])), key)
+            unique.setdefault(identity(key), key)
         if not unique:
             return []
         output = await self.client.call(
@@ -435,13 +462,10 @@ class Repository[M]:
                 f"{len(pending['keys'])} keys of {self.table_name} stayed unprocessed (throttling)",
                 unprocessed=[("get", key) for key in pending["keys"]],
             )
-        found = {
-            tuple(sorted(self.schema.key_values(item).items(), key=lambda pair: pair[0])): item
-            for item in output["items"].get(self.table_name, [])
-        }
+        found = {identity(item): item for item in output["items"].get(self.table_name, [])}
         result: list[M] = []
         for key in stored:
-            item = found.get(tuple(sorted(key.items(), key=lambda pair: pair[0])))
+            item = found.get(identity(key))
             if item is not None:
                 result.append(self._load(item))
         return result
@@ -460,21 +484,23 @@ class Repository[M]:
         schema.validate(instance)
         values = schema.values(instance)
         changes: dict[str, Any] = {}
-        now = utcnow()
-        if schema.created_at_field is not None and values.get(schema.created_at_field.name) is None:
-            changes[schema.created_at_field.name] = now
-        if schema.updated_at_field is not None:
-            changes[schema.updated_at_field.name] = now
+        if schema._timestamps:
+            now = utcnow()
+            if schema.created_at_field is not None and values.get(schema.created_at_field.name) is None:
+                changes[schema.created_at_field.name] = now
+            if schema.updated_at_field is not None:
+                changes[schema.updated_at_field.name] = now
         expected: int | None = None
         if schema.version_field is not None:
             current = values.get(schema.version_field.name) or 0
             changes[schema.version_field.name] = current + 1
             expected = current
         values.update(changes)
-        derived = schema.render_derived(values)
-        values.update(derived)
-        changes.update(derived)
-        item = schema.encode_values(values)
+        if schema._derived:
+            derived = schema.render_derived(values)
+            values.update(derived)
+            changes.update(derived)
+        item = schema._encode_rendered(values)
         return item, changes, expected
 
     def _apply(self, instance: M, changes: Mapping[str, Any], item: dict[str, Any] | None) -> None:
@@ -520,7 +546,9 @@ class Repository[M]:
                         "kind": "put",
                         "table_name": self.table_name,
                         "item": guard_item(schema, spec, after, key),
-                        "condition_expression": builder.condition(F(schema.partition_key.attribute).not_exists()),
+                        "condition_expression": builder.condition(
+                            schema._path(schema.partition_key.attribute).not_exists()
+                        ),
                         **builder.arguments(),
                     },
                     ("guard", spec, after),
@@ -528,16 +556,20 @@ class Repository[M]:
 
     async def _plan_put(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> _WritePlan:
         schema = self.schema
-        await self.client.hooks.run("before_save", instance, self._context(mode))
+        hooks = self.client.hooks
+        if hooks.has("before_save", type(instance)):
+            await hooks.run("before_save", instance, self._context(mode))
         item, changes, expected = self._prepare(instance, mode)
         key = schema.key_values(item)
         assert schema.partition_key is not None
-        partition = F(schema.partition_key.attribute)
+        partition = schema._path(schema.partition_key.attribute)
         parts: list[Condition] = []
         if mode == "create":
             parts.append(partition.not_exists())
         elif mode == "save" and schema.version_field is not None:
-            parts.append(F(schema.version_field.attribute) == expected if expected else partition.not_exists())
+            parts.append(
+                schema._path(schema.version_field.attribute) == expected if expected else partition.not_exists()
+            )
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
@@ -570,7 +602,8 @@ class Repository[M]:
 
         async def finalize(_: dict[str, Any] | None) -> None:
             self._apply(instance, changes, item)
-            await self.client.hooks.run("after_save", instance, self._context(mode))
+            if hooks.has("after_save", type(instance)):
+                await hooks.run("after_save", instance, self._context(mode))
 
         return _WritePlan(self, plan, mode, key, expected, finalize)
 
@@ -622,18 +655,20 @@ class Repository[M]:
             raise ValueError("update() needs at least one action, e.g. User.visits.add(1)")
         touched: dict[str, FieldSpec] = {}
         literals: dict[str, Any] = {}
+        attributes = schema.attributes
         for position, action in enumerate(actions_list):
-            spec = schema.attributes.get(str(action.path.elements[0]))
+            elements = action.path.elements
+            spec = attributes.get(str(elements[0]))
             if spec is None:
                 continue
-            if spec.role is not None or spec.derived:
+            if spec.role is not None or spec.template is not None:
                 raise ValueError(
                     f"{self.model_class.__name__}.{spec.name} is a key or derived attribute and cannot be updated"
                 )
             if spec.immutable:
                 raise ValueError(f"{self.model_class.__name__}.{spec.name} is immutable")
             touched[spec.name] = spec
-            if len(action.path.elements) == 1:
+            if len(elements) == 1:
                 is_literal, value = action.literal()
                 if is_literal:
                     literals[spec.name] = spec.codec.decode(value) if value is not None else None
@@ -657,39 +692,43 @@ class Repository[M]:
         assert schema.partition_key is not None
         parts: list[Condition] = []
         if not upsert:
-            parts.append(F(schema.partition_key.attribute).exists())
+            parts.append(schema._path(schema.partition_key.attribute).exists())
         expected: Any = None
-        now = utcnow()
+        now = utcnow() if schema._timestamps else None
         if schema.version_field is not None:
-            actions_list.append(UpdateAction("ADD", Path(schema.version_field.attribute), Value(1)))
+            actions_list.append(UpdateAction("ADD", schema._path(schema.version_field.attribute), Value(1)))
             if instance is not None:
                 expected = schema.adapter.get(instance, schema.version_field.name)
                 if expected is not None:
-                    parts.append(F(schema.version_field.attribute) == expected)
+                    parts.append(schema._path(schema.version_field.attribute) == expected)
         if schema.updated_at_field is not None and schema.updated_at_field.name not in touched:
             field = schema.updated_at_field
-            actions_list.append(UpdateAction("SET", Path(field.attribute), Value(field.codec.encode(now))))
+            actions_list.append(UpdateAction("SET", schema._path(field.attribute), Value(field.codec.encode(now))))
         if upsert and schema.created_at_field is not None and schema.created_at_field.name not in touched:
             field = schema.created_at_field
-            actions_list.append(Path(field.attribute).set_if_not_exists(field.codec.encode(now)))
+            actions_list.append(schema._path(field.attribute).set_if_not_exists(field.codec.encode(now)))
         completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
         if upsert:
             provided = self._field_values_of(target) if instance is None else {}
             completion_actions, completion = self._upsert_completion(instance, touched, provided)
             actions_list.extend(completion_actions)
         stored_old = state.stored if state is not None and state.loaded else None
-        unique_touched = [spec for spec in schema.unique_fields if spec.name in touched]
+        unique_touched = [spec for spec in schema.unique_fields if spec.name in touched] if schema.unique_fields else []
         for spec in unique_touched:
             if spec.name not in literals:
                 raise ValueError(
                     f"{self.model_class.__name__}.{spec.name} is unique: update it with .set(value) or .remove() so "
                     "dynamoxy can maintain its guard item"
                 )
-        derived_specs = [
-            spec
-            for spec in schema.fields.values()
-            if spec.template is not None and spec.role is None and set(spec.template.fields) & touched.keys()
-        ]
+        derived_specs = (
+            [
+                spec
+                for spec in schema._derived
+                if spec.role is None and set(spec.template.fields) & touched.keys()  # type: ignore[union-attr]
+            ]
+            if schema._derived
+            else []
+        )
         needs_read = bool(unique_touched) and stored_old is None
         if derived_specs and stored_old is None and instance is None:
             needs_read = needs_read or any(
@@ -715,7 +754,7 @@ class Repository[M]:
             for spec in derived_specs:
                 assert spec.template is not None
                 rendered = spec.template.render(known, schema.codecs)
-                path = Path(spec.attribute)
+                path = schema._path(spec.attribute)
                 actions_list.append(
                     UpdateAction("SET", path, Value(rendered)) if rendered is not None else path.remove()
                 )
@@ -728,7 +767,7 @@ class Repository[M]:
                     continue
                 rendered = spec.template.render(created, schema.codecs)
                 if rendered is not None:
-                    actions_list.append(Path(spec.attribute).set_if_not_exists(rendered))
+                    actions_list.append(schema._path(spec.attribute).set_if_not_exists(rendered))
         if unique_touched and stored_old is not None:
             parts.extend(self._guard_conditions(stored_old, unique_touched))
         user_condition = as_condition(condition)
@@ -792,7 +831,7 @@ class Repository[M]:
         actions: list[UpdateAction] = []
         values: dict[str, Any] = {}
         if schema.type_attribute is not None and schema.entity is not None:
-            actions.append(UpdateAction("SET", Path(schema.type_attribute), Value(schema.entity)))
+            actions.append(UpdateAction("SET", schema._path(schema.type_attribute), Value(schema.entity)))
         loaded = instance is not None and (state := schema.state(instance)) is not None and state.loaded
         missing: list[str] = []
         for spec in schema.fields.values():
@@ -821,7 +860,7 @@ class Repository[M]:
             encoded = spec.codec.encode(value)
             if encoded is None or (isinstance(encoded, (set, frozenset)) and not encoded):
                 continue
-            actions.append(Path(spec.attribute).set_if_not_exists(encoded))
+            actions.append(schema._path(spec.attribute).set_if_not_exists(encoded))
         if missing:
             names = ", ".join(missing)
             setters = ", ".join(
@@ -902,14 +941,15 @@ class Repository[M]:
         schema = self.schema
         instance = target if isinstance(target, self.model_class) else None
         key = self._target_key(target)
-        if instance is not None:
-            await self.client.hooks.run("before_delete", instance, self._context("delete"))
+        hooks = self.client.hooks
+        if instance is not None and hooks.has("before_delete", type(instance)):
+            await hooks.run("before_delete", instance, self._context("delete"))
         parts: list[Condition] = []
         expected: Any = None
         if instance is not None and schema.version_field is not None:
             expected = schema.adapter.get(instance, schema.version_field.name)
             if expected is not None:
-                parts.append(F(schema.version_field.attribute) == expected)
+                parts.append(schema._path(schema.version_field.attribute) == expected)
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
@@ -941,7 +981,8 @@ class Repository[M]:
                 state = schema.state(instance)
                 if state is not None:
                     state.stored = None
-                await self.client.hooks.run("after_delete", instance, self._context("delete"))
+                if hooks.has("after_delete", type(instance)):
+                    await hooks.run("after_delete", instance, self._context("delete"))
 
         return _WritePlan(self, plan, "delete", key, expected, finalize, old=old)
 
@@ -1047,8 +1088,10 @@ class Repository[M]:
                 "(use create/save or a transaction)"
             )
         prepared: list[tuple[M, dict[str, Any], dict[str, Any]]] = []
+        hooks = self.client.hooks
         for instance in items:
-            await self.client.hooks.run("before_save", instance, self._context("batch_put"))
+            if hooks.has("before_save", type(instance)):
+                await hooks.run("before_save", instance, self._context("batch_put"))
             item, changes, _ = self._prepare(instance, "batch")
             prepared.append((instance, item, changes))
         if not prepared:
@@ -1056,7 +1099,8 @@ class Repository[M]:
         await self.table.batch_write(puts=[item for _, item, _ in prepared])
         for instance, item, changes in prepared:
             self._apply(instance, changes, item)
-            await self.client.hooks.run("after_save", instance, self._context("batch_put"))
+            if hooks.has("after_save", type(instance)):
+                await hooks.run("after_save", instance, self._context("batch_put"))
 
     async def batch_delete(self, targets: Iterable[M | Mapping[str, Any] | Any]) -> None:
         """Deletes many items by instance or key (managed ``BatchWriteItem``; not atomic).
@@ -1067,14 +1111,16 @@ class Repository[M]:
         if self.schema.unique_fields:
             raise TypeError(f"{self.model_class.__name__} has unique attributes; delete items one by one")
         targets = list(targets)
+        hooks = self.client.hooks
         for target in targets:
-            if isinstance(target, self.model_class):
-                await self.client.hooks.run("before_delete", target, self._context("batch_delete"))
+            if isinstance(target, self.model_class) and hooks.has("before_delete", type(target)):
+                await hooks.run("before_delete", target, self._context("batch_delete"))
         await self.table.batch_write(deletes=[self._target_key(target) for target in targets])
         for target in targets:
             if isinstance(target, self.model_class):
                 self._apply(target, {}, None)
-                await self.client.hooks.run("after_delete", target, self._context("batch_delete"))
+                if hooks.has("after_delete", type(target)):
+                    await hooks.run("after_delete", target, self._context("batch_delete"))
 
     # ---- table ----------------------------------------------------------------------------
 

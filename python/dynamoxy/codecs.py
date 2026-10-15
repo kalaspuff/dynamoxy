@@ -537,6 +537,22 @@ class AnyCodec(Codec[Any]):
         return " | ".join(kind.__name__ for kind in self.allowed) if self.allowed else "Any"
 
 
+#: Codec classes whose ``encode`` and ``decode`` return values unchanged (exact types: subclasses
+#: may override them), so collections of their values are copied without calling them.
+_IDENTITY = frozenset({Codec, AnyCodec})
+
+#: Codec classes whose ``encode`` returns values unchanged (exact types).
+_ENCODED_UNCHANGED = _IDENTITY | {StrCodec, IntCodec, FloatCodec, DecimalCodec, BoolCodec, BytesCodec, LiteralCodec}
+
+#: The builtin conversion that the ``decode`` of these codec classes is (exact types).
+_CONVERSIONS: dict[type, Callable[[Any], Any]] = {StrCodec: str, IntCodec: int, FloatCodec: float, BoolCodec: bool}
+
+
+def _decoder(codec: Codec[Any]) -> Callable[[Any], Any]:
+    """``codec.decode``, or the builtin conversion it is (a cheaper call)."""
+    return _CONVERSIONS.get(type(codec)) or codec.decode
+
+
 class OptionalCodec[T](Codec[T | None]):
     """``X | None``: ``None`` is allowed (and not stored)."""
 
@@ -600,11 +616,17 @@ class ListCodec[T](Codec[list[T]]):
 
     @override
     def encode(self, value: Any) -> list[Any]:
-        return [self.inner.encode(element) for element in value]
+        inner = self.inner
+        if type(inner) in _ENCODED_UNCHANGED:
+            return list(value)
+        return [inner.encode(element) for element in value]
 
     @override
     def decode(self, value: Any) -> Any:
-        items = [self.inner.decode(element) for element in value]
+        inner = self.inner
+        if type(inner) in _IDENTITY:
+            return tuple(value) if self.as_tuple else list(value)
+        items = [inner.decode(element) for element in value]
         return tuple(items) if self.as_tuple else items
 
     @override
@@ -642,7 +664,10 @@ class SetCodec[T](Codec[set[T]]):
 
     @override
     def encode(self, value: Any) -> Any:
-        return {self.inner.encode(element) for element in value} or None
+        inner = self.inner
+        if type(inner) in _ENCODED_UNCHANGED:
+            return set(value) or None
+        return {inner.encode(element) for element in value} or None
 
     @override
     def decode(self, value: Any) -> Any:
@@ -686,11 +711,17 @@ class DictCodec[T](Codec[dict[str, T]]):
 
     @override
     def encode(self, value: dict[str, T]) -> dict[str, Any]:
-        return {key: self.inner.encode(element) for key, element in value.items()}
+        inner = self.inner
+        if type(inner) in _ENCODED_UNCHANGED:
+            return dict(value.items())
+        return {key: inner.encode(element) for key, element in value.items()}
 
     @override
     def decode(self, value: Any) -> dict[str, T]:
-        return {key: self.inner.decode(element) for key, element in value.items()}
+        inner = self.inner
+        if type(inner) in _IDENTITY:
+            return dict(value.items())
+        return {key: inner.decode(element) for key, element in value.items()}
 
     @override
     def element(self) -> Codec[Any] | None:
