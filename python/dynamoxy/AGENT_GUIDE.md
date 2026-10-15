@@ -728,6 +728,28 @@ key or a key template is a new table.
 Retries cover throttling, server errors, transaction conflicts and timeouts, with exponential
 backoff and full jitter. Conditional and validation failures are never retried.
 
+### Credentials and region
+
+Without `credentials=`, the AWS SDK's default credential chain is used; the first source that
+provides credentials wins:
+
+1. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) in the environment
+   (AWS Lambda provides its role this way).
+2. `~/.aws/credentials` and `~/.aws/config` for `profile=`, else `AWS_PROFILE`, else `default`
+   (SSO, `credential_process` and assume-role profiles work).
+3. Web identity: `AWS_WEB_IDENTITY_TOKEN_FILE` with `AWS_ROLE_ARN` (EKS IRSA).
+4. Container credentials (ECS task roles, EKS Pod Identity).
+5. EC2 instance metadata (instance profiles).
+
+- `credentials=dynamoxy.Credentials(...)` replaces the chain entirely; reserve it for emulators
+  and tests (`Credentials("test", "test")`), prefer roles in deployments.
+- `profile=` only picks the profile of step 2: environment keys still win over it.
+- Credentials are resolved on the first request; missing credentials raise `CredentialsError`
+  there, not when the client is created.
+- Region: `region=`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the profile's `region`,
+  else EC2 instance metadata. None found → `ConfigurationError` on connect, except with
+  `endpoint_url`, where `us-east-1` is used.
+
 ## 14. Errors
 
 Every error derives from `dynamoxy.DynamoxyError` and has `.retryable`. Service errors carry

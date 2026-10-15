@@ -12,9 +12,49 @@
 - AWS Lambda: create the client at module level and reuse it across invocations; dynamoxy
   connects lazily on first use.
 
-## Credentials and IAM
+## Credentials
+
+Without `credentials=`, dynamoxy uses the AWS SDK's default credential chain, the same one the AWS
+CLI and the other AWS SDKs use. The first source that provides credentials wins:
+
+1. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, for temporary
+   credentials, `AWS_SESSION_TOKEN`.
+2. The shared files `~/.aws/credentials` and `~/.aws/config`, for the profile given as
+   `profile=`, else `AWS_PROFILE`, else `default`. Profiles can use SSO, `credential_process` or
+   `role_arn` (assume role).
+3. A web identity token: `AWS_WEB_IDENTITY_TOKEN_FILE` with `AWS_ROLE_ARN` (EKS IRSA).
+4. Container credentials: ECS task roles and EKS Pod Identity
+   (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `AWS_CONTAINER_CREDENTIALS_FULL_URI`).
+5. The EC2 instance metadata service (instance profiles).
+
+AWS Lambda provides the function role's credentials through the environment variables of step 1.
+
+```python
+dynamoxy.Client(region="eu-west-1")  # the default chain
+dynamoxy.Client(profile="dev")       # the "dev" profile in step 2
+dynamoxy.Client(credentials=dynamoxy.Credentials(access_key_id, secret_access_key))  # no chain
+```
+
+- `credentials=` replaces the chain: no other source is consulted.
+- `profile=` only selects the profile of step 2. Environment variables still come first: with
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` set, `profile="dev"` does not change the
+  credentials.
+- Credentials are resolved on the first request, not when the client is created or connects, and
+  the SDK refreshes temporary credentials before they expire. When no source provides any, the
+  first request raises `CredentialsError` (never retried).
 
 Use roles (instance profiles, ECS task roles, IRSA, Lambda roles) rather than static keys.
+
+## Region
+
+The region comes from `region=`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the `region`
+of the selected profile in `~/.aws/config`, else the EC2 instance metadata service. When none is
+found, connecting (the first call, or `async with`) raises `ConfigurationError`, unless
+`endpoint_url` is set: then `us-east-1` is used, which local endpoints such as DynamoDB Local and
+MiniStack ignore.
+
+## IAM permissions
+
 Grant the actions you use on the table ARNs and `arn:...:table/<name>/index/*`:
 
 | Feature | Actions |
