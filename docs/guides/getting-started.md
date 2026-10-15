@@ -43,8 +43,10 @@ async with dynamoxy.Client(region="eu-west-1") as client:
     ...
 ```
 
-Credentials and region come from the standard AWS configuration (environment variables,
-`~/.aws/config` profiles, SSO, container and instance roles). Other targets:
+Credentials and region come from the standard AWS configuration (environment variables such as
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`, `~/.aws/config` profiles, SSO,
+container and instance roles); the [deployment guide](deployment.md#credentials) lists the order
+in which they are tried. Other targets:
 
 ```python
 dynamoxy.Client(profile="dev")                                    # a named profile
