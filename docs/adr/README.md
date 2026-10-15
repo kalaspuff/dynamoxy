@@ -18,3 +18,4 @@ Status values: **Accepted**, **Superseded by NNNN**, **Deprecated**.
 | [0007](0007-repositories-over-active-record.md) | Repositories (data mapper) instead of active record | Accepted |
 | [0008](0008-stored-formats.md) | Stored formats: codecs, sortable timestamps, entity types, cursors | Accepted |
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
+| [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |

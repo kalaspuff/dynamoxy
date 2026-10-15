@@ -96,18 +96,21 @@ fn service_class(kind: ErrorKind) -> fn(String) -> PyErr {
 
 /// Converts a core error into a Python exception with structured attributes.
 pub fn to_py_err(error: Error) -> PyErr {
-    Python::attach(|py| build(py, error).unwrap_or_else(|err| err))
+    Python::attach(|py| error_in(py, error))
 }
 
-/// Like [`to_py_err`], also recording what the call cost.
-pub fn call_error(error: Error, stats: &dynamoxy_core::OperationStats) -> PyErr {
-    Python::attach(|py| {
-        let err = build(py, error).unwrap_or_else(|err| err);
-        let value = err.value(py);
-        let _ = value.setattr("attempts", stats.attempts);
-        let _ = value.setattr("duration", stats.duration.as_secs_f64());
-        err
-    })
+/// [`to_py_err`] for callers that are attached to Python already.
+pub fn error_in(py: Python<'_>, error: Error) -> PyErr {
+    build(py, error).unwrap_or_else(|err| err)
+}
+
+/// Like [`error_in`], also recording what the call cost.
+pub fn call_error_in(py: Python<'_>, error: Error, stats: &dynamoxy_core::OperationStats) -> PyErr {
+    let err = error_in(py, error);
+    let value = err.value(py);
+    let _ = value.setattr("attempts", stats.attempts);
+    let _ = value.setattr("duration", stats.duration.as_secs_f64());
+    err
 }
 
 fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {

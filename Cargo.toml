@@ -21,8 +21,6 @@ aws-sdk-dynamodb = { version = "1.130", features = ["behavior-version-latest"] }
 fastrand = "2"
 parking_lot = "0.12"
 pyo3 = { version = "0.29", features = ["abi3-py312"] }
-# tokio-runtime: implements the bridge's JoinError trait for Tokio (needed by runtime.rs).
-pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 pythonize = "0.29"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
