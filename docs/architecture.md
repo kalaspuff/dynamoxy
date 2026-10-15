@@ -175,7 +175,7 @@ These are relied upon across layers; tests cover each of them.
 | --- | --- | --- |
 | Field storage | `codec=` / `UseCodec(...)`, any object with the `Codec` interface | `codecs.py` |
 | Validation | field constraints, `validators=`, `@dynamoxy.validator`, pydantic | `attributes.py`, `models.py` |
-| Lifecycle hooks | model methods (`@before_save`, ...) or `client.hook(point, Model)` | `models.py`, `middleware.py` |
+| Lifecycle hooks | model methods (`@before_save`, `@after_update`, ...) or `client.hook(point, Model)` | `models.py`, `middleware.py` |
 | Middleware | `client.use(async def mw(request, call_next))` | `middleware.py`, `client.py` |
 | Event hooks | `client.on("kind.*", hook)` | `events.py` |
 | Logging | `LoggingConfig`, `dynamoxy.*` loggers, `record.dynamoxy` | `events.py` |

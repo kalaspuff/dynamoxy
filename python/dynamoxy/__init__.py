@@ -97,8 +97,10 @@ from dynamoxy.models import (
     after_delete,
     after_load,
     after_save,
+    after_update,
     before_delete,
     before_save,
+    before_update,
     validator,
 )
 from dynamoxy.query import Query, Scan
@@ -220,10 +222,12 @@ __all__ = [
     "after_delete",
     "after_load",
     "after_save",
+    "after_update",
     "and_",
     "attr",
     "before_delete",
     "before_save",
+    "before_update",
     "cancellation_reasons",
     "codecs",
     "collect",

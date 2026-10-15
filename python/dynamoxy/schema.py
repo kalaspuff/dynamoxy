@@ -57,9 +57,19 @@ __all__ = [
 
 type KeyRole = Literal["partition", "sort"]
 type AutoField = Literal["created_at", "updated_at", "version", "ttl"]
-type HookPoint = Literal["before_save", "after_save", "before_delete", "after_delete", "after_load"]
+type HookPoint = Literal[
+    "before_save", "after_save", "before_update", "after_update", "before_delete", "after_delete", "after_load"
+]
 
-HOOK_POINTS: tuple[HookPoint, ...] = ("before_save", "after_save", "before_delete", "after_delete", "after_load")
+HOOK_POINTS: tuple[HookPoint, ...] = (
+    "before_save",
+    "after_save",
+    "before_update",
+    "after_update",
+    "before_delete",
+    "after_delete",
+    "after_load",
+)
 
 
 class KeyTemplate:

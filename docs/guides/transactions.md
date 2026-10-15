@@ -40,6 +40,9 @@ same evaluator the in-memory DynamoDB uses), so `account.balance` is the new bal
 another read. This is exact for versioned models; for others, writes made by other clients
 between your read and the commit are not reflected (call `refresh()` if that matters).
 
+Update hooks (`before_update`/`after_update`) run for updates of instances, like save and delete
+hooks for theirs.
+
 ## When a transaction is canceled
 
 ```python

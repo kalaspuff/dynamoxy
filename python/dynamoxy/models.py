@@ -73,8 +73,10 @@ __all__ = [
     "after_delete",
     "after_load",
     "after_save",
+    "after_update",
     "before_delete",
     "before_save",
+    "before_update",
     "validator",
 ]
 
@@ -99,14 +101,29 @@ def before_save[F: Callable[..., Any]](function: F) -> F:
     """Marks a method (sync or async) that runs before the instance is written.
 
     It runs for put, create, save, batch puts and transactions, may change the instance, and
-    aborts the write by raising.
+    aborts the write by raising. Updates run :func:`before_update` hooks instead.
     """
     return _mark(function, "before_save")
 
 
 def after_save[F: Callable[..., Any]](function: F) -> F:
-    """Marks a method (sync or async) that runs after the instance was written."""
+    """Marks a method (sync or async) that runs after the instance was written (see :func:`before_save`)."""
     return _mark(function, "after_save")
+
+
+def before_update[F: Callable[..., Any]](function: F) -> F:
+    """Marks a method (sync or async) that runs before an update of the instance.
+
+    It runs for ``update()`` of an instance, in repositories and transactions, and aborts the
+    update by raising. The update writes its actions only: changes the hook makes to the
+    instance are not stored. Updates by key have no instance and run no hooks.
+    """
+    return _mark(function, "before_update")
+
+
+def after_update[F: Callable[..., Any]](function: F) -> F:
+    """Marks a method (sync or async) that runs after an update, on the refreshed instance."""
+    return _mark(function, "after_update")
 
 
 def before_delete[F: Callable[..., Any]](function: F) -> F:
