@@ -2,12 +2,15 @@
 //! items, a page reads at most 1 MB before filtering) and `LastEvaluatedKey` semantics (it is
 //! returned whenever the page stopped early, even if no item follows).
 
+use std::borrow::Cow;
+use std::ops::Bound;
+
 use super::State;
 use super::table::{CapacityMeter, Index, KeyInfo, StoredKey, Table, read_units};
 use crate::error::{Error, Result};
 use crate::expr::{
-    Condition, ExpressionInput, Path, condition_paths, evaluate, key_condition, parse_request, project,
-    sort_key_matches,
+    Comparator, Condition, ExpressionInput, Path, Projector, SortKeyCondition, condition_paths, evaluate,
+    key_condition, parse_request, sort_key_matches,
 };
 use crate::types::{ProjectionType, QueryInput, QueryOutput, ReturnConsumedCapacity, ScanInput, Select};
 use crate::value::{Item, item_size};
@@ -42,10 +45,10 @@ impl<'a> Target<'a> {
     }
 
     /// The attributes visible through the target (index projection).
-    fn visible(&self, item: &Item) -> Item {
+    fn visible<'i>(&self, item: &'i Item) -> Cow<'i, Item> {
         match self.index {
-            Some(index) => index.project(item, &self.table.key),
-            None => item.clone(),
+            Some(index) => index.projected(item, &self.table.key),
+            None => Cow::Borrowed(item),
         }
     }
 
@@ -124,7 +127,7 @@ fn effective_select(select: Option<Select>, projection: Option<&Vec<Path>>, targ
 
 struct PageRequest<'a> {
     filter: Option<&'a Condition>,
-    projection: Option<&'a Vec<Path>>,
+    projection: Option<Projector>,
     select: Select,
     limit: Option<u32>,
     consistent: bool,
@@ -145,15 +148,15 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
         last = Some(item);
         // Local indexes fetch non-projected attributes from the table.
         let evaluated = match (request.select, target.index) {
-            (Select::AllAttributes, Some(index)) if !index.global => item.clone(),
+            (Select::AllAttributes, Some(index)) if !index.global => Cow::Borrowed(item),
             _ => visible,
         };
         if request.filter.is_none_or(|filter| evaluate(filter, &evaluated)) {
             output.count += 1;
             if request.select != Select::Count {
-                output.items.push(match request.projection {
-                    Some(paths) => project(&evaluated, paths),
-                    None => evaluated,
+                output.items.push(match &request.projection {
+                    Some(projector) => projector.apply(&evaluated),
+                    None => evaluated.into_owned(),
                 });
             }
         }
@@ -219,55 +222,178 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
     }
     let select = effective_select(input.select, parsed.projection.as_ref(), &target)?;
     let partition = StoredKey::new(condition.partition_value.clone(), None);
-    let in_partition = |stored: &StoredKey| stored.hash == partition.hash && stored.partition == partition.partition;
-    let sort_matches = |item: &Item| match (&condition.sort, &key.sort) {
-        (Some((_, sort_condition)), Some(sort)) => {
-            item.get(&sort.name).is_some_and(|value| sort_key_matches(value, sort_condition))
-        }
-        _ => true,
+    let sort_condition = match (&condition.sort, &key.sort) {
+        (Some((_, sort_condition)), Some(sort)) => Some((sort.name.as_str(), sort_condition)),
+        _ => None,
+    };
+    let sort_matches = |item: &&Item| {
+        sort_condition.is_none_or(|(name, sort_condition)| {
+            item.get(name).is_some_and(|value| sort_key_matches(value, sort_condition))
+        })
     };
     let start = match &input.exclusive_start_key {
         Some(start) => Some(target.start_position(start)?),
         None => None,
     };
-    // Candidates in sort key order (then reversed for descending queries).
-    let mut candidates: Vec<(StoredKey, Option<StoredKey>, &Item)> = match target.index {
-        None => table
-            .items
-            .range(partition.clone()..)
-            .take_while(|(stored, _)| in_partition(stored))
-            .map(|(stored, item)| (stored.clone(), None, item))
-            .collect(),
-        Some(index) => index
-            .entries
-            .range((partition.clone(), StoredKey::min())..)
-            .take_while(|(index_key, _)| in_partition(index_key))
-            .filter_map(|(index_key, table_key)| {
-                table.items.get(table_key).map(|item| (index_key.clone(), Some(table_key.clone()), item))
-            })
-            .collect(),
-    };
-    candidates.retain(|(_, _, item)| sort_matches(item));
-    if !input.scan_index_forward {
-        candidates.reverse();
-    }
-    if let Some((start_key, start_table_key)) = &start {
-        let start = (start_key, start_table_key.as_ref());
-        let position = candidates.iter().position(|(stored, table_key, _)| {
-            let current = (stored, table_key.as_ref());
-            if input.scan_index_forward { current > start } else { current < start }
-        });
-        candidates.drain(..position.unwrap_or(candidates.len()));
-    }
     let request = PageRequest {
         filter: parsed.filter.as_ref(),
-        projection: parsed.projection.as_ref(),
+        projection: parsed.projection.as_deref().map(Projector::new),
         select,
         limit: input.limit,
         consistent: input.consistent_read,
         return_consumed_capacity: input.return_consumed_capacity,
     };
-    Ok(page(&target, candidates.into_iter().map(|(_, _, item)| item), &request))
+    // The keys the query can return: the partition, narrowed by the sort key condition and by
+    // the start key (in iteration order: after it, or before it for descending queries).
+    let mut bounds = Bounds::new(partition.clone(), partition.partition_end());
+    if let Some((_, sort_condition)) = sort_condition {
+        bounds.narrow_to_sort_condition(&partition, sort_condition);
+    }
+    let forward = input.scan_index_forward;
+    Ok(match target.index {
+        None => {
+            if let Some((start, _)) = &start {
+                bounds.narrow_to_start(start.clone(), forward);
+            }
+            let range = bounds.range(&table.items);
+            let candidates = range.into_iter().flatten().map(|(_, item)| item).filter(sort_matches);
+            if forward { page(&target, candidates, &request) } else { page(&target, candidates.rev(), &request) }
+        }
+        Some(index) => {
+            let mut bounds = bounds.with_table_keys();
+            if let Some((start, Some(start_table_key))) = &start {
+                bounds.narrow_to_start((start.clone(), start_table_key.clone()), forward);
+            }
+            let range = bounds.range_set(&index.entries);
+            let candidates = range
+                .into_iter()
+                .flatten()
+                .filter_map(|(_, table_key)| table.items.get(table_key))
+                .filter(sort_matches);
+            if forward { page(&target, candidates, &request) } else { page(&target, candidates.rev(), &request) }
+        }
+    })
+}
+
+/// The bounds of a range of keys, narrowed step by step (an empty range has no bounds).
+struct Bounds<K> {
+    lower: Bound<K>,
+    upper: Bound<K>,
+}
+
+impl<K: Ord + Clone> Bounds<K> {
+    fn new(lower: K, upper: K) -> Self {
+        Self { lower: Bound::Included(lower), upper: Bound::Included(upper) }
+    }
+
+    fn raise(&mut self, bound: Bound<K>) {
+        let tighter = match (&bound, &self.lower) {
+            (Bound::Included(new) | Bound::Excluded(new), Bound::Included(old)) => {
+                new > old || (new == old && matches!(bound, Bound::Excluded(_)))
+            }
+            (Bound::Included(new) | Bound::Excluded(new), Bound::Excluded(old)) => new > old,
+            (Bound::Unbounded, _) => false,
+            (_, Bound::Unbounded) => true,
+        };
+        if tighter {
+            self.lower = bound;
+        }
+    }
+
+    fn lower(&mut self, bound: Bound<K>) {
+        let tighter = match (&bound, &self.upper) {
+            (Bound::Included(new) | Bound::Excluded(new), Bound::Included(old)) => {
+                new < old || (new == old && matches!(bound, Bound::Excluded(_)))
+            }
+            (Bound::Included(new) | Bound::Excluded(new), Bound::Excluded(old)) => new < old,
+            (Bound::Unbounded, _) => false,
+            (_, Bound::Unbounded) => true,
+        };
+        if tighter {
+            self.upper = bound;
+        }
+    }
+
+    /// Keeps the keys after `start` in iteration order (before it when iterating backwards).
+    fn narrow_to_start(&mut self, start: K, forward: bool) {
+        if forward { self.raise(Bound::Excluded(start)) } else { self.lower(Bound::Excluded(start)) }
+    }
+
+    /// Whether no key fits (`BTreeMap::range` panics on such bounds).
+    fn is_empty(&self) -> bool {
+        match (&self.lower, &self.upper) {
+            (Bound::Included(lower), Bound::Included(upper)) => lower > upper,
+            (Bound::Included(lower) | Bound::Excluded(lower), Bound::Included(upper) | Bound::Excluded(upper)) => {
+                lower >= upper
+            }
+            _ => false,
+        }
+    }
+
+    fn as_ref(&self) -> (Bound<&K>, Bound<&K>) {
+        (self.lower.as_ref(), self.upper.as_ref())
+    }
+
+    fn range<'m, V>(
+        &self,
+        map: &'m std::collections::BTreeMap<K, V>,
+    ) -> Option<std::collections::btree_map::Range<'m, K, V>> {
+        (!self.is_empty()).then(|| map.range::<K, _>(self.as_ref()))
+    }
+
+    fn range_set<'m>(
+        &self,
+        set: &'m std::collections::BTreeSet<K>,
+    ) -> Option<std::collections::btree_set::Range<'m, K>> {
+        (!self.is_empty()).then(|| set.range::<K, _>(self.as_ref()))
+    }
+}
+
+impl Bounds<StoredKey> {
+    /// Narrows the partition's bounds to the sort keys a sort key condition accepts (the
+    /// condition is still checked on each item: `begins_with` only sets the lower bound).
+    fn narrow_to_sort_condition(&mut self, partition: &StoredKey, condition: &SortKeyCondition) {
+        match condition {
+            SortKeyCondition::Compare(comparator, value) => {
+                let key = partition.with_sort(value.clone());
+                match comparator {
+                    Comparator::Eq => {
+                        self.raise(Bound::Included(key.clone()));
+                        self.lower(Bound::Included(key));
+                    }
+                    Comparator::Lt => self.lower(Bound::Excluded(key)),
+                    Comparator::Le => self.lower(Bound::Included(key)),
+                    Comparator::Gt => self.raise(Bound::Excluded(key)),
+                    Comparator::Ge => self.raise(Bound::Included(key)),
+                    Comparator::Ne => {}
+                }
+            }
+            SortKeyCondition::Between(low, high) => {
+                self.raise(Bound::Included(partition.with_sort(low.clone())));
+                self.lower(Bound::Included(partition.with_sort(high.clone())));
+            }
+            SortKeyCondition::BeginsWith(prefix) => self.raise(Bound::Included(partition.with_sort(prefix.clone()))),
+        }
+    }
+
+    /// The same bounds over index entries (`(index key, table key)`): an index key bound
+    /// includes or excludes every entry with that index key.
+    fn with_table_keys(self) -> Bounds<(StoredKey, StoredKey)> {
+        let first = StoredKey::min;
+        let last = StoredKey::max;
+        Bounds {
+            lower: match self.lower {
+                Bound::Included(key) => Bound::Included((key, first())),
+                Bound::Excluded(key) => Bound::Excluded((key, last())),
+                Bound::Unbounded => Bound::Unbounded,
+            },
+            upper: match self.upper {
+                Bound::Included(key) => Bound::Included((key, last())),
+                Bound::Excluded(key) => Bound::Excluded((key, first())),
+                Bound::Unbounded => Bound::Unbounded,
+            },
+        }
+    }
 }
 
 /// `Scan`.
@@ -318,33 +444,36 @@ pub fn scan(state: &State, input: &ScanInput) -> Result<QueryOutput> {
         Some(start) => Some(target.start_position(start)?),
         None => None,
     };
-    let candidates: Vec<&Item> = match target.index {
-        None => table
-            .items
-            .iter()
-            .filter(|(stored, _)| in_segment(stored))
-            .filter(|(stored, _)| start.as_ref().is_none_or(|(start, _)| *stored > start))
-            .map(|(_, item)| item)
-            .collect(),
-        Some(index) => index
-            .entries
-            .iter()
-            .filter(|(index_key, _)| in_segment(index_key))
-            .filter(|(index_key, table_key)| {
-                start
-                    .as_ref()
-                    .is_none_or(|(start, start_table)| (index_key, Some(table_key)) > (start, start_table.as_ref()))
-            })
-            .filter_map(|(_, table_key)| table.items.get(table_key))
-            .collect(),
-    };
     let request = PageRequest {
         filter: parsed.filter.as_ref(),
-        projection: parsed.projection.as_ref(),
+        projection: parsed.projection.as_deref().map(Projector::new),
         select,
         limit: input.limit,
         consistent: input.consistent_read,
         return_consumed_capacity: input.return_consumed_capacity,
     };
-    Ok(page(&target, candidates.into_iter(), &request))
+    // Items after the start key, in key order (partitions by hash).
+    Ok(match target.index {
+        None => {
+            let range = match &start {
+                Some((start, _)) => table.items.range::<StoredKey, _>((Bound::Excluded(start), Bound::Unbounded)),
+                None => table.items.range::<StoredKey, _>(..),
+            };
+            let candidates = range.filter(|(stored, _)| in_segment(stored)).map(|(_, item)| item);
+            page(&target, candidates, &request)
+        }
+        Some(index) => {
+            let start = start.map(|(start, start_table)| (start, start_table.unwrap_or_else(StoredKey::min)));
+            let range = match &start {
+                Some(start) => {
+                    index.entries.range::<(StoredKey, StoredKey), _>((Bound::Excluded(start), Bound::Unbounded))
+                }
+                None => index.entries.range::<(StoredKey, StoredKey), _>(..),
+            };
+            let candidates = range
+                .filter(|(index_key, _)| in_segment(index_key))
+                .filter_map(|(_, table_key)| table.items.get(table_key));
+            page(&target, candidates, &request)
+        }
+    })
 }

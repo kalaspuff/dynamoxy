@@ -947,3 +947,202 @@ async fn consumed_capacity_follows_dynamodb_units() {
         .unwrap();
     assert_eq!(read.consumed_capacity.unwrap().capacity_units, 1.0);
 }
+
+/// Queries and scans page through keys like DynamoDB in every direction and with every sort key
+/// condition: compared, for many random requests, with a model that sorts and filters every item.
+#[tokio::test]
+async fn queries_and_scans_match_a_reference_model() {
+    use super::table::StoredKey;
+    use crate::expr::{Comparator, SortKeyCondition, sort_key_matches};
+
+    let backend = MemoryBackend::default();
+    let projection = Projection { projection_type: ProjectionType::All, non_key_attributes: vec![] };
+    backend
+        .create_table(CreateTableInput {
+            attribute_definitions: vec![
+                definition("pk", ScalarType::S),
+                definition("sk", ScalarType::S),
+                definition("group", ScalarType::S),
+                definition("rank", ScalarType::N),
+                definition("score", ScalarType::N),
+            ],
+            key_schema: keys("pk", Some("sk")),
+            local_secondary_indexes: vec![LocalSecondaryIndex {
+                index_name: "by_score".into(),
+                key_schema: keys("pk", Some("score")),
+                projection: projection.clone(),
+            }],
+            global_secondary_indexes: vec![GlobalSecondaryIndex {
+                index_name: "by_group".into(),
+                key_schema: keys("group", Some("rank")),
+                projection,
+                provisioned_throughput: None,
+                on_demand_throughput: None,
+            }],
+            ..table_input("diff")
+        })
+        .await
+        .unwrap();
+    let mut rng = fastrand::Rng::with_seed(7);
+    let mut items = Vec::new();
+    for partition in ["a", "b", "c", "d", "e"] {
+        let mut sorts: Vec<u32> = (0..300).collect();
+        rng.shuffle(&mut sorts);
+        for sort in &sorts[..60] {
+            let prefix = if sort % 7 == 0 { "t" } else { "s" };
+            let mut entry = item([("pk", s(partition)), ("sk", s(&format!("{prefix}{sort:03}")))]);
+            if rng.u8(0..4) != 0 {
+                entry.insert("group".into(), s(["g1", "g2"][rng.usize(0..2)]));
+                entry.insert("rank".into(), n(rng.i64(0..15)));
+            }
+            if rng.bool() {
+                entry.insert("score".into(), n(rng.i64(-50..50)));
+            }
+            backend
+                .put_item(PutItemInput { table_name: "diff".into(), item: entry.clone(), ..Default::default() })
+                .await
+                .unwrap();
+            items.push(entry);
+        }
+    }
+    let table_key = |item: &Item| StoredKey::new(item["pk"].clone(), Some(item["sk"].clone()));
+
+    for round in 0..400 {
+        // Target: (index, partition attribute, sort attribute, numeric sort key).
+        let (index, partition_name, sort_name, numeric) = match round % 3 {
+            0 => (None, "pk", "sk", false),
+            1 => (Some("by_group"), "group", "rank", true),
+            _ => (Some("by_score"), "pk", "score", true),
+        };
+        let partition = if partition_name == "group" {
+            s(["g1", "g2"][rng.usize(0..2)])
+        } else {
+            s(["a", "b", "c", "d", "e"][rng.usize(0..5)])
+        };
+        let bound = |rng: &mut fastrand::Rng| {
+            if numeric {
+                n(rng.i64(-60..60))
+            } else {
+                s(&format!("{}{:03}", ["s", "t"][rng.usize(0..2)], rng.u32(0..300)))
+            }
+        };
+        let condition = match rng.u8(0..8) {
+            0 => None,
+            1 => Some(SortKeyCondition::Compare(Comparator::Eq, bound(&mut rng))),
+            2 => Some(SortKeyCondition::Compare(Comparator::Lt, bound(&mut rng))),
+            3 => Some(SortKeyCondition::Compare(Comparator::Le, bound(&mut rng))),
+            4 => Some(SortKeyCondition::Compare(Comparator::Gt, bound(&mut rng))),
+            5 => Some(SortKeyCondition::Compare(Comparator::Ge, bound(&mut rng))),
+            6 => {
+                let (low, high) = (bound(&mut rng), bound(&mut rng));
+                let (low, high) =
+                    if low.cmp_scalar(&high) == Some(std::cmp::Ordering::Greater) { (high, low) } else { (low, high) };
+                Some(SortKeyCondition::Between(low, high))
+            }
+            _ if !numeric => {
+                Some(SortKeyCondition::BeginsWith(s(["s", "t", "s0", "s1", "s12", "t0", "x"][rng.usize(0..7)])))
+            }
+            _ => None,
+        };
+        let forward = rng.bool();
+        let limit = if rng.u8(0..4) == 0 { None } else { Some(rng.u32(1..12)) };
+
+        // The reference: every item of the partition that has the target's keys, in key order.
+        let mut expected: Vec<(StoredKey, StoredKey, &Item)> = items
+            .iter()
+            .filter(|item| item.get(partition_name) == Some(&partition) && item.contains_key(sort_name))
+            .filter(|item| condition.as_ref().is_none_or(|condition| sort_key_matches(&item[sort_name], condition)))
+            .map(|item| {
+                (StoredKey::new(item[partition_name].clone(), Some(item[sort_name].clone())), table_key(item), item)
+            })
+            .collect();
+        expected.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        if !forward {
+            expected.reverse();
+        }
+        let expected: Vec<&Item> = expected.into_iter().map(|(_, _, item)| item).collect();
+
+        let mut expression = "#p = :p".to_owned();
+        let mut vals = values(&[(":p", partition.clone())]);
+        match &condition {
+            None => {}
+            Some(SortKeyCondition::Compare(comparator, value)) => {
+                expression += &format!(" AND #s {} :v", comparator.as_str());
+                vals.insert(":v".into(), value.clone());
+            }
+            Some(SortKeyCondition::Between(low, high)) => {
+                expression += " AND #s BETWEEN :lo AND :hi";
+                vals.insert(":lo".into(), low.clone());
+                vals.insert(":hi".into(), high.clone());
+            }
+            Some(SortKeyCondition::BeginsWith(prefix)) => {
+                expression += " AND begins_with(#s, :v)";
+                vals.insert(":v".into(), prefix.clone());
+            }
+        }
+        let mut input = QueryInput {
+            table_name: "diff".into(),
+            index_name: index.map(str::to_owned),
+            key_condition_expression: Some(expression),
+            expression_attribute_names: if condition.is_some() {
+                names(&[("#p", partition_name), ("#s", sort_name)])
+            } else {
+                names(&[("#p", partition_name)])
+            },
+            expression_attribute_values: vals,
+            scan_index_forward: forward,
+            limit,
+            ..Default::default()
+        };
+        let mut found = Vec::new();
+        loop {
+            let page = backend.query(input.clone()).await.unwrap();
+            let full = limit.is_some_and(|limit| page.items.len() == limit as usize);
+            assert_eq!(page.last_evaluated_key.is_some(), full, "round {round}: LastEvaluatedKey only on full pages");
+            found.extend(page.items);
+            match page.last_evaluated_key {
+                Some(key) => input.exclusive_start_key = Some(key),
+                None => break,
+            }
+        }
+        assert_eq!(found.iter().collect::<Vec<_>>(), expected, "round {round}: {input:?}");
+    }
+
+    for round in 0..60 {
+        let index = [None, Some("by_group"), Some("by_score")][round % 3];
+        let segment = (round % 2 == 1).then(|| (rng.u32(0..3), 3));
+        let limit = if rng.bool() { None } else { Some(rng.u32(1..40)) };
+        let mut expected: Vec<(StoredKey, StoredKey, &Item)> = items
+            .iter()
+            .filter_map(|item| {
+                let index_key = match index {
+                    None => table_key(item),
+                    Some("by_group") => StoredKey::new(item.get("group")?.clone(), Some(item.get("rank")?.clone())),
+                    Some(_) => StoredKey::new(item["pk"].clone(), Some(item.get("score")?.clone())),
+                };
+                Some((index_key, table_key(item), item))
+            })
+            .filter(|(index_key, _, _)| segment.is_none_or(|(segment, total)| index_key.segment(total) == segment))
+            .collect();
+        expected.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        let expected: Vec<&Item> = expected.into_iter().map(|(_, _, item)| item).collect();
+        let mut input = ScanInput {
+            table_name: "diff".into(),
+            index_name: index.map(str::to_owned),
+            limit,
+            segment: segment.map(|(segment, _)| segment),
+            total_segments: segment.map(|(_, total)| total),
+            ..Default::default()
+        };
+        let mut found = Vec::new();
+        loop {
+            let page = backend.scan(input.clone()).await.unwrap();
+            found.extend(page.items);
+            match page.last_evaluated_key {
+                Some(key) => input.exclusive_start_key = Some(key),
+                None => break,
+            }
+        }
+        assert_eq!(found.iter().collect::<Vec<_>>(), expected, "scan round {round}: {input:?}");
+    }
+}

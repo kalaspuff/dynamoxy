@@ -1,6 +1,7 @@
 //! Storage of one in-memory table: items ordered like DynamoDB orders them, secondary indexes
 //! maintained on every write, and the validation DynamoDB applies to items and keys.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,11 +28,16 @@ fn invalid(message: impl Into<String>) -> Error {
 pub struct KeyValue(pub AttributeValue);
 
 impl KeyValue {
+    /// A value that sorts after every key value (an upper bound for ranges).
+    const AFTER_ALL: KeyValue = KeyValue(AttributeValue::Null);
+
     fn rank(&self) -> u8 {
         match self.0 {
             AttributeValue::S(_) => 0,
             AttributeValue::N(_) => 1,
-            _ => 2,
+            AttributeValue::B(_) => 2,
+            // Not a key type: only `AFTER_ALL`.
+            _ => 3,
         }
     }
 
@@ -87,6 +93,21 @@ impl StoredKey {
     /// A key that sorts before every real key (lower bound for range scans).
     pub fn min() -> Self {
         Self { hash: 0, partition: KeyValue(AttributeValue::S(String::new())), sort: None }
+    }
+
+    /// A key that sorts after every real key.
+    pub fn max() -> Self {
+        Self { hash: u64::MAX, partition: KeyValue::AFTER_ALL, sort: Some(KeyValue::AFTER_ALL) }
+    }
+
+    /// A key that sorts after every key of this key's partition, and before the next partition.
+    pub fn partition_end(&self) -> Self {
+        Self { hash: self.hash, partition: self.partition.clone(), sort: Some(KeyValue::AFTER_ALL) }
+    }
+
+    /// The key of this key's partition with the sort key value `sort`.
+    pub fn with_sort(&self, sort: AttributeValue) -> Self {
+        Self { hash: self.hash, partition: self.partition.clone(), sort: Some(KeyValue(sort)) }
     }
 
     /// The parallel scan segment of this key.
@@ -145,6 +166,11 @@ impl KeyInfo {
     /// Key attribute names, partition key first.
     pub fn names(&self) -> Vec<&str> {
         std::iter::once(self.partition.name.as_str()).chain(self.sort.as_ref().map(|sort| sort.name.as_str())).collect()
+    }
+
+    /// Whether `name` is a key attribute.
+    pub fn has(&self, name: &str) -> bool {
+        self.partition.name == name || self.sort.as_ref().is_some_and(|sort| sort.name == name)
     }
 
     fn attributes(&self) -> impl Iterator<Item = &KeyAttribute> {
@@ -276,18 +302,24 @@ impl Index {
 
     /// The attributes of `item` copied into this index.
     pub fn project(&self, item: &Item, table_key: &KeyInfo) -> Item {
+        self.projected(item, table_key).into_owned()
+    }
+
+    /// [`Self::project`], borrowing the item when the index copies every attribute.
+    pub fn projected<'a>(&self, item: &'a Item, table_key: &KeyInfo) -> Cow<'a, Item> {
         match self.projection.projection_type {
-            ProjectionType::All => item.clone(),
-            ProjectionType::KeysOnly | ProjectionType::Include => item
-                .iter()
-                .filter(|(name, _)| {
-                    table_key.names().contains(&name.as_str())
-                        || self.key.names().contains(&name.as_str())
-                        || (self.projection.projection_type == ProjectionType::Include
-                            && self.projection.non_key_attributes.iter().any(|attribute| attribute == *name))
-                })
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect(),
+            ProjectionType::All => Cow::Borrowed(item),
+            ProjectionType::KeysOnly | ProjectionType::Include => Cow::Owned(
+                item.iter()
+                    .filter(|(name, _)| {
+                        table_key.has(name)
+                            || self.key.has(name)
+                            || (self.projection.projection_type == ProjectionType::Include
+                                && self.projection.non_key_attributes.iter().any(|attribute| attribute == *name))
+                    })
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            ),
         }
     }
 
@@ -302,7 +334,7 @@ impl Index {
             .entries
             .iter()
             .filter_map(|(_, table_key_value)| items.get(table_key_value))
-            .map(|item| item_size(&self.project(item, table_key)))
+            .map(|item| item_size(&self.projected(item, table_key)))
             .sum();
         IndexDescription {
             index_name: self.name.clone(),
@@ -401,7 +433,7 @@ impl Table {
 
     /// Replaces (or with `None` deletes) the item at `key`, keeping the indexes current.
     /// Returns the previous item.
-    pub fn write(&mut self, key: StoredKey, item: Option<Item>) -> Option<Item> {
+    pub fn write(&mut self, key: &StoredKey, item: Option<Item>) -> Option<Item> {
         let old = match item {
             Some(item) => {
                 for index in &mut self.indexes {
@@ -411,10 +443,10 @@ impl Table {
                 }
                 self.items.insert(key.clone(), item)
             }
-            None => self.items.remove(&key),
+            None => self.items.remove(key),
         };
         if let Some(old) = &old {
-            let new = self.items.get(&key);
+            let new = self.items.get(key);
             for index in &mut self.indexes {
                 if let Some(entry) = index.entry_key(old)
                     && new.and_then(|new| index.entry_key(new)).as_ref() != Some(&entry)
@@ -528,8 +560,8 @@ impl CapacityMeter {
         let entry = self.tables.entry(table.name.clone()).or_default();
         add_capacity(&mut entry.table, 0.0, write_units(size) * multiplier);
         for index in &table.indexes {
-            let before = old.and_then(|item| index.entry_key(item).map(|_| index.project(item, &table.key)));
-            let after = new.and_then(|item| index.entry_key(item).map(|_| index.project(item, &table.key)));
+            let before = old.and_then(|item| index.entry_key(item).map(|_| index.projected(item, &table.key)));
+            let after = new.and_then(|item| index.entry_key(item).map(|_| index.projected(item, &table.key)));
             let key_changed = match (old, new) {
                 (Some(old), Some(new)) => index.entry_key(old) != index.entry_key(new),
                 _ => false,

@@ -7,7 +7,7 @@ use super::State;
 use super::items::{Failure, apply, prepare_delete, prepare_put};
 use super::table::{CapacityMeter, StoredKey, read_units};
 use crate::error::{Error, Result};
-use crate::expr::{ExpressionInput, parse_request, project};
+use crate::expr::{ExpressionInput, Projector, parse_request};
 use crate::types::{
     BatchGetItemInput, BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, KeysAndAttributes,
     ReturnValuesOnConditionCheckFailure, WriteRequest,
@@ -32,7 +32,7 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
     if total > 100 {
         return Err(invalid("Too many items requested for the BatchGetItem call"));
     }
-    let mut parsed_projections = BTreeMap::new();
+    let mut parsed = Vec::with_capacity(input.request_items.len());
     for (table_name, request) in &input.request_items {
         if request.keys.is_empty() {
             return Err(invalid(format!(
@@ -40,18 +40,23 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
             )));
         }
         let table = state.table(table_name)?;
-        let mut seen = BTreeSet::new();
-        for key in &request.keys {
-            if !seen.insert(table.key.exact_key(key)?) {
+        let mut positions = BTreeMap::new();
+        for (position, key) in request.keys.iter().enumerate() {
+            if positions.insert(table.key.exact_key(key)?, position).is_some() {
                 return Err(invalid("Provided list of item keys contains duplicates"));
             }
         }
-        let parsed = parse_request(
+        let mut stored: Vec<Option<StoredKey>> = vec![None; request.keys.len()];
+        for (key, position) in positions {
+            stored[position] = Some(key);
+        }
+        let projection = parse_request(
             ExpressionInput { projection: request.projection_expression.as_deref(), ..Default::default() },
             &request.expression_attribute_names,
             &Default::default(),
-        )?;
-        parsed_projections.insert(table_name.clone(), parsed.projection);
+        )?
+        .projection;
+        parsed.push((stored, projection.as_deref().map(Projector::new)));
     }
     let mut output = BatchGetItemOutput::default();
     if unprocessed {
@@ -60,10 +65,9 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
     }
     let mut meter = CapacityMeter::default();
     let mut returned = 0usize;
-    for (table_name, request) in &input.request_items {
+    for ((table_name, request), (stored_keys, projection)) in input.request_items.iter().zip(&parsed) {
         let table = state.table(table_name)?;
-        let projection = parsed_projections.get(table_name).and_then(Option::as_ref);
-        for key in &request.keys {
+        for (key, stored) in request.keys.iter().zip(stored_keys) {
             if returned >= RESPONSE_SIZE_LIMIT {
                 output
                     .unprocessed_keys
@@ -73,12 +77,11 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
                     .push(key.clone());
                 continue;
             }
-            let stored: StoredKey = table.key.exact_key(key)?;
-            let found = table.items.get(&stored);
+            let found = stored.as_ref().and_then(|stored| table.items.get(stored));
             meter.read(table_name, None, read_units(found.map_or(0, item_size), request.consistent_read));
             if let Some(item) = found {
                 let item = match projection {
-                    Some(paths) => project(item, paths),
+                    Some(projector) => projector.apply(item),
                     None => item.clone(),
                 };
                 returned += item_size(&item);
@@ -142,8 +145,11 @@ pub fn batch_write_item(
     for write in prepared {
         if input.return_item_collection_metrics
             && let Some(table) = state.tables.get(&write.table)
-            && let Some(metrics) =
-                write.new.as_ref().or(write.old.as_ref()).and_then(|item| table.item_collection_metrics(item))
+            && let Some(metrics) = write
+                .new
+                .as_ref()
+                .or_else(|| table.items.get(&write.key))
+                .and_then(|item| table.item_collection_metrics(item))
         {
             output.item_collection_metrics.entry(write.table.clone()).or_default().push(metrics);
         }

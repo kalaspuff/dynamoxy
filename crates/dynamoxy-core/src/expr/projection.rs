@@ -79,16 +79,35 @@ pub fn validate_projection(paths: &[Path]) -> Result<()> {
 
 /// The parts of `item` selected by `paths`.
 pub fn project(item: &Item, paths: &[Path]) -> Item {
-    let mut root = Node::default();
-    for path in paths {
-        root.insert(&path.0);
+    Projector::new(paths).apply(item)
+}
+
+/// A projection prepared once and applied to many items (the pages of a query).
+#[derive(Debug, Default)]
+pub struct Projector {
+    root: Node,
+}
+
+impl Projector {
+    /// Prepares the projection of `paths`.
+    pub fn new(paths: &[Path]) -> Self {
+        let mut root = Node::default();
+        for path in paths {
+            root.insert(&path.0);
+        }
+        Self { root }
     }
-    root.names
-        .iter()
-        .filter_map(|(name, node)| {
-            item.get(name).and_then(|value| node.project(value)).map(|value| (name.clone(), value))
-        })
-        .collect()
+
+    /// The parts of `item` the projection selects.
+    pub fn apply(&self, item: &Item) -> Item {
+        self.root
+            .names
+            .iter()
+            .filter_map(|(name, node)| {
+                item.get(name).and_then(|value| node.project(value)).map(|value| (name.clone(), value))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

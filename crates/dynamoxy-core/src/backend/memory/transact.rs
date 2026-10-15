@@ -16,8 +16,6 @@ use crate::types::{
 };
 use crate::value::{AttributeValue, Item, item_size};
 
-/// How long a client request token is remembered (10 minutes).
-const TOKEN_LIFETIME: f64 = 600.0;
 /// Largest total item size of one transaction (4 MB).
 const TRANSACTION_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 
@@ -137,9 +135,8 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
     };
     let request_fingerprint = fingerprint(&input);
     let current = now();
-    state.tokens.retain(|_, record| current - record.at < TOKEN_LIFETIME);
     if let Some(token) = &token
-        && let Some(record) = state.tokens.get(token)
+        && let Some(record) = state.tokens.get(token, current)
     {
         if record.fingerprint != request_fingerprint {
             return Err(ServiceError::new(
@@ -246,16 +243,18 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         if input.return_item_collection_metrics
             && write.writes
             && let Some(table) = state.tables.get(&write.table)
-            && let Some(metrics) =
-                write.new.as_ref().or(write.old.as_ref()).and_then(|item| table.item_collection_metrics(item))
+            && let Some(metrics) = write
+                .new
+                .as_ref()
+                .or_else(|| table.items.get(&write.key))
+                .and_then(|item| table.item_collection_metrics(item))
         {
             output.item_collection_metrics.entry(write.table.clone()).or_default().push(metrics);
         }
         if write.writes {
             apply(state, write, &mut meter, 2.0);
         } else {
-            let size = write.old.as_ref().map_or(0, item_size);
-            meter.read(&write.table, None, 2.0 * read_units(size, true));
+            meter.read(&write.table, None, 2.0 * read_units(write.read_size, true));
         }
     }
     if let Some(token) = token {
