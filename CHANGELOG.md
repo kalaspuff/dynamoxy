@@ -10,6 +10,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Features
 
+- Queries and scans take `consistent=True` for strongly consistent reads, like `get()`:
+  `repository.query(...)`, `repository.scan()`, `repository.count()`, `table.query(...)`,
+  `table.scan()` and the `query()` and `scan()` of collections (`.consistent()` still works). A
+  consistent read of a global secondary index of a model raises `ValueError` before any request,
+  also with `.consistent()`, instead of failing in DynamoDB with `ValidationError`.
 - Model instances persist themselves through the repository that last read or wrote them
   ([ADR 0011](docs/adr/0011-instances-remember-their-repository.md)): `save()`, `delete()`,
   `update(*actions)`, `add(path, value)`, `increment(path, amount=1)`, `decrement(...)` and

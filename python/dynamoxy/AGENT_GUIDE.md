@@ -343,12 +343,18 @@ async for entry in recent:
 
 first = await recent.first()  # or .one(), .all(), .count(), .exists()
 by_kind = await client.repository(Event).query(index=Event.by_kind, kind="signup").all()
+latest = await entries.query(account_id="a1", consistent=True).all()  # strongly consistent read
 ```
 
 Query builders are immutable: every method returns a new query, so queries can be shared and
 reused. `where()` takes sort key conditions: comparisons, `between()` and `begins_with()`. Index entries
 with a `KEYS_ONLY` or `INCLUDE` projection hold only some attributes: add `.hydrate()` to fetch
 the full items, or `.project(...)` to get dicts with just the attributes you need.
+
+Reads are eventually consistent by default. `consistent=True` on `query`, `scan` and `count` (as
+on `get`) reflects every write that succeeded before the read, at twice the read cost: use it to
+read your own writes. Global secondary indexes do not support it (`ValueError` before any
+request); the table and local indexes do.
 
 ### Pagination
 
@@ -879,7 +885,7 @@ async def test_signup(client: dynamoxy.Client) -> None:
   queries and scans read up to 1 MB per page; batch writes 25 and batch gets 100 per request
   (dynamoxy chunks them); keys up to 2048 (partition) / 1024 (sort) bytes; numbers up to 38
   significant digits; no empty sets.
-- **Consistency**: global secondary indexes are eventually consistent (no `consistent()` reads);
+- **Consistency**: global secondary indexes are eventually consistent (no `consistent=True` reads);
   a write is visible in a GSI shortly after it succeeds.
 - **Hot partitions**: spread writes over many partition key values; a single partition serves
   about 3000 reads and 1000 writes per second.

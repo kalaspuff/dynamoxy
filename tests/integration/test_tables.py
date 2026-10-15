@@ -6,6 +6,7 @@ import pytest
 
 import dynamoxy
 from dynamoxy import F
+from tests.helpers import record_consistent_reads
 from tests.models import Customer, Event, Order, User
 
 
@@ -161,3 +162,20 @@ async def test_dict_level_items(client: dynamoxy.Client) -> None:
     assert await table.query(F("pk") == "b").count() == 29
     with pytest.raises(ValueError, match="needs a key condition"):
         table.query()
+
+
+async def test_dict_level_consistent_reads(client: dynamoxy.Client) -> None:
+    await client.create_tables(Event)
+    table = client.table("events")
+    await table.put({"stream": "s", "seq": 1, "kind": "k"})
+    sent = record_consistent_reads(client)
+    assert len(await table.query(F("stream") == "s", consistent=True).all()) == 1
+    assert len(await table.query(F("stream") == "s", index="by_kind_local", consistent=True).all()) == 1
+    assert len(await table.scan(consistent=True).all()) == 1
+    assert len(await table.query(F("stream") == "s").all()) == 1
+    assert sent == [("Query", True), ("Query", True), ("Scan", True), ("Query", False)]
+    # Tables do not know their indexes: DynamoDB refuses consistent reads of a global one.
+    with pytest.raises(dynamoxy.ValidationError, match="Consistent reads are not supported on global secondary"):
+        await table.query(F("kind") == "k", index="by_kind", consistent=True).all()
+    with pytest.raises(dynamoxy.ValidationError, match="Consistent reads are not supported on global secondary"):
+        await table.scan(index="by_kind", consistent=True).all()

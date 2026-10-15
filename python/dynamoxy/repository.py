@@ -332,18 +332,27 @@ class Repository[M]:
             state.stored = dict(item)
             state.repository = self
 
-    def query(self, *, index: str | GlobalIndex | LocalIndex | None = None, **key_values: Any) -> Query[M]:
+    def query(
+        self, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False, **key_values: Any
+    ) -> Query[M]:
         """Items of one partition of the table or of an index.
 
         ``key_values`` give the partition key (its field name, or the fields its template
         uses) and optionally the sort key. Without a sort key value, a templated sort key with
         a constant prefix (``"ORDER#{order_id}"``) restricts the query to this model's items.
         Add sort key conditions with ``.where()`` and filters with ``.filter()``.
+        ``consistent=True`` reads with strong consistency (twice the read cost), which global
+        secondary indexes do not support.
 
         Example::
 
             orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2024")).descending()
             users.query(index=User.by_email, email="ada@example.com").first()
+            orders.query(customer_id="c1", consistent=True)  # reflects every write that succeeded
+
+        Raises:
+            ValueError: The index or the key arguments are unknown or incomplete, or
+                ``consistent=True`` targets a global secondary index.
         """
         spec = self._index(index)
         partition_spec = spec.partition_key if spec is not None else self.schema.partition_key
@@ -368,7 +377,9 @@ class Repository[M]:
             decode=self._load,
             model=self.model_class,
             index=spec.name if spec is not None else None,
+            global_index=spec is not None and spec.kind == "global",
             key_condition=condition,
+            consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
         )
@@ -419,10 +430,15 @@ class Repository[M]:
                 result.append(found)
         return result
 
-    def scan(self, *, index: str | GlobalIndex | LocalIndex | None = None) -> Scan[M]:
+    def scan(self, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False) -> Scan[M]:
         """Every item of this model, in the table or an index.
 
         Combine with ``.filter()``, ``.segments(n)`` for parallel scans and ``.limit()``.
+        ``consistent=True`` reads with strong consistency (not on global secondary indexes).
+
+        Raises:
+            ValueError: The index is unknown, or ``consistent=True`` targets a global secondary
+                index.
         """
         spec = self._index(index)
         scan: Scan[M] = Scan(
@@ -431,17 +447,21 @@ class Repository[M]:
             decode=self._load,
             model=self.model_class,
             index=spec.name if spec is not None else None,
+            global_index=spec is not None and spec.kind == "global",
+            consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
         )
         type_filter = self._type_filter()
         return scan.filter(type_filter) if type_filter is not None else scan
 
-    async def count(self, *, index: str | GlobalIndex | LocalIndex | None = None, **key_values: Any) -> int:
+    async def count(
+        self, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False, **key_values: Any
+    ) -> int:
         """Items in a partition (``query`` arguments), or of the whole model without arguments."""
         if key_values:
-            return await self.query(index=index, **key_values).count()
-        return await self.scan(index=index).count()
+            return await self.query(index=index, consistent=consistent, **key_values).count()
+        return await self.scan(index=index, consistent=consistent).count()
 
     async def batch_get(self, keys: Iterable[Any], *, consistent: bool = False) -> list[M]:
         """Reads many items by key; missing keys are skipped and order follows ``keys``.

@@ -10,7 +10,7 @@ dynamoxy is a typed, async DynamoDB ORM for Python with a Rust core. Start with
 | --- | --- |
 | [Getting started](guides/getting-started.md) | Install, a first model, connecting to AWS, an emulator or the in-memory DynamoDB |
 | [Modeling](guides/modeling.md) | Fields, codecs, validation, automatic fields, keys, indexes, documents, hooks |
-| [Reading data](guides/reading-data.md) | Gets, queries, sort key conditions, filters, pagination and cursors, scans, projections |
+| [Reading data](guides/reading-data.md) | Gets, consistency, queries, sort key conditions, filters, pagination and cursors, scans, projections |
 | [Writing data](guides/writing-data.md) | create/put/save/update/delete, update actions, conditions, upserts, batches |
 | [Constraints and concurrency](guides/constraints-and-concurrency.md) | Unique values, optimistic locking, immutable fields, idempotency |
 | [Transactions](guides/transactions.md) | Atomic writes, checks, cancellation reasons, tokens, transactional reads |

@@ -80,7 +80,9 @@ class _Reader[T]:
         decode: Callable[[dict[str, Any]], T],
         model: type | None = None,
         index: str | None = None,
+        global_index: bool = False,
         key_condition: Condition | None = None,
+        consistent: bool = False,
         hydrate: Callable[[list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]] | None = None,
         decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
     ) -> None:
@@ -90,13 +92,15 @@ class _Reader[T]:
         self._decode_page = decode_page
         self._model = model
         self._index = index
+        self._global_index = global_index
         self._key_condition = key_condition
         self._filter: Condition | None = None
         self._projection: tuple[Path[Any], ...] = ()
         self._limit: int | None = None
         self._page_size: int | None = None
         self._forward = True
-        self._consistent = False
+        self._check_consistent(consistent)
+        self._consistent = consistent
         self._start: dict[str, Any] | None = None
         self._segment: tuple[int, int] | None = None
         self._segments: int | None = None
@@ -140,8 +144,22 @@ class _Reader[T]:
         return self._replace(page_size=count)
 
     def consistent(self, consistent: bool = True) -> Self:
-        """Strongly consistent reads (not available on global secondary indexes)."""
+        """Strongly consistent reads (twice the read cost), like ``consistent=True``.
+
+        Raises:
+            ValueError: The query or scan reads a global secondary index (eventually consistent
+                only).
+        """
+        self._check_consistent(consistent)
         return self._replace(consistent=consistent)
+
+    def _check_consistent(self, consistent: bool) -> None:
+        if consistent and self._global_index:
+            owner = f"{self._model.__name__} index" if self._model is not None else "index"
+            raise ValueError(
+                f"{owner} {self._index!r} is a global secondary index, which does not support consistent reads: "
+                "remove consistent=True, or read the table or a local index"
+            )
 
     def after(self, cursor: str | dict[str, Any] | None) -> Self:
         """Continues after a cursor (``page.cursor``) or a raw ``LastEvaluatedKey``."""
