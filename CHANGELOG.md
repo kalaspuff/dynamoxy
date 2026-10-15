@@ -39,6 +39,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Fixed
 
+- Updates that change a field a key template uses by arithmetic or a function (`add`,
+  `increment`, `set(path + n)`, `set_if_not_exists`, nested paths) wrote the templated attribute
+  rendered from the old value, so a leaderboard key such as `SCORE#{score:08d}` kept the old
+  score. It is now rendered from the update evaluated on the item as last read.
 - The in-memory backend compared binary values by length only when it checked that a reused
   transaction idempotency token belonged to the same request.
 

@@ -744,7 +744,18 @@ class Repository[M]:
                 )
         if derived_specs:
             known: dict[str, Any] = {}
-            if stored_old is not None:
+            computed = touched.keys() - literals.keys()  # changed by arithmetic, functions or in nested paths
+            if any(computed.intersection(spec.template.fields) for spec in derived_specs):  # type: ignore[union-attr]
+                # The new values of such fields are what the update makes of the item as last read,
+                # evaluated like DynamoDB does (exact for versioned models, whose version is checked).
+                if stored_old is not None:
+                    base = stored_old
+                elif instance is not None:
+                    base = schema.encode(instance)
+                else:
+                    base = {}  # an upsert that creates the item
+                known.update(schema.decode_values(self._evaluate(base, actions_list)))
+            elif stored_old is not None:
                 known.update(schema.decode_values(stored_old))
             elif instance is not None:
                 known.update(schema.values(instance))
@@ -885,11 +896,18 @@ class Repository[M]:
         loaded). For other models, changes other writers made meanwhile are not reflected.
         Instances that were never loaded start from their own values.
         """
+        return self._evaluate(stored if stored is not None else self.schema.encode(instance), actions)
+
+    def _evaluate(self, item: dict[str, Any], actions: Sequence[UpdateAction]) -> dict[str, Any]:
+        """``item`` (stored form) after ``actions``, evaluated by the core's evaluator like DynamoDB does.
+
+        Raises:
+            ValidationError: The actions are invalid for ``item`` (DynamoDB's message).
+        """
         builder = ExpressionBuilder()
         expression = builder.update(actions)
         assert expression is not None, "updates have at least one action"
-        base = stored if stored is not None else self.schema.encode(instance)
-        return _core._apply_update(base, expression, names=builder.names or None, values=builder.values or None)
+        return _core._apply_update(item, expression, names=builder.names or None, values=builder.values or None)
 
     async def update(
         self,

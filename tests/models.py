@@ -1,4 +1,4 @@
-"""Models shared by the tests: a plain table, an event log, a single-table design and pydantic."""
+"""Models shared by the tests: a plain table, an event log, a single-table design, counters and pydantic."""
 
 from __future__ import annotations
 
@@ -99,6 +99,24 @@ class Order(Model, table="app", entity="Order"):
     gsi1sk: Attr[str] = field(template="{placed_at}")
 
     by_status = GlobalIndex("gsi1", partition_key=gsi1pk, sort_key=gsi1sk)
+
+
+class Player(Model, table="players"):
+    """A versioned model with counters, collections and an index key derived from a counter."""
+
+    player_id: Attr[str] = partition_key()
+    name: Attr[str] = field(min_length=1)
+    board: Attr[str] = field(default="global")
+    score: Attr[int] = field(default=0)
+    coins: Attr[Decimal] = field(default=Decimal(0))
+    badges: Attr[set[str]] = field(default_factory=set)
+    history: Attr[list[str]] = field(default_factory=list)
+    stats: Attr[dict[str, int]] = field(default_factory=dict)
+    rank: Attr[str] = field(template="SCORE#{score:08d}")
+    updated_at: Attr[datetime] = updated_at()
+    version: Attr[int] = version()
+
+    by_rank = GlobalIndex(partition_key=board, sort_key=rank)
 
 
 class Account(PydanticModel, table="accounts"):
