@@ -14,6 +14,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   GIL; results are queued on a per-event-loop port, the loop is woken through a socket it
   watches, and outputs are converted on the loop's thread. In-memory calls run inline (no thread
   hop) and still yield to the event loop once.
+- The call pipeline skips work nobody consumes: no `Request`/`Response` objects without
+  middleware, no spans or metric attributes while no OpenTelemetry SDK is configured, operation
+  records only for collectors, metrics or events, and cached event routes and hook lookups.
 - The in-memory backend reads only the keys a query or scan can return (bounded, lazy ranges),
   stops cloning the items a write replaces, prunes idempotency tokens incrementally, and its
   managed batches no longer spawn tasks (nor do single-chunk batches on AWS). Its expression

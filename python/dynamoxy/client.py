@@ -16,7 +16,7 @@ from dynamoxy.errors import DynamoxyError
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
 from dynamoxy.results import CallStats, ConsumedCapacity, MetricsSnapshot, OperationRecord, capacity_split
-from dynamoxy.telemetry import Collector, Telemetry, TelemetryRecorder, collect, record
+from dynamoxy.telemetry import Collector, Telemetry, TelemetryRecorder, active_collectors, collect
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -460,9 +460,13 @@ class Client:
         Low-level: repositories and tables use it. ``method`` is a ``CoreClient`` method and
         ``params`` its keyword arguments.
         """
-        await self._core()
         if method in _CAPACITY_METHODS and "return_consumed_capacity" not in params:
             params["return_consumed_capacity"] = self.consumed_capacity
+        if not self._middleware:
+            output, _ = await self._perform(method, operation, table, model, params)
+            return output
+        if self._core_client is None or self._closed:
+            await self._core()
         request = Request(operation=operation, method=method, table=table, params=params, model=model)
         response = await self._chain(0, request)
         return response.output
@@ -474,70 +478,132 @@ class Client:
         return await self._invoke(request)
 
     async def _invoke(self, request: Request) -> Response:
-        core = await self._core()
+        output, stats = await self._perform(
+            request.method, request.operation, request.table, request.model, request.params
+        )
+        return Response(output=output, stats=CallStats.from_core(stats))
+
+    async def _perform(
+        self, method: str, operation: str, table: str | None, model: type | None, params: dict[str, Any]
+    ) -> tuple[Any, tuple[int, int, int, float]]:
+        core = self._core_client
+        if core is None or self._closed:
+            core = await self._core()
+        if self._recorder.recording_tracer() is not None:
+            return await self._perform_traced(core, method, operation, table, model, params)
         started = time.perf_counter()
-        native = getattr(core, request.method)
-        with self._recorder.span(request.operation, request.table, request.params) as span:
+        try:
+            output, stats = await getattr(core, method)(**params)
+        except DynamoxyError as error:
+            self._failed(core, operation, table, model, started, error)
+            raise
+        self._succeeded(core, operation, table, model, params, output, stats)
+        return output, stats
+
+    async def _perform_traced(
+        self,
+        core: CoreClient,
+        method: str,
+        operation: str,
+        table: str | None,
+        model: type | None,
+        params: dict[str, Any],
+    ) -> tuple[Any, tuple[int, int, int, float]]:
+        started = time.perf_counter()
+        native = getattr(core, method)
+        with self._recorder.span(operation, table, params) as span:
             try:
-                output, stats = await native(**request.params)
+                output, stats = await native(**params)
             except DynamoxyError as error:
-                entry = OperationRecord(
-                    operation=request.operation,
-                    table=request.table,
-                    model=request.model.__name__ if request.model else None,
-                    duration=error.duration if error.duration is not None else time.perf_counter() - started,
-                    attempts=error.attempts or 1,
-                    throttles=0,
-                    requests=error.attempts or 1,
-                    read_capacity_units=0.0,
-                    write_capacity_units=0.0,
-                    items=0,
-                    error=error.code or type(error).__name__,
-                    timestamp=time.time(),
-                )
+                entry = _failure_record(operation, table, model, started, error)
                 self._recorder.finish_span(span, None, entry, error)
                 self._finish(core, entry, error)
                 raise
-            read, write = capacity_split(request.operation, _capacities(output))
-            entry = OperationRecord(
-                operation=request.operation,
-                table=request.table,
-                model=request.model.__name__ if request.model else None,
-                duration=stats[3],
-                attempts=stats[0],
-                throttles=stats[1],
-                requests=stats[2],
-                read_capacity_units=read,
-                write_capacity_units=write,
-                items=_items_of(request.operation, request.params, output),
-                error=None,
-                timestamp=time.time(),
-            )
+            entry = _success_record(operation, table, model, params, output, stats)
             self._recorder.finish_span(span, output, entry, None)
         self._finish(core, entry, None)
-        return Response(output=output, stats=CallStats.from_core(stats))
+        return output, stats
+
+    def _succeeded(
+        self,
+        core: CoreClient,
+        operation: str,
+        table: str | None,
+        model: type | None,
+        params: dict[str, Any],
+        output: Any,
+        stats: tuple[int, int, int, float],
+    ) -> None:
+        # Like _finish, but the record is only built when metrics, collectors or events want it.
+        entry: OperationRecord | None = None
+        if self._recorder.recording_metrics():
+            entry = _success_record(operation, table, model, params, output, stats)
+            self._recorder.record_metrics(entry)
+        collectors = active_collectors()
+        if collectors:
+            if entry is None:
+                entry = _success_record(operation, table, model, params, output, stats)
+            for collector in collectors:
+                collector.records.append(entry)
+        self._dispatch_buffered(core)
+        if self.events.wants(EventKind.OPERATION_SUCCEEDED):
+            if entry is None:
+                entry = _success_record(operation, table, model, params, output, stats)
+            self._emit_succeeded(entry)
+
+    def _failed(
+        self,
+        core: CoreClient,
+        operation: str,
+        table: str | None,
+        model: type | None,
+        started: float,
+        error: DynamoxyError,
+    ) -> None:
+        entry: OperationRecord | None = None
+        if self._recorder.recording_metrics():
+            entry = _failure_record(operation, table, model, started, error)
+            self._recorder.record_metrics(entry)
+        collectors = active_collectors()
+        if collectors:
+            if entry is None:
+                entry = _failure_record(operation, table, model, started, error)
+            for collector in collectors:
+                collector.records.append(entry)
+        self._dispatch_buffered(core)
+        if self.events.wants(EventKind.OPERATION_FAILED):
+            if entry is None:
+                entry = _failure_record(operation, table, model, started, error)
+            self._emit_failed(entry, error)
 
     def _finish(self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None) -> None:
         self._recorder.record_metrics(entry)
-        record(entry)
+        for collector in active_collectors():
+            collector.records.append(entry)
         self._dispatch_buffered(core)
         if error is None:
             if self.events.wants(EventKind.OPERATION_SUCCEEDED):
-                self.events.emit(
-                    EventKind.OPERATION_SUCCEEDED,
-                    f"{entry.operation} {entry.table or ''}".rstrip() + f" took {entry.duration * 1000:.1f} ms",
-                    _fields(entry),
-                )
+                self._emit_succeeded(entry)
         elif self.events.wants(EventKind.OPERATION_FAILED):
-            fields = _fields(entry)
-            reasons = getattr(error, "reasons", None)
-            if reasons:
-                fields["reasons"] = ",".join(str(reason[0]) for reason in reasons)
-            self.events.emit(
-                EventKind.OPERATION_FAILED,
-                f"{entry.operation} {entry.table or ''}".rstrip() + f" failed: {entry.error}",
-                fields,
-            )
+            self._emit_failed(entry, error)
+
+    def _emit_succeeded(self, entry: OperationRecord) -> None:
+        self.events.emit(
+            EventKind.OPERATION_SUCCEEDED,
+            f"{entry.operation} {entry.table or ''}".rstrip() + f" took {entry.duration * 1000:.1f} ms",
+            _fields(entry),
+        )
+
+    def _emit_failed(self, entry: OperationRecord, error: DynamoxyError) -> None:
+        fields = _fields(entry)
+        reasons = getattr(error, "reasons", None)
+        if reasons:
+            fields["reasons"] = ",".join(str(reason[0]) for reason in reasons)
+        self.events.emit(
+            EventKind.OPERATION_FAILED,
+            f"{entry.operation} {entry.table or ''}".rstrip() + f" failed: {entry.error}",
+            fields,
+        )
 
     # ---- factories ------------------------------------------------------------------------
 
@@ -759,6 +825,50 @@ class Client:
         """Collects every operation made in the block (see :func:`dynamoxy.collect`)."""
         with collect() as collector:
             yield collector
+
+
+def _success_record(
+    operation: str,
+    table: str | None,
+    model: type | None,
+    params: Mapping[str, Any],
+    output: Any,
+    stats: tuple[int, int, int, float],
+) -> OperationRecord:
+    read, write = capacity_split(operation, _capacities(output))
+    return OperationRecord(
+        operation=operation,
+        table=table,
+        model=model.__name__ if model else None,
+        duration=stats[3],
+        attempts=stats[0],
+        throttles=stats[1],
+        requests=stats[2],
+        read_capacity_units=read,
+        write_capacity_units=write,
+        items=_items_of(operation, params, output),
+        error=None,
+        timestamp=time.time(),
+    )
+
+
+def _failure_record(
+    operation: str, table: str | None, model: type | None, started: float, error: DynamoxyError
+) -> OperationRecord:
+    return OperationRecord(
+        operation=operation,
+        table=table,
+        model=model.__name__ if model else None,
+        duration=error.duration if error.duration is not None else time.perf_counter() - started,
+        attempts=error.attempts or 1,
+        throttles=0,
+        requests=error.attempts or 1,
+        read_capacity_units=0.0,
+        write_capacity_units=0.0,
+        items=0,
+        error=error.code or type(error).__name__,
+        timestamp=time.time(),
+    )
 
 
 def _fields(entry: OperationRecord) -> dict[str, Any]:

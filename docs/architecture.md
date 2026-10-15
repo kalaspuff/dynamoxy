@@ -62,7 +62,8 @@ asyncio bridge only: no logic.
    item (one consistent `GetItem`) to learn the old values.
 3. **Python, `expressions.py`**: render conditions and update actions to expression strings
    with `#aN`/`:vN` placeholders. No user value ever appears in an expression string.
-4. **Python, `client.call`**: middleware chain → `_invoke`: OpenTelemetry span, native call.
+4. **Python, `client.call`**: middleware chain (skipped when there is none) → OpenTelemetry span
+   (only when an SDK records spans) → native call.
 5. **Binding**: convert parameters to core types, run the future on the Tokio runtime (in-memory
    clients poll it once on the calling thread first); the result is converted to Python on the
    event loop's thread (see the concurrency model).

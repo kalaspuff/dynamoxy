@@ -102,6 +102,10 @@ class HookRegistry:
 
     def __init__(self) -> None:
         self._hooks: list[tuple[HookPoint, type | None, ClientHook]] = []
+        # Matching hooks, and whether any hook runs, by (point, model class); rebuilt when hooks
+        # are added or removed (a model's own hooks never change).
+        self._matches: dict[tuple[HookPoint, type], tuple[ClientHook, ...]] = {}
+        self._any: dict[tuple[HookPoint, type], bool] = {}
 
     def add(self, point: HookPoint, hook: ClientHook, model: type | None = None) -> Callable[[], None]:
         """Registers ``hook`` (sync or async) for ``point``, for one model or every model.
@@ -118,20 +122,30 @@ class HookRegistry:
             raise ValueError(f"unknown hook point {point!r}; use one of {', '.join(HOOK_POINTS)}")
         entry = (point, model, hook)
         self._hooks.append(entry)
+        self._matches.clear()
+        self._any.clear()
 
         def remove() -> None:
             if entry in self._hooks:
                 self._hooks.remove(entry)
+                self._matches.clear()
+                self._any.clear()
 
         return remove
 
+    def _matching(self, point: HookPoint, model: type) -> tuple[ClientHook, ...]:
+        hooks = self._matches.get((point, model))
+        if hooks is None:
+            hooks = self._matches[(point, model)] = tuple(
+                hook
+                for entry_point, target, hook in self._hooks
+                if entry_point == point and (target is None or issubclass(model, target))
+            )
+        return hooks
+
     def matching(self, point: HookPoint, model: type) -> list[ClientHook]:
         """The hooks for ``point`` that apply to ``model`` (subclasses included)."""
-        return [
-            hook
-            for entry_point, target, hook in self._hooks
-            if entry_point == point and (target is None or issubclass(model, target))
-        ]
+        return list(self._matching(point, model))
 
     async def run(self, point: HookPoint, instance: Any, context: HookContext) -> None:
         """Runs the model's own hooks, then the client's hooks."""
@@ -140,7 +154,7 @@ class HookRegistry:
         model = type(instance)
         for method in schema_of(model).hooks.get(point, ()):
             await maybe_await(method(instance))
-        for hook in self.matching(point, model):
+        for hook in self._matching(point, model):
             await maybe_await(hook(instance, context))
 
     def run_sync(self, point: HookPoint, instance: Any, context: HookContext) -> None:
@@ -155,7 +169,7 @@ class HookRegistry:
         hooks: list[Callable[[], Any]] = [
             lambda method=method: method(instance) for method in schema_of(model).hooks.get(point, ())
         ]
-        hooks += [lambda hook=hook: hook(instance, context) for hook in self.matching(point, model)]
+        hooks += [lambda hook=hook: hook(instance, context) for hook in self._matching(point, model)]
         for call in hooks:
             result = call()
             if isinstance(result, Awaitable):
@@ -166,6 +180,11 @@ class HookRegistry:
 
     def has(self, point: HookPoint, model: type) -> bool:
         """Whether any hook would run for ``point`` and ``model``."""
-        from dynamoxy.schema import schema_of
+        found = self._any.get((point, model))
+        if found is None:
+            from dynamoxy.schema import schema_of
 
-        return bool(schema_of(model).hooks.get(point)) or bool(self.matching(point, model))
+            found = self._any[(point, model)] = bool(schema_of(model).hooks.get(point)) or bool(
+                self._matching(point, model)
+            )
+        return found
