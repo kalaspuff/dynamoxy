@@ -44,15 +44,19 @@ class BatchWriter:
         self.flush_size = flush_size
         self._pending: dict[tuple[str, str], tuple[str, str, dict[str, Any], Any]] = {}
         self._anonymous = itertools.count()
+        self._repositories: dict[type, Repository[Any]] = {}
         self.written = 0
 
     def __len__(self) -> int:
         return len(self._pending)
 
     def _repository(self, model: type) -> Repository[Any]:
-        repository = self.client.repository(model)
-        if repository.schema.unique_fields:
-            raise TypeError(f"{model.__name__} has unique attributes; batch writes cannot maintain them")
+        repository = self._repositories.get(model)
+        if repository is None:
+            repository = self.client.repository(model)
+            if repository.schema.unique_fields:
+                raise TypeError(f"{model.__name__} has unique attributes; batch writes cannot maintain them")
+            self._repositories[model] = repository
         return repository
 
     async def _queue(self, table: str, kind: str, item: dict[str, Any], identity: str, instance: Any = None) -> None:
@@ -101,24 +105,29 @@ class BatchWriter:
             return
         requests: list[tuple[str, str, dict[str, Any]]] = []
         finalizers: list[Any] = []
+        hooks = self.client.hooks
         for table, kind, item, instance in pending:
             if instance is not None:
-                repository = self.client.repository(type(instance))
+                model = type(instance)
+                repository = self._repositories.get(model) or self.client.repository(model)
                 if kind == "put":
-                    await self.client.hooks.run("before_save", instance, repository._context("batch_put"))
+                    if hooks.has("before_save", model):
+                        await hooks.run("before_save", instance, repository._context("batch_put"))
                     item, changes, _ = repository._prepare(instance, "batch")
                     finalizers.append((repository, instance, changes, item, "after_save"))
                 else:
-                    await self.client.hooks.run("before_delete", instance, repository._context("batch_delete"))
+                    if hooks.has("before_delete", model):
+                        await hooks.run("before_delete", instance, repository._context("batch_delete"))
                     finalizers.append((repository, instance, {}, None, "after_delete"))
             requests.append((table, kind, item))
         output = await self.client.call("batch_write", "BatchWriteItem", requests=requests)
         self.written += len(requests) - len(output["unprocessed"])
         for repository, instance, changes, item, hook in finalizers:
             repository._apply(instance, changes, item)
-            await self.client.hooks.run(
-                hook, instance, repository._context("batch_put" if hook == "after_save" else "batch_delete")
-            )
+            if hooks.has(hook, type(instance)):
+                await hooks.run(
+                    hook, instance, repository._context("batch_put" if hook == "after_save" else "batch_delete")
+                )
         if output["unprocessed"]:
             raise UnprocessedItemsError(
                 f"{len(output['unprocessed'])} writes stayed unprocessed (throttling)",

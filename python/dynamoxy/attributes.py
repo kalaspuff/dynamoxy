@@ -69,6 +69,7 @@ class FieldPath[T](Path[T]):
         self._name: str = ""
         self._elements = ("?",)
         self._encoder = None
+        self._spec: FieldSpec | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._owner = owner
@@ -90,9 +91,13 @@ class FieldPath[T](Path[T]):
     @property
     def spec(self) -> FieldSpec:
         """The resolved field (codec, attribute name, constraints, ...)."""
-        from dynamoxy.schema import schema_of
+        spec = self._spec
+        if spec is None:
+            from dynamoxy.schema import schema_of
 
-        return schema_of(self.model).fields[self._name]
+            # Schemas are built once per class and never change: remember the field.
+            spec = self._spec = schema_of(self.model).fields[self._name]
+        return spec
 
     @property
     def encoder(self) -> Codec[Any] | None:  # type: ignore[override]

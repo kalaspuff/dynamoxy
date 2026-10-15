@@ -84,7 +84,10 @@ async def transact_get(client: Client, gets: Sequence[Get[Any]]) -> list[Any]:
         return []
     if len(gets) > MAX_OPERATIONS:
         raise ValueError(f"a transaction reads at most {MAX_OPERATIONS} items, got {len(gets)}")
-    repositories = {get.model: client.repository(get.model) for get in gets}
+    repositories: dict[type, Repository[Any]] = {}
+    for get in gets:
+        if get.model not in repositories:
+            repositories[get.model] = client.repository(get.model)
     items = [{"table_name": repositories[get.model].table_name, "key": get.key} for get in gets]
     output = await client.call("transact_get_items", "TransactGetItems", transact_items=items)
     return [
@@ -113,12 +116,16 @@ class Transaction:
         self.token = check_token(token)
         self._steps: list[_Step] = []
         self._committed = False
+        self._repositories: dict[type, Repository[Any]] = {}
 
     def __len__(self) -> int:
         return len(self._steps)
 
     def _repository(self, model: type) -> Repository[Any]:
-        return self.client.repository(model)
+        repository = self._repositories.get(model)
+        if repository is None:
+            repository = self._repositories[model] = self.client.repository(model)
+        return repository
 
     def _add(self, description: str, plan: Callable[[], Awaitable[Any]]) -> Self:
         if self._committed:

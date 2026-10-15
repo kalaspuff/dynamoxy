@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import json
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -27,7 +28,7 @@ from dynamoxy.expressions import Condition, ExpressionBuilder, Path, as_conditio
 from dynamoxy.results import ConsumedCapacity, Page
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
     from dynamoxy.client import Client
 
@@ -81,10 +82,12 @@ class _Reader[T]:
         index: str | None = None,
         key_condition: Condition | None = None,
         hydrate: Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]] | None = None,
+        decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
     ) -> None:
         self._client = client
         self._table = table
         self._decode = decode
+        self._decode_page = decode_page
         self._model = model
         self._index = index
         self._key_condition = key_condition
@@ -149,7 +152,7 @@ class _Reader[T]:
         if not paths:
             raise ValueError("project() needs at least one attribute")
         projected = tuple(path_of(path) for path in paths)
-        reader = self._replace(projection=projected, hydrate=False)
+        reader = self._replace(projection=projected, hydrate=False, decode_page=None)
         reader._decode = _projection_decoder(self._model)  # type: ignore[assignment]
         return reader  # type: ignore[return-value]
 
@@ -200,8 +203,9 @@ class _Reader[T]:
             raw_items = await self._hydrator(raw_items)
         capacity = output["consumed_capacity"]
         last = output["last_evaluated_key"]
+        decode_page = self._decode_page
         return Page(
-            items=[self._decode(item) for item in raw_items],
+            items=decode_page(raw_items) if decode_page is not None else [self._decode(item) for item in raw_items],
             cursor=encode_cursor(last),
             count=output["count"],
             scanned_count=output["scanned_count"],
@@ -218,7 +222,7 @@ class _Reader[T]:
             raise TypeError("page() reads one segment: use .segment(index, total) instead of .segments(n)")
         return await self._fetch(self._start, self._request_limit(self._limit))
 
-    async def pages(self) -> AsyncIterator[Page[T]]:
+    async def pages(self) -> AsyncGenerator[Page[T]]:
         """Every page, in order (stops early when ``limit`` items were returned)."""
         if self._segments is not None:
             raise TypeError("pages() reads one segment: use .segment(index, total) instead of .segments(n)")
@@ -295,8 +299,14 @@ class _Reader[T]:
 
     async def first(self) -> T | None:
         """The first item, or ``None``."""
-        async for item in self.limit(1):
-            return item
+        if self._segments is not None:
+            async for item in self.limit(1):
+                return item
+            return None
+        async with contextlib.aclosing(self.limit(1).pages()) as pages:
+            async for page in pages:
+                if page.items:
+                    return page.items[0]
         return None
 
     async def one(self) -> T:
@@ -317,7 +327,12 @@ class _Reader[T]:
 
     async def all(self) -> list[T]:
         """Every item (follows every page; mind the size of what you ask for)."""
-        return [item async for item in self]
+        if self._segments is not None:
+            return [item async for item in self]
+        items: list[T] = []
+        async for page in self.pages():
+            items.extend(page.items)
+        return items
 
     async def count(self) -> int:
         """The number of matching items (``Select=COUNT``; reads every page, returns no items)."""

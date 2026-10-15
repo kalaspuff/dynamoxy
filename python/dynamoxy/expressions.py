@@ -87,8 +87,11 @@ class ExpressionBuilder:
 
     def path(self, path: Path[Any]) -> str:
         """A document path with placeholders (``#a0.#a1[2]``)."""
+        elements = path._elements
+        if len(elements) == 1:  # a top-level attribute (always a name)
+            return self.name(elements[0])  # type: ignore[arg-type]
         parts: list[str] = []
-        for element in path.elements:
+        for element in elements:
             if isinstance(element, int):
                 parts.append(f"[{element}]")
             else:
@@ -115,13 +118,13 @@ class ExpressionBuilder:
             return None
         seen: list[Path[Any]] = []
         for action in actions:
+            path = action.path
             for other in seen:
-                if action.path.overlaps(other):
+                if path.overlaps(other):
                     raise ValueError(
-                        f"two update actions write overlapping paths: {other} and {action.path}; "
-                        "combine them into one action"
+                        f"two update actions write overlapping paths: {other} and {path}; combine them into one action"
                     )
-            seen.append(action.path)
+            seen.append(path)
         sections: dict[str, list[str]] = {"SET": [], "REMOVE": [], "ADD": [], "DELETE": []}
         for action in actions:
             sections[action.kind].append(action.compile(self))
@@ -313,8 +316,11 @@ class Path[T](Operand):
 
     def overlaps(self, other: Path[Any]) -> bool:
         """Whether one path is the other or contains it."""
-        shorter = min(len(self._elements), len(other._elements))
-        return self._elements[:shorter] == other._elements[:shorter]
+        mine, theirs = self._elements, other._elements
+        if mine[0] != theirs[0]:  # most paths differ in their attribute
+            return False
+        shorter = min(len(mine), len(theirs))
+        return mine[:shorter] == theirs[:shorter]
 
     def __getitem__(self, key: str | int) -> Path[Any]:
         """A map member (``path["key"]``) or a list element (``path[0]``)."""
