@@ -22,7 +22,7 @@ dynamoxy is a typed, async DynamoDB ORM for Python with a Rust core. Start with
 | [Observability](guides/observability.md) | Events, logging, hooks, middleware, OpenTelemetry, cost accounting, metrics |
 | [Testing](guides/testing.md) | The in-memory DynamoDB, fault injection, emulators, testing patterns |
 | [Application patterns](guides/patterns.md) | Repositories, services, unit of work, web apps, consumers, migrations |
-| [Deployment](guides/deployment.md) | Processes, IAM permissions, limits, costs, production checklist |
+| [Deployment](guides/deployment.md) | Processes, credentials, region, environments sharing an account (table prefixes), IAM permissions, limits, costs, production checklist |
 
 ## Reference
 
