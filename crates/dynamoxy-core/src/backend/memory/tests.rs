@@ -628,6 +628,23 @@ async fn transaction_tokens_are_idempotent() {
 }
 
 #[tokio::test]
+async fn transaction_tokens_compare_binary_values() {
+    let backend = backend_with_table().await;
+    let input = |bytes: &[u8]| TransactWriteItemsInput {
+        transact_items: vec![TransactWriteItem::Put {
+            target: TransactTarget { table_name: "items".into(), ..Default::default() },
+            item: item([("pk", s("blob")), ("sk", n(0)), ("data", AttributeValue::b(bytes.to_vec()))]),
+        }],
+        client_request_token: Some("token-binary".into()),
+        ..Default::default()
+    };
+    backend.transact_write_items(input(b"one")).await.unwrap();
+    backend.transact_write_items(input(b"one")).await.unwrap();
+    let error = backend.transact_write_items(input(b"two")).await.unwrap_err();
+    assert_eq!(code(&error), "IdempotentParameterMismatchException", "same length, other bytes");
+}
+
+#[tokio::test]
 async fn transact_get_returns_items_in_order() {
     let backend = backend_with_table().await;
     put(&backend, item([("pk", s("a")), ("sk", n(1)), ("v", n(1))])).await;
