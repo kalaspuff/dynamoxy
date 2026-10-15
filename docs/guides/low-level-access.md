@@ -26,6 +26,10 @@ whole, else `Decimal`), `float` (written), `bytes`, `bool`, `None`, `list`, `dic
 (non-empty, of one type). Paths are untyped (`F("a", "b")`, `F("list")[0]`), but conditions and
 update actions work exactly like typed paths.
 
+`query()` and `scan()` take `index=` and `consistent=True` like repositories. A table does not know
+which of its indexes are global, so DynamoDB itself refuses a consistent read of a global secondary
+index (`ValidationError`).
+
 ## PartiQL
 
 ```python

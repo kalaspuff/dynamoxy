@@ -365,6 +365,46 @@ async def test_scans_filters_and_segments(events: dynamoxy.Repository[Event]) ->
     assert await events.count() == 40
 
 
+async def test_consistent_queries_and_scans(client: dynamoxy.Client, events: dynamoxy.Repository[Event]) -> None:
+    await events.batch_put([Event(stream="c", seq=index, kind="k") for index in range(3)])
+    sent = record_consistent_reads(client)
+    eventual = await events.query(stream="c").page()
+    consistent = await events.query(stream="c", consistent=True).page()
+    assert [event.seq for event in consistent] == [0, 1, 2]
+    assert eventual.consumed_capacity is not None
+    assert consistent.consumed_capacity is not None
+    assert consistent.consumed_capacity.capacity_units == 2 * eventual.consumed_capacity.capacity_units
+    assert len(await events.scan(consistent=True).all()) == 3
+    assert await events.count(consistent=True) == 3
+    assert await events.count(stream="c", consistent=True) == 3
+    local = await events.query(index=Event.by_kind_local, stream="c", consistent=True).all()
+    assert sorted(event.seq for event in local) == [0, 1, 2]
+    assert sent == [
+        ("Query", False),
+        ("Query", True),
+        ("Scan", True),
+        ("Scan", True),  # count() without key values
+        ("Query", True),  # count() of a partition
+        ("Query", True),  # local indexes support consistent reads
+    ]
+
+
+async def test_consistent_reads_of_global_indexes_fail_before_any_io(client: dynamoxy.Client) -> None:
+    events = client.repository(Event)
+    refused = r"^Event index 'by_kind' is a global secondary index, which does not support consistent reads: remove"
+    with dynamoxy.collect() as usage:
+        with pytest.raises(ValueError, match=refused):
+            events.query(index=Event.by_kind, kind="k", consistent=True)
+        with pytest.raises(ValueError, match=refused):
+            events.query(index=Event.by_kind, kind="k").consistent()
+        with pytest.raises(ValueError, match=refused):
+            events.scan(index="by_kind", consistent=True)
+        with pytest.raises(ValueError, match=refused):
+            await events.count(index=Event.by_kind, kind="k", consistent=True)
+        events.query(index=Event.by_kind, kind="k").consistent(False)
+    assert usage.calls == 0
+
+
 async def test_ttl_attribute_is_epoch_seconds(client: dynamoxy.Client, events: dynamoxy.Repository[Event]) -> None:
     moment = datetime(2030, 1, 1, tzinfo=UTC)
     await events.put(Event(stream="t", seq=1, kind="k", expires_at=moment))

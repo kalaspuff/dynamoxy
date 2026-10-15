@@ -66,10 +66,11 @@ class Collection[M]:
     def _type_filter(self) -> Any:
         return F(self.type_attribute).is_in(list(self._repositories))
 
-    def query(self, *, index: str | None = None, **key_values: Any) -> Query[M]:
+    def query(self, *, index: str | None = None, consistent: bool = False, **key_values: Any) -> Query[M]:
         """Every item of the collection's models in one partition.
 
         Give the partition key (``pk=...``) or the fields of a model's key template.
+        ``consistent=True`` reads with strong consistency (not on global secondary indexes).
         """
         last_error: Exception | None = None
         for repository in self._repositories.values():
@@ -94,12 +95,33 @@ class Collection[M]:
                 self.table_name,
                 decode=self._decode,
                 index=index,
+                global_index=spec is not None and spec.kind == "global",
                 key_condition=F(partition.attribute) == value,
+                consistent=consistent,
             )
             return query.filter(self._type_filter())
         raise ValueError(f"collection query: cannot build the partition key from {sorted(key_values)}: {last_error}")
 
-    def scan(self, *, index: str | None = None) -> Scan[M]:
-        """Every item of the collection's models in the table."""
-        scan: Scan[M] = Scan(self.client, self.table_name, decode=self._decode, index=index)
+    def scan(self, *, index: str | None = None, consistent: bool = False) -> Scan[M]:
+        """Every item of the collection's models in the table.
+
+        ``consistent=True`` reads with strong consistency (not on global secondary indexes).
+        """
+        scan: Scan[M] = Scan(
+            self.client,
+            self.table_name,
+            decode=self._decode,
+            index=index,
+            global_index=self._is_global(index),
+            consistent=consistent,
+        )
         return scan.filter(self._type_filter())
+
+    def _is_global(self, index: str | None) -> bool:
+        """Whether the models declare ``index`` as a global secondary index."""
+        if index is not None:
+            for repository in self._repositories.values():
+                spec = repository.schema.indexes.get(index)
+                if spec is not None:
+                    return spec.kind == "global"
+        return False

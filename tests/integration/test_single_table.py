@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 import dynamoxy
+from tests.helpers import record_consistent_reads
 from tests.models import Customer, LineItem, Order, OrderStatus
 
 
@@ -79,6 +80,23 @@ async def test_collections_decode_mixed_partitions(app: dynamoxy.Client) -> None
     assert len(everything) == 3
     with pytest.raises(TypeError, match="share one table"):
         app.collection(Customer, dynamoxy.Model)  # type: ignore[arg-type]
+
+
+async def test_collections_read_consistently(app: dynamoxy.Client) -> None:
+    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await app.repository(Order).create(order("o1", 1))
+    view = app.collection(Customer, Order)
+    sent = record_consistent_reads(app)
+    assert len(await view.query(customer_id="c1", consistent=True).all()) == 2
+    assert len(await view.scan(consistent=True).all()) == 2
+    assert sent == [("Query", True), ("Scan", True)]
+    refused = "index 'gsi1' is a global secondary index, which does not support consistent reads"
+    with dynamoxy.collect() as usage:
+        with pytest.raises(ValueError, match=refused):
+            view.query(index="gsi1", status=OrderStatus.NEW, consistent=True)
+        with pytest.raises(ValueError, match=refused):
+            view.scan(index="gsi1", consistent=True)
+    assert usage.calls == 0
 
 
 async def test_entity_types_keep_models_apart(app: dynamoxy.Client) -> None:

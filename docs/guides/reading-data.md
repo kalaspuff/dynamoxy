@@ -11,9 +11,23 @@ found = await users.batch_get(["u1", "u2"])        # any number of keys, order k
 await users.refresh(user)                          # reload in place (consistent by default)
 ```
 
-Reads are eventually consistent by default: a read right after a write may (rarely) miss it. Use
-`consistent=True` when you must read your own write, or refresh after writing (writes already
-refresh instances from DynamoDB's response).
+## Consistency
+
+Reads are eventually consistent by default: a read right after a write may (rarely) miss it.
+`consistent=True` makes a read strongly consistent (`get`, `batch_get`, `query`, `scan`, `count`):
+it reflects every write that succeeded before it, at twice the read cost. Use it when you must
+read your own write, or refresh after writing (writes already refresh instances from DynamoDB's
+response).
+
+```python
+latest = await entries.query(account_id="a1", consistent=True).all()  # same as .consistent()
+everyone = await users.scan(consistent=True).all()
+total = await orders.count(customer_id="c1", consistent=True)
+```
+
+Global secondary indexes are only eventually consistent: `consistent=True` on one raises
+`ValueError` before any request. The table and local secondary indexes support it, and
+`.hydrate()` reads the full items consistently when its query is consistent.
 
 ## Queries
 
@@ -81,9 +95,9 @@ await orders.query(index="by_status", status="paid").hydrate().all()   # fetch f
 await orders.query(customer_id="c1").project(Order.order_id, Order.status).all()  # dicts
 ```
 
-Global secondary indexes are eventually consistent and cannot be read with `consistent()`. Index
-entries with `KEYS_ONLY`/`INCLUDE` projections decode into instances with only those fields;
-`.hydrate()` reads the full items with `BatchGetItem`.
+Global secondary indexes are eventually consistent and cannot be read with `consistent=True`
+(see [Consistency](#consistency)). Index entries with `KEYS_ONLY`/`INCLUDE` projections decode
+into instances with only those fields; `.hydrate()` reads the full items with `BatchGetItem`.
 
 ## Scans
 

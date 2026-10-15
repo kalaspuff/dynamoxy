@@ -345,8 +345,13 @@ class Table:
         )
         return output["attributes"]
 
-    def query(self, *key_condition: Condition | bool, index: str | None = None) -> Query[dict[str, Any]]:
+    def query(
+        self, *key_condition: Condition | bool, index: str | None = None, consistent: bool = False
+    ) -> Query[dict[str, Any]]:
         """A query: partition key equality, optionally a sort key condition.
+
+        ``consistent=True`` reads with strong consistency; DynamoDB refuses it on global
+        secondary indexes (``ValidationError``).
 
         Example::
 
@@ -360,11 +365,22 @@ class Table:
             assert part is not None
             combined = combined & part if combined is not None else part
         assert combined is not None
-        return Query(self.client, self.physical_name, decode=_identity, key_condition=combined, index=index)
+        return Query(
+            self.client,
+            self.physical_name,
+            decode=_identity,
+            key_condition=combined,
+            index=index,
+            consistent=consistent,
+        )
 
-    def scan(self, *, index: str | None = None) -> Scan[dict[str, Any]]:
-        """A scan of every item (``.filter()``, ``.segments()`` for parallel scans)."""
-        return Scan(self.client, self.physical_name, decode=_identity, index=index)
+    def scan(self, *, index: str | None = None, consistent: bool = False) -> Scan[dict[str, Any]]:
+        """A scan of every item (``.filter()``, ``.segments()`` for parallel scans).
+
+        ``consistent=True`` reads with strong consistency; DynamoDB refuses it on global
+        secondary indexes (``ValidationError``).
+        """
+        return Scan(self.client, self.physical_name, decode=_identity, index=index, consistent=consistent)
 
     async def batch_get(
         self, keys: Iterable[Mapping[str, Any]], *, consistent: bool = False, projection: Sequence[str] | None = None
