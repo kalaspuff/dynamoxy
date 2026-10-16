@@ -43,10 +43,13 @@ testing.inject_fault(client, table=client.table_name("users"), error="internal")
 testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times=2)
 testing.inject_fault(client, operation="GetItem", latency=0.5)        # with Client(timeout=0.1)
 testing.inject_fault(client, error="ConditionalCheckFailedException")  # any DynamoDB error code
+testing.inject_fault(client, operation="UpdateItem", lose_response=True)  # applied, then lost
 ```
 
 Faults apply to the next `times` matching calls (attempts count, so throttling twice with four
-attempts still succeeds).
+attempts still succeeds). `lose_response=True` applies the write and then loses its response,
+as a dropped connection does: use it to test how your code handles
+[writes with unknown outcome](errors-and-retries.md#writes-with-unknown-outcome).
 
 ## Time to Live
 

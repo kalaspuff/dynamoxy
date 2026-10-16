@@ -19,7 +19,7 @@ pub struct RetryConfig {
     /// Longest delay between attempts, in seconds.
     pub max_delay: f64,
     /// Retry requests that timed out or lost their connection. Such a write may already have
-    /// been applied; with conditional or idempotent writes that is harmless.
+    /// been applied: writes that would apply twice are not sent again (see [`crate::client`]).
     pub retry_timeouts: bool,
 }
 

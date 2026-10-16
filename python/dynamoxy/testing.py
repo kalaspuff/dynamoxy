@@ -72,9 +72,10 @@ def inject_fault(
     message: str | None = None,
     unprocessed: bool = False,
     latency: float | None = None,
+    lose_response: bool = False,
     times: int = 1,
 ) -> None:
-    """Makes the next ``times`` matching calls fail, return unprocessed batch items, or wait.
+    """Makes the next ``times`` matching calls fail, wait, lose their response or skip batch items.
 
     Args:
         target: An in-memory client or store.
@@ -85,6 +86,8 @@ def inject_fault(
         message: Error message.
         unprocessed: Batch operations return every request unprocessed.
         latency: Seconds to wait before the call runs.
+        lose_response: The call runs, then its response is lost, as when a connection drops: the
+            client sees a ``TransportError`` (and retries) although the write was applied.
         times: Number of calls affected.
     """
     code = _ERROR_CODES.get(error, error) if error is not None else None
@@ -95,6 +98,7 @@ def inject_fault(
         message=message,
         unprocessed=unprocessed,
         latency=latency,
+        lose_response=lose_response,
         times=times,
     )
 

@@ -35,6 +35,7 @@ DynamoxyError
 │   └── AccessDeniedError, InternalServerError
 ├── UnprocessedItemsError                   .unprocessed
 ├── TransportError
+│   └── WriteOutcomeUnknownError            .item
 ├── CredentialsError
 └── ShutdownError
 ```
@@ -91,4 +92,5 @@ DynamoxyError
 | `CredentialsError` | no | AWS credentials are missing or could not be loaded |
 | `InternalServerError` | yes | DynamoDB failed internally (HTTP 5xx) on every attempt |
 | `TransportError` | yes | A network failure or a timeout (`timeout`, `connect_timeout`) on every attempt |
+| `WriteOutcomeUnknownError` | no | A write may have been applied, and no answer said whether it was: an attempt timed out, lost its connection or got a 5xx, and the write was not sent again (it would apply twice: `ADD` of a number, `list_append`), or the next attempt failed its condition, or returned old values, which the earlier attempt may have caused. `.item` is the item DynamoDB returned to that next attempt. A `TransportError`, not a `ConditionalCheckFailedError` |
 | `ShutdownError` | no | The client was closed, or the interpreter is exiting; create a new client |

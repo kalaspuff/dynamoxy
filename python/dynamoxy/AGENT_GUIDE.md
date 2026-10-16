@@ -774,7 +774,11 @@ every item is rewritten. Changing a key or a key template is a new table.
 | `event_buffer` | `10000` | Very bursty hooks |
 
 Retries cover throttling, server errors, transaction conflicts and timeouts, with exponential
-backoff and full jitter. Conditional and validation failures are never retried.
+backoff and full jitter. Conditional and validation failures are never retried. A write whose
+attempt timed out, lost its connection or got a 5xx may have been applied: it is sent again
+only when it applies once even when sent twice (transactions, puts, deletes, `SET` updates),
+and a condition that then fails raises `WriteOutcomeUnknownError` (not a conflict error);
+`increment()`, `add()` of numbers and `append()` raise it without being sent again.
 
 ### Credentials and region
 
@@ -819,6 +823,7 @@ Every error derives from `dynamoxy.DynamoxyError` and has `.retryable`. Service 
 | `UnprocessedItemsError` | A batch still had unprocessed items after every round | Retry `.unprocessed` later |
 | `ItemDecodeError` | A stored item does not match its model (another type, a fraction in an `int`) | Fix the data, or declare the stored types (`int \| str`) |
 | `TransportError` | Network failure or timeout (retried first) | Retry later |
+| `WriteOutcomeUnknownError` | A write may have been applied, and no answer said whether (a `TransportError`; `.item`) | Read the item, then decide; never repeat an increment blindly |
 | `CredentialsError`, `AccessDeniedError` | Missing credentials or IAM permissions | Fix configuration |
 | `ShutdownError` | The client was closed, or the interpreter is exiting | Create a new client |
 
@@ -904,7 +909,8 @@ async def test_signup(client: dynamoxy.Client) -> None:
 
 - `testing.memory_client(store=...)`: clients sharing a `dynamoxy.MemoryStore` share data.
 - `testing.inject_fault(client, operation="PutItem", error="throttling", times=2)`: throttling,
-  server errors, latency (`latency=0.5`) and unprocessed batch items (`unprocessed=True`).
+  server errors, latency (`latency=0.5`), unprocessed batch items (`unprocessed=True`) and
+  lost responses of applied writes (`lose_response=True`).
 - `testing.purge_expired(client)`: deletes expired TTL items, as DynamoDB eventually does.
 - `testing.capture_events(client, "request.*")`: collects events in a block.
 - Emulators (MiniStack, DynamoDB Local) work with `Client(endpoint_url=..., region="us-east-1",

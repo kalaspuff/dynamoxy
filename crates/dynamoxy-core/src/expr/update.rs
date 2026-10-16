@@ -25,6 +25,60 @@ fn incorrect_type() -> Error {
     Error::validation_exception("An operand in the update expression has an incorrect data type")
 }
 
+/// Whether applying `update` twice in a row has the effect of applying it once, so that a request
+/// that may have been applied can be sent again.
+///
+/// Not idempotent: `ADD` of a number, an action whose value reads a path the update writes
+/// (`SET n = n + :one`, `SET l = list_append(l, :v)`, `SET a = b, b = a`), and actions on a list
+/// element (`REMOVE l[0]` removes the next element too; `SET l[5]` past the end appends). `SET a =
+/// if_not_exists(a, :v)` is idempotent: once `a` exists, it stays.
+pub fn is_idempotent(update: &UpdateExpression) -> bool {
+    let on_element = |path: &Path| matches!(path.0.last(), Some(PathElement::Index(_)));
+    if update.add.iter().any(|(_, value)| matches!(value, AttributeValue::N(_)))
+        || update.remove.iter().any(on_element)
+        || update.set.iter().any(|(path, _)| on_element(path))
+    {
+        return false;
+    }
+    let written: Vec<&Path> = update.paths().collect();
+    update.set.iter().all(|(target, value)| {
+        let mut read = Vec::new();
+        match value {
+            SetValue::Operand(UpdateOperand::IfNotExists(path, fallback)) if path == target => {
+                read_paths(fallback, &mut read);
+            }
+            SetValue::Operand(operand) => read_paths(operand, &mut read),
+            SetValue::Plus(left, right) | SetValue::Minus(left, right) => {
+                read_paths(left, &mut read);
+                read_paths(right, &mut read);
+            }
+        }
+        read.iter().all(|path| written.iter().all(|other| !overlap(path, other)))
+    })
+}
+
+/// The paths an operand reads.
+fn read_paths<'a>(operand: &'a UpdateOperand, out: &mut Vec<&'a Path>) {
+    match operand {
+        UpdateOperand::Path(path) => out.push(path),
+        UpdateOperand::Value(_) => {}
+        UpdateOperand::IfNotExists(path, fallback) => {
+            out.push(path);
+            read_paths(fallback, out);
+        }
+        UpdateOperand::ListAppend(first, second) => {
+            read_paths(first, out);
+            read_paths(second, out);
+        }
+    }
+}
+
+/// Whether one path is the other or leads into it (`a` and `a.b`).
+fn overlap(left: &Path, right: &Path) -> bool {
+    let shared = left.0.len().min(right.0.len());
+    left.0[..shared] == right.0[..shared]
+}
+
 /// Checks an update before applying it: key attributes are not touched, no two actions write
 /// overlapping paths, `ADD` takes numbers or sets and `DELETE` takes sets.
 pub fn validate_update(update: &UpdateExpression, key_names: &[&str]) -> Result<()> {
@@ -276,6 +330,44 @@ mod tests {
     use super::*;
     use crate::expr::{Placeholders, parse_update};
     use crate::value::item;
+
+    #[test]
+    fn idempotent_updates_can_be_sent_twice() {
+        let names = BTreeMap::from([("#n".to_owned(), "name".to_owned())]);
+        let values = BTreeMap::from([
+            (":one".to_owned(), AttributeValue::n(1)),
+            (":tags".to_owned(), AttributeValue::Ss(vec!["a".into()])),
+            (":l".to_owned(), AttributeValue::L(vec![AttributeValue::n(1)])),
+        ]);
+        let idempotent = |expression: &str| {
+            let mut placeholders = Placeholders::new(&names, &values);
+            is_idempotent(&parse_update(expression, &mut placeholders).unwrap())
+        };
+        for expression in [
+            "SET #n = :one, z1 = :one REMOVE z2",
+            "SET a = b",
+            "SET a = if_not_exists(a, :one)",
+            "SET a = b + :one",
+            "SET m.x[0].y = :one",
+            "ADD tags :tags DELETE z3 :tags",
+        ] {
+            assert!(idempotent(expression), "{expression}");
+        }
+        for expression in [
+            "ADD n :one",
+            "SET n = n + :one",
+            "SET n = :one - n",
+            "SET l = list_append(l, :l)",
+            "SET l = list_append(:l, if_not_exists(l, :l))",
+            "SET a = if_not_exists(a, :one) + :one",
+            "SET a = b, b = a",
+            "SET a = m.x REMOVE m",
+            "REMOVE l[0]",
+            "SET l[5] = :one",
+        ] {
+            assert!(!idempotent(expression), "{expression}");
+        }
+    }
 
     fn run(expression: &str, values: &[(&str, AttributeValue)], before: Item) -> Result<Item> {
         let names = BTreeMap::from([("#n".to_owned(), "name".to_owned())]);

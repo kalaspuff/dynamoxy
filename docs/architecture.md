@@ -78,7 +78,10 @@ instances" below); `add`/`increment`/`decrement` only build the update action.
    event loop's thread (see the concurrency model).
 6. **Core, `client.rs`**: validate, send through the backend with a per-attempt timeout; retry
    retryable errors (throttling, 5xx, transaction conflicts, timeouts) with exponential backoff
-   and full jitter; emit events; record metrics; return the output with `OperationStats`.
+   and full jitter; emit events; record metrics; return the output with `OperationStats`. After
+   an attempt that may have been applied (a timeout, a lost connection, a 5xx), only writes that
+   apply once even when sent twice are sent again, and an answer that attempt may have caused
+   (a failed condition, old values) is `OutcomeUnknown` (`WriteOutcomeUnknownError`).
 7. **Backend**: AWS SDK call (errors classified in `aws/errors.rs`) or the in-memory backend.
 8. **Python**: map failures to specific errors (`explain_failure`: `ItemAlreadyExistsError`,
    `VersionConflictError`, `UniqueConstraintError`, `ItemNotFoundError`), finalize the
@@ -144,7 +147,8 @@ These are relied upon across layers; tests cover each of them.
    `batch.incomplete`, `request.gave_up`, `UnprocessedItemsError`), never silent.
 4. **Nothing is silently dropped.** Every batch item ends written or reported in
    `UnprocessedItemsError.unprocessed`; every failed call raises with its attempts and duration;
-   every transaction cancellation explains each operation.
+   every transaction cancellation explains each operation. Retries never apply a write twice,
+   and never report a failure that an earlier attempt of the same call may have caused.
 5. **Values never appear in expressions.** All user values travel as expression attribute
    values and all names as placeholders, so reserved words and injection are non-issues.
 6. **Unique guards stay consistent.** Every write that sets, changes or removes a unique value,

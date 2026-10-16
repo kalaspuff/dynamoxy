@@ -6,7 +6,10 @@ use crate::backend::memory::{Fault, FaultKind};
 use crate::config::RetryConfig;
 use crate::events::EventKind;
 use crate::types::{
-    AttributeDefinition, BillingMode, CreateTableInput, GetItemInput, KeySchema, PutItemInput, ScalarType,
+    AttributeDefinition, BatchExecuteStatementInput, BillingMode, CreateTableInput, DeleteItemInput,
+    ExecuteStatementInput, GetItemInput, KeySchema, ParameterizedStatement, PutItemInput, ReturnValues,
+    ReturnValuesOnConditionCheckFailure, ScalarType, TransactTarget, TransactWriteItem, TransactWriteItemsInput,
+    UpdateItemInput,
 };
 use crate::value::{AttributeValue, item};
 
@@ -54,6 +57,38 @@ fn throttle(operation: &str, times: u32) -> Fault {
 
 fn put(key: &str) -> PutItemInput {
     PutItemInput { table_name: "items".into(), item: item([("pk", AttributeValue::s(key))]), ..Default::default() }
+}
+
+/// The next call of `operation` runs, and its response is lost.
+fn lose(operation: &str) -> Fault {
+    Fault { operation: Some(operation.into()), table: None, kind: FaultKind::LoseResponse, times: 1 }
+}
+
+async fn stored(client: &Client, key: &str) -> Option<Item> {
+    let input = GetItemInput {
+        table_name: "items".into(),
+        key: item([("pk", AttributeValue::s(key))]),
+        consistent_read: true,
+        ..Default::default()
+    };
+    client.get_item(input).await.result.unwrap().item
+}
+
+fn update(key: &str, expression: &str, value: AttributeValue) -> UpdateItemInput {
+    UpdateItemInput {
+        table_name: "items".into(),
+        key: item([("pk", AttributeValue::s(key))]),
+        update_expression: Some(expression.into()),
+        expression_attribute_values: BTreeMap::from([(":v".to_owned(), value)]),
+        ..Default::default()
+    }
+}
+
+fn unknown_item<T: std::fmt::Debug>(call: &Call<T>) -> Option<Item> {
+    match &call.result {
+        Err(Error::OutcomeUnknown { item, .. }) => item.clone(),
+        other => panic!("expected an unknown outcome, got {other:?}"),
+    }
 }
 
 fn kinds(client: &Client) -> Vec<EventKind> {
@@ -124,6 +159,149 @@ async fn attempts_time_out_and_timeouts_are_retried() {
     let call = strict.put_item(put("a")).await;
     assert!(matches!(call.result, Err(Error::Transport { .. })));
     assert_eq!(call.stats.attempts, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_condition_after_an_attempt_that_may_have_been_applied_is_an_unknown_outcome() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+    let create = |key: &str| PutItemInput {
+        condition_expression: Some("attribute_not_exists(pk)".into()),
+        return_values_on_condition_check_failure: ReturnValuesOnConditionCheckFailure::AllOld,
+        ..put(key)
+    };
+    // The first attempt creates the item and its response is lost; the second one finds the item
+    // the first one created.
+    backend.inject_fault(lose("PutItem"));
+    kinds(&client);
+    let call = client.put_item(create("a")).await;
+    assert_eq!(unknown_item(&call), Some(item([("pk", AttributeValue::s("a"))])));
+    assert_eq!(call.stats.attempts, 2);
+    assert!(kinds(&client).contains(&EventKind::RequestOutcomeUnknown));
+    assert!(stored(&client, "a").await.is_some());
+
+    // Without a lost response, and after throttling (which applies nothing), the failure stands.
+    let call = client.put_item(create("a")).await;
+    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::ConditionalCheckFailed));
+    backend.inject_fault(throttle("PutItem", 1));
+    let call = client.put_item(create("a")).await;
+    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::ConditionalCheckFailed));
+    assert_eq!(call.stats.attempts, 2);
+
+    // A 5xx may have been applied too ("the operation may have succeeded or failed").
+    backend.inject_fault(Fault {
+        operation: Some("PutItem".into()),
+        table: None,
+        kind: FaultKind::Error { code: "InternalServerError".into(), message: "internal".into() },
+        times: 1,
+    });
+    let call = client.put_item(create("a")).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+}
+
+#[tokio::test(start_paused = true)]
+async fn updates_that_would_apply_twice_are_not_sent_again() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+    client
+        .put_item(PutItemInput {
+            item: item([("pk", AttributeValue::s("a")), ("n", AttributeValue::n(0))]),
+            ..put("a")
+        })
+        .await
+        .result
+        .unwrap();
+    backend.inject_fault(lose("UpdateItem"));
+    let call = client.update_item(update("a", "ADD n :v", AttributeValue::n(1))).await;
+    assert_eq!(unknown_item(&call), None);
+    assert_eq!(call.stats.attempts, 1, "not sent again");
+    assert_eq!(stored(&client, "a").await.unwrap()["n"], AttributeValue::n(1), "applied once");
+
+    backend.inject_fault(lose("UpdateItem"));
+    let call = client.update_item(update("a", "SET label = :v", AttributeValue::s("x"))).await;
+    assert!(call.result.is_ok(), "an idempotent update is sent again");
+    assert_eq!(call.stats.attempts, 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn old_values_after_an_attempt_that_may_have_been_applied_are_unknown() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+    let versioned = |version: i64| item([("pk", AttributeValue::s("b")), ("v", AttributeValue::n(version))]);
+    client.put_item(PutItemInput { item: versioned(1), ..put("b") }).await.result.unwrap();
+
+    // The second attempt returns, as the old item, what the first one wrote.
+    backend.inject_fault(lose("PutItem"));
+    let call =
+        client.put_item(PutItemInput { item: versioned(2), return_values: ReturnValues::AllOld, ..put("b") }).await;
+    assert_eq!(unknown_item(&call), Some(versioned(2)));
+
+    // New values are the same however often an idempotent update was applied.
+    backend.inject_fault(lose("UpdateItem"));
+    let new =
+        UpdateItemInput { return_values: ReturnValues::AllNew, ..update("b", "SET v = :v", AttributeValue::n(3)) };
+    assert_eq!(client.update_item(new).await.result.unwrap().attributes, Some(versioned(3)));
+
+    // The first attempt deleted the item: the second one finds nothing to return.
+    backend.inject_fault(lose("DeleteItem"));
+    let delete = DeleteItemInput {
+        table_name: "items".into(),
+        key: item([("pk", AttributeValue::s("b"))]),
+        return_values: ReturnValues::AllOld,
+        ..Default::default()
+    };
+    let call = client.delete_item(delete).await;
+    assert_eq!(unknown_item(&call), None);
+    assert!(stored(&client, "b").await.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn transactions_are_sent_again_with_their_token() {
+    let client = client_with_table(config()).await;
+    client.memory_backend().unwrap().inject_fault(lose("TransactWriteItems"));
+    let target = TransactTarget {
+        table_name: "items".into(),
+        condition_expression: Some("attribute_not_exists(pk)".into()),
+        ..Default::default()
+    };
+    let input = TransactWriteItemsInput {
+        transact_items: vec![TransactWriteItem::Put { target, item: item([("pk", AttributeValue::s("t"))]) }],
+        ..Default::default()
+    };
+    let call = client.transact_write_items(input).await;
+    assert!(call.result.is_ok(), "the token makes the second attempt return the first one's success");
+    assert_eq!(call.stats.attempts, 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn partiql_writes_follow_the_same_rules() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+    let statement = |text: &str| ExecuteStatementInput { statement: text.into(), ..Default::default() };
+
+    backend.inject_fault(lose("ExecuteStatement"));
+    let call = client.execute_statement(statement("INSERT INTO items VALUE {'pk': 'p', 'n': 0}")).await;
+    unknown_item(&call);
+    assert_eq!(call.stats.attempts, 2, "an INSERT is sent again; its DuplicateItem settles nothing");
+
+    backend.inject_fault(lose("ExecuteStatement"));
+    let call = client.execute_statement(statement("UPDATE items SET n = n + 1 WHERE pk = 'p'")).await;
+    unknown_item(&call);
+    assert_eq!(call.stats.attempts, 1);
+    assert_eq!(stored(&client, "p").await.unwrap()["n"], AttributeValue::n(1));
+
+    backend.inject_fault(lose("ExecuteStatement"));
+    let call = client.execute_statement(statement("SELECT * FROM items WHERE pk = 'p'")).await;
+    assert_eq!(call.result.unwrap().items.len(), 1);
+
+    backend.inject_fault(lose("BatchExecuteStatement"));
+    let insert =
+        ParameterizedStatement { statement: "INSERT INTO items VALUE {'pk': 'q'}".into(), ..Default::default() };
+    let call = client
+        .batch_execute_statement(BatchExecuteStatementInput { statements: vec![insert], ..Default::default() })
+        .await;
+    unknown_item(&call);
+    assert_eq!(call.stats.attempts, 1, "a batch with writes is not sent again");
 }
 
 #[tokio::test(start_paused = true)]

@@ -23,7 +23,9 @@ DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.m
     │   ├── TransactionCanceledError     (.cancellation_reasons, .errors)
     │   ├── ThrottlingError, ResourceNotFoundError, ResourceInUseError, ...
     ├── UnprocessedItemsError            a managed batch could not finish (throttling)
-    ├── TransportError, CredentialsError, ShutdownError
+    ├── TransportError
+    │   └── WriteOutcomeUnknownError     a write may have been applied (.item)
+    ├── CredentialsError, ShutdownError
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from dynamoxy._core import (
     TransactionInProgressError,
     TransportError,
     ValidationError,
+    WriteOutcomeUnknownError,
 )
 
 if TYPE_CHECKING:
@@ -88,6 +91,7 @@ __all__ = [
     "UnprocessedItemsError",
     "ValidationError",
     "VersionConflictError",
+    "WriteOutcomeUnknownError",
 ]
 
 # Class-level defaults: ValidationError carries field errors when raised by model validation, and

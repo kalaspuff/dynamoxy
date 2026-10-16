@@ -68,19 +68,43 @@ remaining attempts; a write already sent may still be applied by DynamoDB.
 
 ## Writes with unknown outcome
 
-A timeout or connection loss during a write leaves its outcome unknown. dynamoxy retries it (by
-default), which is safe for:
+An attempt that times out, loses its connection or gets a 5xx may have been applied (DynamoDB:
+"the operation may have succeeded or failed"). A throttled or refused attempt applies nothing.
+After an attempt that may have been applied, dynamoxy never reports a conflict that the write
+may have caused itself, and never applies a write twice:
 
-- conditional writes (`create`, `save`, unique guards, version checks): a duplicate fails its
-  condition, and dynamoxy reports what it found. If the first attempt was applied, the retry
-  fails on the item it wrote itself: `create()` raises `ItemAlreadyExistsError` and `save()`
-  `VersionConflictError` for a write that happened. When `error.attempts > 1`, compare
-  `error.item` with what you wrote (its `updated_at`, or a request id stored with the item);
-- transactions: retries reuse the idempotency token;
-- `put` of a complete item and `SET` updates: applying them twice has the same result.
+- Transactions are sent again: their idempotency token makes the second attempt return the
+  first one's result.
+- Writes that apply once even when sent twice are sent again: `put()`, `delete()`, and updates
+  that only `SET` values, `REMOVE` attributes or add to and remove from sets.
+- Updates that would apply twice are not sent again (`add()` and `increment()` of numbers,
+  `append()`, `SET n = n + 1` in PartiQL): the call raises `WriteOutcomeUnknownError`.
+- When the next attempt fails its condition (`create()`, version checks, `condition=`, a
+  PartiQL `INSERT`), the earlier attempt may have caused it: the call raises
+  `WriteOutcomeUnknownError`, whose `.item` is the item DynamoDB returned, instead of
+  `ItemAlreadyExistsError` or `VersionConflictError`. Old values that the next attempt returns
+  (`return_old=True`) may be the earlier attempt's own write, or the absence of the item it
+  deleted, and raise it too.
 
-Arithmetic updates (`add`, `increment`) are not idempotent: guard them with a condition on a
-request id, or use `retry_timeouts=False` and decide yourself.
+`WriteOutcomeUnknownError` is a `TransportError`, like the timeout without retries, and never a
+`ConditionalCheckFailedError`, so code that handles lost races does not mistake a write that
+happened for one. It is not `.retryable`: read the item to find out what happened, and repeat
+only writes that apply once. Each one emits `request.outcome_unknown`.
+
+A write that must apply exactly once even when the application repeats it (a payment, a stock
+count) can go alone into a transaction with a token of your own, such as the idempotency key of
+the request that asked for it. Within 10 minutes, DynamoDB applies the same token once:
+
+```python
+async with client.transaction(token=request_id) as tx:
+    tx.update(account, Account.balance.add(-amount))
+```
+
+The repeated transaction must be identical: automatic timestamps such as `updated_at()` change
+between calls, so for such models also make it refuse a repeat, for example with `tx.create()` of
+an item keyed by the request id ([idempotency tokens](transactions.md#idempotency-tokens)). It
+costs twice the write units of a single write. `RetryPolicy(retry_timeouts=False)` retries no
+timeouts at all: they raise `TransportError`.
 
 ## Batches
 

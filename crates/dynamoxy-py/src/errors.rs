@@ -70,6 +70,12 @@ create_exception!(_core, BackupError, ServiceError, "A backup or point-in-time r
 create_exception!(_core, AccessDeniedError, ServiceError, "The credentials are not allowed to perform the request.");
 create_exception!(_core, InternalServerError, ServiceError, "DynamoDB failed internally (retryable).");
 create_exception!(_core, TransportError, DynamoxyError, "A network failure or a timeout.");
+create_exception!(
+    _core,
+    WriteOutcomeUnknownError,
+    TransportError,
+    "A write that may have been applied, without an answer that says whether it was."
+);
 create_exception!(_core, CredentialsError, DynamoxyError, "AWS credentials are missing or could not be loaded.");
 create_exception!(_core, ShutdownError, DynamoxyError, "The client is closed or the interpreter is exiting.");
 
@@ -120,6 +126,7 @@ fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {
         Error::Validation(message) => ValidationError::new_err(message.clone()),
         Error::Service(service) => service_class(service.kind)(service.to_string()),
         Error::Transport { .. } => TransportError::new_err(error.to_string()),
+        Error::OutcomeUnknown { .. } => WriteOutcomeUnknownError::new_err(error.to_string()),
         Error::Credentials(_) => CredentialsError::new_err(error.to_string()),
         Error::Shutdown => ShutdownError::new_err(error.to_string()),
         other => DynamoxyError::new_err(other.to_string()),
@@ -148,6 +155,13 @@ fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {
         Error::Transport { operation, message, .. } => {
             value.setattr("operation", operation)?;
             value.setattr("message", message)?;
+        }
+        Error::OutcomeUnknown { operation, message, item } => {
+            value.setattr("operation", operation)?;
+            value.setattr("message", message)?;
+            if let Some(item) = &item {
+                value.setattr("item", item_to_py(py, item)?)?;
+            }
         }
         Error::Validation(message) | Error::Config(message) | Error::Credentials(message) => {
             value.setattr("message", message)?;
@@ -180,6 +194,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("AccessDeniedError", py.get_type::<AccessDeniedError>()),
         ("InternalServerError", py.get_type::<InternalServerError>()),
         ("TransportError", py.get_type::<TransportError>()),
+        ("WriteOutcomeUnknownError", py.get_type::<WriteOutcomeUnknownError>()),
         ("CredentialsError", py.get_type::<CredentialsError>()),
         ("ShutdownError", py.get_type::<ShutdownError>()),
     ];
@@ -198,5 +213,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py.get_type::<InternalServerError>().setattr("retryable", true)?;
     py.get_type::<TransactionConflictError>().setattr("retryable", true)?;
     py.get_type::<TransportError>().setattr("retryable", true)?;
+    // Sending a write again after an unknown outcome may apply it twice.
+    py.get_type::<WriteOutcomeUnknownError>().setattr("retryable", false)?;
+    py.get_type::<WriteOutcomeUnknownError>().setattr("item", py.None())?;
     Ok(())
 }

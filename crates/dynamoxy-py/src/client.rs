@@ -359,8 +359,9 @@ impl PyMemoryStore {
         Self { backend: MemoryBackend::new(region, account_id) }
     }
 
-    /// Makes the next `times` matching calls fail, return unprocessed batch items, or wait.
-    #[pyo3(signature = (*, operation = None, table = None, error_code = None, message = None, unprocessed = false, latency = None, times = 1))]
+    /// Makes the next `times` matching calls fail, return unprocessed batch items, wait, or run
+    /// and lose their response.
+    #[pyo3(signature = (*, operation = None, table = None, error_code = None, message = None, unprocessed = false, latency = None, lose_response = false, times = 1))]
     #[allow(clippy::too_many_arguments)]
     fn inject_fault(
         &self,
@@ -370,17 +371,19 @@ impl PyMemoryStore {
         message: Option<String>,
         unprocessed: bool,
         latency: Option<f64>,
+        lose_response: bool,
         times: u32,
     ) -> PyResult<()> {
-        let kind = match (error_code, unprocessed, latency) {
-            (Some(code), false, None) => {
+        let kind = match (error_code, unprocessed, latency, lose_response) {
+            (Some(code), false, None, false) => {
                 FaultKind::Error { message: message.unwrap_or_else(|| format!("injected {code}")), code }
             }
-            (None, true, None) => FaultKind::Unprocessed,
-            (None, false, Some(seconds)) => FaultKind::Latency(duration(seconds, "latency")?),
+            (None, true, None, false) => FaultKind::Unprocessed,
+            (None, false, Some(seconds), false) => FaultKind::Latency(duration(seconds, "latency")?),
+            (None, false, None, true) => FaultKind::LoseResponse,
             _ => {
                 return Err(ValidationError::new_err(
-                    "inject_fault needs exactly one of error_code=..., unprocessed=True or latency=...",
+                    "inject_fault needs exactly one of error_code=..., unprocessed=True, latency=... or lose_response=True",
                 ));
             }
         };
