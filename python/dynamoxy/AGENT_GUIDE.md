@@ -430,7 +430,8 @@ Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, 
 `User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Updates
 refresh the instance in place with the stored result, and re-render templated attributes whose
 fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
-attributes cannot be updated.
+attributes cannot be updated. Keys can be stored keys or field values
+(`devices.update({"device_id": uuid}, ...)`).
 
 Every write takes `condition=`; when it does not hold, `ConditionalCheckFailedError` is raised
 with `.item` set to the stored item.

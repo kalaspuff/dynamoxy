@@ -191,3 +191,21 @@ async def test_unique_numbers_compare_as_numbers(client: dynamoxy.Client) -> Non
     await profiles.update(loaded, Profile.seat.set(Decimal(6)))
     await profiles.create(Profile(profile_id="p3", seat=Decimal("5.00")))  # the guard of 5 went with the change
     assert await guards(profiles) == ["_unique#Profile#seat#5", "_unique#Profile#seat#6"]
+
+
+async def test_put_of_an_instance_whose_unique_values_changed_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one"))
+    other = await profiles.get_or_raise("p1")
+    await profiles.update(other, Profile.handle.set("two"))
+    stale.seat = Decimal(1)
+    await profiles.put(stale)  # put() replaces what is stored: the guards follow the stored item
+    stored = await profiles.get_or_raise("p1")
+    assert (stored.handle, stored.seat) == ("one", Decimal(1))
+    await profiles.create(Profile(profile_id="p2", handle="two")), "the value of the other write is free again"
+    assert await guards(profiles) == [
+        "_unique#Profile#handle#one",
+        "_unique#Profile#handle#two",
+        "_unique#Profile#seat#1",
+    ]

@@ -58,6 +58,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - `save()` and `put()` of a loaded instance stored a changed `immutable=True` value, and a
   changed key (or a field a key template uses) wrote a second item next to the first. Both now
   raise `ValueError` before any I/O, also in batch puts.
+- `put()` (and `save()` of unversioned models) of a model with unique attributes failed with an
+  unexplained `ConditionalCheckFailedError` when another writer had changed the unique values
+  since the instance was loaded. It now reads the stored item and writes again.
+- Keys given as field values whose names are the key attributes (`devices.update({"device_id":
+  uuid}, ...)`) were sent unencoded and failed; batch reads and `hydrate()` dropped items with
+  float keys such as `0.1`.
 
 ### Changed
 

@@ -115,7 +115,8 @@ Values you `set()` are validated like constructor arguments (type, constraints s
 with a condition (`condition=Account.balance >= amount`).
 
 `update()` of an instance checks its version (for versioned models) and refreshes it; `update()`
-of a key (`User.key("u1")`) only needs the key, so it suits hot counters.
+of a key (`User.key("u1")`) only needs the key, so it suits hot counters. Keys can also be given
+as field values: `devices.update({"device_id": device_uuid}, ...)`.
 
 ## Conditions
 

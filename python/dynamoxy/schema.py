@@ -28,6 +28,7 @@ from dynamoxy.codecs import (
     Codec,
     DateTimeCodec,
     DecimalCodec,
+    FloatCodec,
     IntCodec,
     OptionalCodec,
     StrCodec,
@@ -652,10 +653,14 @@ class ModelSchema:
         self._key_attributes: tuple[str, ...] = tuple(spec.attribute for spec in self._key_specs)
         self._key_attribute_set: frozenset[str] = frozenset(self._key_attributes)
         # A hashable identity of a stored key or of the item that has it (both hold every key
-        # attribute): the key values, in key order.
+        # attribute): the key values, in key order. Float keys compare as the numbers DynamoDB
+        # returns (0.1 is stored and read back as Decimal("0.1")).
+        attributes = self._key_attributes
         self._key_identity: Callable[[Mapping[str, Any]], Any] = (
-            operator.itemgetter(*self._key_attributes) if self._key_attributes else lambda _: ()
+            operator.itemgetter(*attributes) if attributes else lambda _: ()
         )
+        if any(isinstance(_inner_codec(spec.codec), FloatCodec) for spec in self._key_specs):
+            self._key_identity = lambda key: tuple(_float_key(key[attribute]) for attribute in attributes)
         self._immutable: tuple[FieldSpec, ...] = tuple(
             spec for spec in fields if spec.immutable and spec.role is None and spec.template is None
         )
@@ -1011,6 +1016,11 @@ class ModelSchema:
 
 def _inner_codec(codec: Codec[Any]) -> Codec[Any]:
     return codec.inner if isinstance(codec, OptionalCodec) else codec
+
+
+def _float_key(value: Any) -> Any:
+    """A float key value as the number DynamoDB stores (equal and hashed like ``Decimal`` and ``int``)."""
+    return Decimal(number_text(value)) if type(value) is float else value
 
 
 def _value_check(spec: FieldSpec) -> Callable[[Any], Any]:

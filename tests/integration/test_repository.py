@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, updated_at, version
+from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, sort_key, updated_at, version
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
@@ -39,6 +40,16 @@ class Counter(Model, table="counters"):
     note: Attr[str | None] = field(default=None)
 
     by_group = GlobalIndex(partition_key=group, projection=Projection.keys_only())
+
+
+class Device(Model, table="devices"):
+    device_id: Attr[uuid.UUID] = partition_key()
+    label: Attr[str] = field(default="")
+
+
+class Measurement(Model, table="measurements"):
+    sensor: Attr[str] = partition_key()
+    value: Attr[float] = sort_key()
 
 
 def make_user(user_id: str = "u1", **changes: Any) -> User:
@@ -740,6 +751,29 @@ async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -
     # An instance that was not loaded replaces the item, as put() does.
     await tickets.put(Ticket(ticket_id="t1", country="DK"))
     assert (await tickets.get_or_raise("t1")).country == "DK"
+
+
+async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Device)
+    devices = client.repository(Device)
+    device_id = uuid.uuid4()
+    await devices.create(Device(device_id=device_id))
+    updated = await devices.update({"device_id": device_id}, Device.label.set("x"))
+    assert updated.label == "x"
+    assert (await devices.get_or_raise(device_id)).label == "x"
+    assert await devices.update({"device_id": str(device_id)}, Device.label.set("y")) is not None, "or stored"
+    deleted = await devices.delete({"device_id": device_id})
+    assert deleted is not None
+    assert deleted.label == "y"
+
+
+async def test_float_keys_in_batch_reads(client: dynamoxy.Client) -> None:
+    await client.create_tables(Measurement)
+    measurements = client.repository(Measurement)
+    values = [0.1, 0.3, 2.5, 1e16]
+    await measurements.batch_put([Measurement(sensor="s", value=value) for value in values])
+    found = await measurements.batch_get([("s", value) for value in values])
+    assert [measurement.value for measurement in found] == values, "0.1 is read back as Decimal('0.1')"
 
 
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
