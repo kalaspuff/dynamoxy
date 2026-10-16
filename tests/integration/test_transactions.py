@@ -9,7 +9,23 @@ from decimal import Decimal
 import pytest
 
 import dynamoxy
+from dynamoxy import Attr, Model, partition_key
 from tests.models import Customer, Event, Order, User
+
+ANNOUNCED: list[str] = []
+
+
+class Note(Model, table="notes"):
+    """A model whose after_save hook fails for one instance."""
+
+    note_id: Attr[str] = partition_key()
+    version: Attr[int] = dynamoxy.version()
+
+    @dynamoxy.after_save
+    def announce(self) -> None:
+        ANNOUNCED.append(self.note_id)
+        if self.note_id == "fails":
+            raise RuntimeError("the hook failed")
 
 
 @pytest.fixture
@@ -144,3 +160,17 @@ async def test_transact_get_reads_a_snapshot(client_with_tables: dynamoxy.Client
     assert found.total == Decimal(42)
     assert missing is None
     assert await client.transact_get() == []
+
+
+async def test_failing_hooks_after_a_commit_leave_every_instance_final(client: dynamoxy.Client) -> None:
+    await client.create_tables(Note)
+    ANNOUNCED.clear()
+    failing, other = Note(note_id="fails"), Note(note_id="other")
+    tx = client.transaction().create(failing).create(other)
+    with pytest.raises(RuntimeError, match="the hook failed"):
+        await tx.commit()
+    assert ANNOUNCED == ["fails", "other"], "every hook ran"
+    assert (failing.version, other.version) == (1, 1)
+    assert other.is_loaded
+    await other.save()
+    assert other.version == 2

@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     from dynamoxy.client import Client
-    from dynamoxy.schema import GlobalIndex, LocalIndex
+    from dynamoxy.schema import GlobalIndex, HookPoint, LocalIndex
 
 __all__ = ["Repository"]
 
@@ -1213,6 +1213,9 @@ class Repository[M]:
     async def batch_put(self, items: Iterable[M]) -> None:
         """Writes many items (managed ``BatchWriteItem``: unconditional, not atomic).
 
+        A key given more than once is written once, with the last item. Only the items that were
+        written update their instances and run ``after_save`` hooks.
+
         Raises:
             TypeError: The model has unique attributes (use ``create``/``save`` or a transaction).
             ValueError: A loaded instance's key or immutable value changed.
@@ -1223,26 +1226,30 @@ class Repository[M]:
                 f"{self.model_class.__name__} has unique attributes; batch writes cannot maintain them "
                 "(use create/save or a transaction)"
             )
-        prepared: list[tuple[M, dict[str, Any], dict[str, Any]]] = []
+        # By key: DynamoDB refuses a request that writes one key twice, so the last item wins.
+        prepared: dict[Any, tuple[M, dict[str, Any], dict[str, Any]]] = {}
         hooks = self.client.hooks
         for instance in items:
             if hooks.has("before_save", type(instance)):
                 await hooks.run("before_save", instance, self._context("batch_put"))
             item, changes, _ = self._prepare(instance, "batch")
-            prepared.append((instance, item, changes))
+            identity = stored_identity(self.schema.key_values(item))
+            prepared.pop(identity, None)
+            prepared[identity] = (instance, item, changes)
         if not prepared:
             return
-        await self.table.batch_write(puts=[item for _, item, _ in prepared])
-        for instance, item, changes in prepared:
+        left = await self._batch_write([("put", item) for _, item, _ in prepared.values()])
+        done = [entry for identity, entry in prepared.items() if identity not in left]
+        for instance, item, changes in done:
             self._apply(instance, changes, item)
-            if hooks.has("after_save", type(instance)):
-                await hooks.run("after_save", instance, self._context("batch_put"))
+        await self._run_hooks("after_save", [instance for instance, _, _ in done], "batch_put", left)
 
     async def batch_delete(self, targets: Iterable[M | Mapping[str, Any] | Any]) -> None:
         """Deletes many items by instance or key (managed ``BatchWriteItem``; not atomic).
 
         Raises:
             TypeError: The model has unique attributes.
+            UnprocessedItemsError: Some deletes stayed unprocessed after every retry round.
         """
         if self.schema.unique_fields:
             raise TypeError(f"{self.model_class.__name__} has unique attributes; delete items one by one")
@@ -1251,12 +1258,54 @@ class Repository[M]:
         for target in targets:
             if isinstance(target, self.model_class) and hooks.has("before_delete", type(target)):
                 await hooks.run("before_delete", target, self._context("batch_delete"))
-        await self.table.batch_write(deletes=[self._target_key(target) for target in targets])
-        for target in targets:
-            if isinstance(target, self.model_class):
-                self._apply(target, {}, None)
-                if hooks.has("after_delete", type(target)):
-                    await hooks.run("after_delete", target, self._context("batch_delete"))
+        keys = {stored_identity(key): key for key in (self._target_key(target) for target in targets)}
+        if not keys:
+            return
+        left = await self._batch_write([("delete", key) for key in keys.values()])
+        done = [
+            target
+            for target in targets
+            if isinstance(target, self.model_class) and stored_identity(self.schema.key_of(target)) not in left
+        ]
+        for target in done:
+            self._apply(target, {}, None)
+        await self._run_hooks("after_delete", done, "batch_delete", left)
+
+    async def _batch_write(self, requests: list[tuple[str, dict[str, Any]]]) -> dict[Any, tuple[str, dict[str, Any]]]:
+        """Sends a managed ``BatchWriteItem``; returns the unprocessed requests by key identity."""
+        output = await self.client.call(
+            "batch_write",
+            "BatchWriteItem",
+            table=self.table_name,
+            model=self.model_class,
+            requests=[(self.table_name, kind, item) for kind, item in requests],
+        )
+        return {stored_identity(self.schema.key_values(item)): (kind, item) for _, kind, item in output["unprocessed"]}
+
+    async def _run_hooks(
+        self, point: HookPoint, instances: list[M], operation: str, left: dict[Any, tuple[str, dict[str, Any]]]
+    ) -> None:
+        """Runs ``after_*`` hooks of written instances, then raises what failed.
+
+        Raises:
+            UnprocessedItemsError: Some requests stayed unprocessed (``left``).
+            Exception: The first hook that raised (after every hook ran).
+        """
+        hooks = self.client.hooks
+        errors: list[Exception] = []
+        for instance in instances:
+            if hooks.has(point, type(instance)):
+                try:
+                    await hooks.run(point, instance, self._context(operation))
+                except Exception as error:  # noqa: BLE001 - raised once every hook ran
+                    errors.append(error)
+        if left:
+            raise UnprocessedItemsError(
+                f"{len(left)} writes of {self.table_name} stayed unprocessed (throttling)",
+                unprocessed=list(left.values()),
+            ) from (errors[0] if errors else None)
+        if errors:
+            raise errors[0]
 
     # ---- table ----------------------------------------------------------------------------
 

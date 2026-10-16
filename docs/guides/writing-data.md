@@ -165,9 +165,12 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
 
 - Not atomic and unconditional: each item succeeds or is retried on its own.
 - Unprocessed items (throttling) are sent again with backoff for `batch_max_rounds` rounds; what
-  remains raises `UnprocessedItemsError` with `.unprocessed`.
-- Two writes of the same key in one request are invalid in DynamoDB; `client.batch_writer()`
-  de-duplicates (the last write wins) and flushes every `flush_size` operations.
+  remains raises `UnprocessedItemsError` with `.unprocessed`. Only the writes that were made
+  update their instances and run `after_save`/`after_delete` hooks.
+- Two writes of the same key in one request are invalid in DynamoDB: `batch_put()`,
+  `batch_delete()` and `client.batch_writer()` write each key once (the last write wins). The
+  batch writer flushes every `flush_size` operations; a flush that fails before its request (a
+  `before_save` hook or validation raised) or whose request fails keeps the other writes queued.
 - Refused for models with unique attributes (use transactions or single writes).
 - `before_save` hooks run for batch puts; conditions and versions do not apply.
 
