@@ -24,7 +24,8 @@ sort key). A write that sets or changes a unique value is a transaction:
 | `delete` | `Delete item` + `Delete guards` |
 
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
-nothing is written. `None` values have no guard (several items may have no handle).
+nothing is written. `None` values have no guard (several items may have no handle), and
+`update(user, User.handle.set(None))` removes the value and its guard.
 
 **Costs and requirements.**
 

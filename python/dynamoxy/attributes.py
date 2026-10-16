@@ -22,7 +22,7 @@ Pydantic models use the same options as ``Annotated`` markers (:class:`Partition
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Self, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, overload, override
 
 from dynamoxy._utils import MISSING
 from dynamoxy.errors import FieldError, validation_error
@@ -117,6 +117,10 @@ class FieldPath[T](Path[T]):
                 f"{self.model.__name__}.{self._name}: {error}", [FieldError(self._name, str(error), value)]
             ) from None
         return Value(spec.codec.encode(checked))
+
+    @override
+    def _none_is_missing(self) -> bool:
+        return True
 
     def __getitem__(self, key: str | int) -> Path[Any]:
         codec = self.spec.codec

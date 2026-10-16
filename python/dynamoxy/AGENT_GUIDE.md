@@ -398,7 +398,9 @@ Model attributes are typed paths: `User.visits > 3`, `User.name.begins_with("A")
 `User.address["city"] == "Lund"`. Combine with `&`, `|` and `~` (or `dynamoxy.and_`, `or_`,
 `not_`). Like in DynamoDB, a comparison with a missing attribute is false (except `!=`): items
 whose `tags` set is empty store no `tags` attribute, so select them with `User.tags.not_exists()`,
-not `User.tags.size() == 0`. `dynamoxy.F("raw", "path")` builds untyped paths for dict-level code.
+not `User.tags.size() == 0`. `None` is no attribute for model fields: `User.age == None` matches
+items without `age`, or with a `NULL` (which reads as `None` too). `dynamoxy.F("raw", "path")`
+builds untyped paths for dict-level code.
 `dynamoxy.condition("#s = :s", names={"#s": "status"}, values={":s": "x"})` is the escape
 hatch for hand-written expressions.
 
@@ -422,8 +424,9 @@ await users.delete("u2", condition=User.visits == 0)
 Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, `add(n or set)`,
 `increment(n)`, `decrement(n)`, `remove()`, `delete(set)` (alias `discard`), `append(list)`,
 `append_or_create(list)`, `prepend(list)`. Nested paths work: `User.address["city"].set("Lund")`.
-Updates refresh the instance in place with the stored result. Key, derived (templated) and
-immutable attributes cannot be updated.
+`User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Updates
+refresh the instance in place with the stored result. Key, derived (templated) and immutable
+attributes cannot be updated.
 
 Every write takes `condition=`; when it does not hold, `ConditionalCheckFailedError` is raised
 with `.item` set to the stored item.
@@ -489,7 +492,8 @@ dynamoxy stores a guard item per unique value (`_unique#Member#email#<value>`) i
 and writes it in the same transaction as the item. Creates, saves, puts, updates and deletes
 keep the guards consistent; a taken value raises `UniqueConstraintError` (`.field`, `.value`).
 
-- Change unique values with `set(...)` or `remove()` (dynamoxy needs the new value).
+- Change unique values with `set(...)` or `remove()` (or `set(None)`; dynamoxy needs the new
+  value).
 - Writes of unique models are transactions: twice the write capacity, plus one guard write per
   changed value. Batch writes are refused for them.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.

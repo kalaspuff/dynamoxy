@@ -40,6 +40,7 @@ It is authoritative for the installed version; this skill only summarizes it.
    sort key condition (use `between()` for ranges).
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
    business rules, and `client.transaction()` for multi-item changes.
+   `Model.field.set(None)` removes an attribute.
 8. Catch specific errors: `ItemNotFoundError`, `ItemAlreadyExistsError`, `UniqueConstraintError`,
    `VersionConflictError`, `ConditionalCheckFailedError`, `TransactionCanceledError`
    (`.cancellation_reasons`), `ValidationError` (`.errors`).
