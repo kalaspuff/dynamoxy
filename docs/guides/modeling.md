@@ -126,7 +126,8 @@ class Reading(Base, table="readings"):
 
 Every model has a `partition_key()` and optionally a `sort_key()`. Key values are strings,
 numbers or bytes. Keys are immutable: changing a key means writing a new item and deleting the
-old one (in a transaction if both must happen).
+old one (in a transaction if both must happen). A write of a loaded instance whose key changed
+(also through a field its key template uses) raises `ValueError`.
 
 Keys can be generated (`partition_key(default_factory=lambda: uuid4().hex)`) or built from other
 fields with templates (`partition_key(template="USER#{user_id}")`, see

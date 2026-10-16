@@ -142,7 +142,7 @@ class Account(Model, table="accounts"):
     address: Attr[Address | None] = field(default=None)
     labels: Attr[dict[str, str]] = field(default_factory=dict)
     legacy_name: Attr[str | None] = field(default=None, attribute_name="name")  # stored as "name"
-    country: Attr[str] = field(default="SE", immutable=True)  # updates of it are rejected
+    country: Attr[str] = field(default="SE", immutable=True)  # changes of a stored value are rejected
 
 
 class Entry(Model, table="ledger"):
@@ -201,6 +201,9 @@ Rules that are easy to miss:
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
   `updated_at`, `version`) start empty, so saving it writes a new item. `copy.copy(item)` and
   pydantic's `model_copy()` duplicate the instance as it is, loaded state included.
+- A loaded instance keeps its key and its `immutable=True` values: `save()`/`put()` of one whose
+  key (or a field its key template uses) or immutable value changed raises `ValueError`. Write a
+  copy instead (`create(item.copy(...))`) and delete the old item.
 - DynamoDB reserved words (`name`, `status`, `count`, ...) are fine as attribute names:
   dynamoxy always uses placeholders.
 

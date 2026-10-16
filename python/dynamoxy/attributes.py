@@ -262,7 +262,8 @@ def field(
         le: Values must be less than or equal to this.
         lt: Values must be less than this.
         validators: Callables ``value -> value`` raising ``ValueError`` for invalid values.
-        immutable: The value cannot change once stored (updates of it are rejected).
+        immutable: The value cannot change once stored: updates of it, and writes of a loaded
+            instance whose value changed, raise ``ValueError``.
         description: Documentation of the field.
         repr: Show the field in ``repr()``.
     """

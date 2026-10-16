@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from dynamoxy import _core
-from dynamoxy._utils import MISSING
+from dynamoxy._utils import MISSING, stored_identity
 from dynamoxy.constraints import GUARD_PREFIX, guard_item, guard_key
 from dynamoxy.errors import (
     ConditionalCheckFailedError,
@@ -533,6 +533,11 @@ class Repository[M]:
             values.update(derived)
             changes.update(derived)
         item = schema._encode_rendered(values)
+        if mode != "create":
+            state = schema.state(instance)
+            stored = state.stored if state is not None and state.loaded else None
+            if stored is not None:
+                self._check_unchanged(stored, item)
         return item, changes, expected
 
     def _apply(self, instance: M, changes: Mapping[str, Any], item: dict[str, Any] | None) -> None:
@@ -590,6 +595,26 @@ class Repository[M]:
                     },
                     ("guard", spec, after),
                 )
+
+    def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> None:
+        """Refuses a write of a loaded instance that changes its key or an immutable field.
+
+        Raises:
+            ValueError: The key (or a field a key template uses) or an immutable value changed
+                since the instance was loaded.
+        """
+        schema = self.schema
+        name = self.model_class.__name__
+        before, key = schema.key_values(stored), schema.key_values(item)
+        if stored_identity(before) != stored_identity(key):
+            raise ValueError(
+                f"{name}: the key of this instance changed since it was loaded ({before} -> {key}), and DynamoDB "
+                "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
+            )
+        for spec in schema._immutable:
+            old = stored.get(spec.attribute)
+            if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
+                raise ValueError(f"{name}.{spec.name} is immutable: it cannot change once stored")
 
     async def _plan_put(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> _WritePlan:
         schema = self.schema
@@ -661,6 +686,7 @@ class Repository[M]:
         Raises:
             ConditionalCheckFailedError: ``condition`` did not hold.
             UniqueConstraintError: A unique value is taken.
+            ValueError: The instance was loaded and its key or an immutable field changed since.
         """
         await (await self._plan_put(item, "put", condition)).execute()
         return item
@@ -672,6 +698,7 @@ class Repository[M]:
             VersionConflictError: The stored version differs from the instance's (or, for a
                 new instance, the key exists).
             ConditionalCheckFailedError: ``condition`` did not hold.
+            ValueError: The instance was loaded and its key or an immutable field changed since.
         """
         await (await self._plan_put(item, "save", condition)).execute()
         return item
@@ -1150,6 +1177,7 @@ class Repository[M]:
 
         Raises:
             TypeError: The model has unique attributes (use ``create``/``save`` or a transaction).
+            ValueError: A loaded instance's key or immutable value changed.
             UnprocessedItemsError: Some writes stayed unprocessed after every retry round.
         """
         if self.schema.unique_fields:

@@ -55,6 +55,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   now render what DynamoDB stores (ADR 0013).
 - `datetime_format="epoch_ms"` stored about one timestamp in 160 a millisecond early, and every
   load and save moved it again; `"epoch"` rounded toward zero before 1970. Both are exact now.
+- `save()` and `put()` of a loaded instance stored a changed `immutable=True` value, and a
+  changed key (or a field a key template uses) wrote a second item next to the first. Both now
+  raise `ValueError` before any I/O, also in batch puts.
 
 ### Changed
 
