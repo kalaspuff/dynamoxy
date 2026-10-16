@@ -64,6 +64,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - Keys given as field values whose names are the key attributes (`devices.update({"device_id":
   uuid}, ...)`) were sent unencoded and failed; batch reads and `hydrate()` dropped items with
   float keys such as `0.1`.
+- A `BatchWriter` flush ran `after_save` hooks and marked instances as stored for writes that
+  stayed unprocessed, and a flush that failed before its request (a `before_save` hook raised)
+  dropped every queued write. Only written instances are finalized now, and what a failed flush
+  did not write stays queued. `batch_put()` and `batch_delete()` write a repeated key once (the
+  last one wins) instead of failing in DynamoDB, and finalize only what was written.
+- A failing `after_*` hook after a committed transaction (or batch) left the other written
+  instances unfinalized: a later `save()` of one failed with `VersionConflictError`.
 
 ### Changed
 

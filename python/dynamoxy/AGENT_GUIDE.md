@@ -481,9 +481,12 @@ async with client.batch_writer() as batch:  # buffers and flushes every 100 oper
 ```
 
 Batch writes are unconditional and not atomic, and DynamoDB allows no two writes to the same key
-in one request (the batch writer keeps the last one). They are refused for models with unique
-attributes (guard items need transactions). If items stay unprocessed after every retry round,
-`UnprocessedItemsError.unprocessed` lists them.
+in one request: `batch_put()`, `batch_delete()` and the batch writer keep the last one. They are
+refused for models with unique attributes (guard items need transactions). If items stay
+unprocessed after every retry round, `UnprocessedItemsError.unprocessed` lists them; only the
+writes that were made update their instances and run `after_*` hooks. A batch writer flush that
+fails before its request (a hook or validation raised), or whose request fails, keeps the other
+writes queued.
 
 ## 6. Unique values
 

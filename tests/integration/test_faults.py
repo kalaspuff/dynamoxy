@@ -11,8 +11,25 @@ from collections.abc import AsyncIterator
 import pytest
 
 import dynamoxy
-from dynamoxy import testing
+from dynamoxy import Attr, Model, field, partition_key, testing
 from tests.models import Event, User
+
+SAVED: list[str] = []
+
+
+class Note(Model, table="notes"):
+    note_id: Attr[str] = partition_key()
+    text: Attr[str] = field(default="")
+    version: Attr[int] = dynamoxy.version()
+
+    @dynamoxy.before_save
+    def refuse(self) -> None:
+        if self.text == "refused":
+            raise ValueError("refused by before_save")
+
+    @dynamoxy.after_save
+    def record(self) -> None:
+        SAVED.append(self.note_id)
 
 
 @pytest.fixture
@@ -160,3 +177,42 @@ async def test_failed_operations_are_collected_and_counted(client: dynamoxy.Clie
     assert [record.error for record in collected.records] == ["TransactionCanceledException"]
     assert collected.errors == 1
     assert failed[0].fields["reasons"] == "ConditionalCheckFailed,None"
+
+
+async def test_batch_writers_finalize_only_what_was_written() -> None:
+    SAVED.clear()
+    async with testing.memory_client(batch_max_rounds=1) as client:
+        await client.create_tables(Note)
+        notes = [Note(note_id=f"n{index}") for index in range(3)]
+        testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times=10)
+        batch = client.batch_writer()
+        for note in notes:
+            await batch.put(note)
+        with pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
+            await batch.flush()
+        assert len(caught.value.unprocessed) == 3
+        assert SAVED == [], "no after_save hook for writes that were not made"
+        assert [(note.is_loaded, note.version) for note in notes] == [(False, None)] * 3
+        client.store.clear_faults()  # type: ignore[union-attr]
+        await client.repository(Note).batch_put(notes)
+        assert SAVED == ["n0", "n1", "n2"]
+        assert all(note.is_loaded for note in notes)
+
+
+async def test_failed_flushes_keep_the_other_writes() -> None:
+    async with testing.memory_client() as client:
+        await client.create_tables(Note)
+        batch = client.batch_writer(flush_size=3)
+        await batch.put(Note(note_id="a"))
+        await batch.put(Note(note_id="b", text="refused"))
+        with pytest.raises(ValueError, match="refused by before_save"):
+            await batch.put(Note(note_id="c"))  # the third write flushes
+        assert len(batch) == 2, "a and c stay queued; b is reported by the exception"
+        testing.inject_fault(client, operation="BatchWriteItem", error="internal", times=10)
+        with pytest.raises(dynamoxy.InternalServerError):
+            await batch.flush()
+        assert len(batch) == 2, "a request that failed keeps its writes queued (they are unconditional)"
+        client.store.clear_faults()  # type: ignore[union-attr]
+        await batch.flush()
+        assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "c"]
+        assert batch.written == 2

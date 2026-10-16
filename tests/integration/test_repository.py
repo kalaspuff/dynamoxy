@@ -776,6 +776,17 @@ async def test_float_keys_in_batch_reads(client: dynamoxy.Client) -> None:
     assert [measurement.value for measurement in found] == values, "0.1 is read back as Decimal('0.1')"
 
 
+async def test_batches_write_repeated_keys_once(events: dynamoxy.Repository[Event]) -> None:
+    first, last = Event(stream="d", seq=1, kind="first"), Event(stream="d", seq=1, kind="last")
+    await events.batch_put([first, last])
+    assert [event.kind for event in await events.query(stream="d").all()] == ["last"], "the last one wins"
+    assert last.is_loaded
+    assert not first.is_loaded, "it was not written"
+    await events.batch_delete([("d", 1), Event.key("d", 1), last])
+    assert await events.query(stream="d").all() == []
+    assert not last.is_loaded
+
+
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
     await client.create_tables(Counter, Event)
     counters = client.repository(Counter)
