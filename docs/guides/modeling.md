@@ -8,8 +8,9 @@
 - A model without `table=` (or with `abstract=True`) is a base class: its fields are inherited.
 - `item.copy(**changes)` makes a new, unsaved instance with the same values: automatic fields
   (`created_at`, `updated_at`, `version`) start empty, so saving the copy writes a new item
-  (pass `created_at=item.created_at` to keep one). `copy.copy(item)`, `copy.deepcopy(item)` and
-  pydantic's `model_copy()` make exact duplicates that still know the item they mirror.
+  (pass `created_at=item.created_at` to keep one); an unknown field name raises `TypeError`.
+  `copy.copy(item)`, `copy.deepcopy(item)` and pydantic's `model_copy()` make exact duplicates
+  that still know the item they mirror.
 
 ```python
 class Timestamped(dynamoxy.Model, abstract=True):

@@ -71,6 +71,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   last one wins) instead of failing in DynamoDB, and finalize only what was written.
 - A failing `after_*` hook after a committed transaction (or batch) left the other written
   instances unfinalized: a later `save()` of one failed with `VersionConflictError`.
+- Smaller ones: `copy()` silently ignored misspelled field names (now `TypeError`);
+  `Model.field.increment(0.5)` stored a fraction in an `int` field, and `increment()` of a
+  `timedelta` field failed in the core (amounts and arithmetic now use the field's codec);
+  subclasses of repository subclasses did not find their model.
 
 ### Changed
 

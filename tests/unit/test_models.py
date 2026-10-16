@@ -308,6 +308,11 @@ def test_copy_starts_automatic_fields_empty() -> None:
     assert stored.copy(version=3).version == 3, "unless they are given"
 
 
+def test_copy_refuses_unknown_fields() -> None:
+    with pytest.raises(TypeError, match="unexpected field"):
+        make_user().copy(nmae="Bob")
+
+
 def test_key_templates_render_what_is_stored() -> None:
     local = timezone(timedelta(hours=2))
     price = Price(sku="a", amount=Decimal("1.50"), at=datetime(2026, 1, 1, 0, 30, tzinfo=local))
@@ -322,6 +327,32 @@ def test_guard_keys_use_the_stored_numbers() -> None:
     keys = {guard_key(schema, spec, value)["sku"] for value in (Decimal("5.0"), Decimal(5), 5, 5.0, Decimal("5E0"))}
     assert keys == {"_unique#Price#seat#5"}
     assert guard_key(schema, spec, 1e16)["sku"] == "_unique#Price#seat#10000000000000000"
+
+
+def test_repository_subclasses_inherit_their_model() -> None:
+    class UserRepository(dynamoxy.Repository[User]):
+        pass
+
+    class AuditedUserRepository(UserRepository):
+        pass
+
+    class Explicit(dynamoxy.Repository[User]):
+        model = User
+
+    class ExplicitChild(Explicit):
+        pass
+
+    class Shared[M](dynamoxy.Repository[M]):
+        """Helpers shared by the repositories of several models."""
+
+    class SharedUsers(Shared[User]):
+        pass
+
+    client = dynamoxy.testing.memory_client()
+    for repository in (UserRepository, AuditedUserRepository, Explicit, ExplicitChild, SharedUsers):
+        assert repository(client).model_class is User
+    with pytest.raises(TypeError, match="does not know its model"):
+        Shared(client)
 
 
 def test_python_copies_have_their_own_persistence_state() -> None:

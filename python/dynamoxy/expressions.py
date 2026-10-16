@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, override
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+    from datetime import timedelta
     from decimal import Decimal
 
 __all__ = [
@@ -352,6 +353,16 @@ class Path[T](Operand):
         """Whether ``None`` means "no attribute" here (model fields), rather than DynamoDB's ``NULL``."""
         return False
 
+    def _amount(self, amount: Any, *, negate: bool) -> Operand:
+        """The value ``increment()`` (``negate=False``) or ``decrement()`` adds."""
+        return Value(-amount if negate else amount)
+
+    def __add__(self, other: Any) -> Operand:
+        return Arithmetic(self, "+", self._value(other))
+
+    def __sub__(self, other: Any) -> Operand:
+        return Arithmetic(self, "-", self._value(other))
+
     # ---- conditions ---------------------------------------------------------------------
 
     # Decimal attributes also accept ints (``Account.balance >= 100``); the overloads say so.
@@ -494,13 +505,25 @@ class Path[T](Operand):
         """``ADD path value``: adds to a number (missing counts as 0) or a set."""
         return UpdateAction("ADD", self, self._value(value))
 
-    def increment(self, amount: float = 1) -> UpdateAction:
-        """Adds ``amount`` to a number attribute (missing counts as 0)."""
-        return UpdateAction("ADD", self, Value(amount))
+    @overload
+    def increment(self: Path[timedelta] | Path[timedelta | None], amount: timedelta) -> UpdateAction: ...
+    @overload
+    def increment(self, amount: float | Decimal = 1) -> UpdateAction: ...
+    def increment(self, amount: Any = 1) -> UpdateAction:
+        """Adds ``amount`` to a number attribute (missing counts as 0).
 
-    def decrement(self, amount: float = 1) -> UpdateAction:
+        Model fields check ``amount`` against their type (an ``int`` field takes integers, a
+        ``timedelta`` field durations).
+        """
+        return UpdateAction("ADD", self, self._amount(amount, negate=False))
+
+    @overload
+    def decrement(self: Path[timedelta] | Path[timedelta | None], amount: timedelta) -> UpdateAction: ...
+    @overload
+    def decrement(self, amount: float | Decimal = 1) -> UpdateAction: ...
+    def decrement(self, amount: Any = 1) -> UpdateAction:
         """Subtracts ``amount`` from a number attribute (missing counts as 0)."""
-        return UpdateAction("ADD", self, Value(-amount))
+        return UpdateAction("ADD", self, self._amount(amount, negate=True))
 
     def delete(self, values: T) -> UpdateAction:
         """``DELETE path values``: removes elements from a set."""

@@ -367,11 +367,19 @@ class Document:
         copy is written with version 1, and its ``save()`` fails if the key exists. Pass them in
         ``changes`` to keep them (``item.copy(created_at=item.created_at)``). ``copy.copy()`` and
         ``copy.deepcopy()`` make exact duplicates instead.
+
+        Raises:
+            TypeError: ``changes`` names something that is not a field.
+            ValidationError: A changed value is invalid.
         """
+        schema = schema_of(type(self))
+        unknown = [name for name in changes if name not in schema.fields]
+        if unknown:
+            raise TypeError(f"{type(self).__name__}.copy() got unexpected field(s) {', '.join(map(repr, unknown))}")
         values = {name: value for name, value in self.__dict__.items() if name != _STATE}
         clone = object.__new__(type(self))
         clone.__dict__.update(_copy.deepcopy(values))
-        for name in schema_of(type(self))._automatic:
+        for name in schema._automatic:
             clone.__dict__[name] = None
         for name, value in changes.items():
             setattr(clone, name, value)
