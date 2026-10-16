@@ -132,6 +132,28 @@ def test_increment_and_decrement_are_add_actions() -> None:
     assert builder.values == {":v0": -3}
 
 
+def test_none_means_no_attribute_for_model_fields() -> None:
+    builder = ExpressionBuilder()
+    assert builder.update([User.age.set(None)]) == "REMOVE #a0", "None is not stored, as with put() and save()"
+    # A NULL that another writer stored reads as None too.
+    text, names, values = compile_condition(User.age == None)  # noqa: E711
+    assert (text, names, values) == (
+        "(attribute_not_exists(#a0)) OR (attribute_type(#a0, :v0))",
+        {"#a0": "age"},
+        {":v0": "NULL"},
+    )
+    text, names, values = compile_condition(User.age != None)  # noqa: E711
+    assert text == "(attribute_exists(#a0)) AND (NOT (attribute_type(#a0, :v0)))"
+    check(condition=text, names=names, values=values)
+    with pytest.raises(ValueError, match="would store nothing"):
+        User.age.set_if_not_exists(None)
+    # Untyped paths keep DynamoDB's NULL.
+    builder = ExpressionBuilder()
+    assert builder.update([F("x").set(None)]) == "SET #a0 = :v0"
+    assert builder.values == {":v0": None}
+    assert compile_condition(F("x") == None)[0] == "#a0 = :v0"  # noqa: E711
+
+
 def test_attribute_roots_of_conditions() -> None:
     condition = (
         (F("a")["b"] == 1) & ~F("c").exists()

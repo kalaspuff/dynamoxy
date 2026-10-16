@@ -40,6 +40,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   they `.hydrate()` or `.project(...)`; reads of such a local index ask DynamoDB for every
   attribute; `exists()` reads keys only. Filters on attributes a global index does not hold
   raise `ValueError` (they could never match).
+- `Model.field.set(None)` stored DynamoDB's `NULL` instead of removing the attribute: on a
+  unique field, every later value failed with `ConditionalCheckFailedError`; on an index key,
+  DynamoDB refused the update; and `not_exists()` did not match. It now removes the attribute,
+  and `Model.field == None` matches a missing attribute or a `NULL` (`!= None`: the others).
+  Unique fields that hold a `NULL` (from that bug, or another writer) take new values again.
 
 ### Changed
 

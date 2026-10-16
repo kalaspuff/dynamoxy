@@ -667,6 +667,24 @@ async def test_updates_validate_values_they_set(client: dynamoxy.Client) -> None
     assert (user.age, user.visits) == (None, -5)
 
 
+async def test_set_none_removes_attributes(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user(age=30))
+    await users.update(user, User.age.set(None))
+    assert user.age is None
+    stored = await users.table.get({"user_id": "u1"})
+    assert stored is not None
+    assert "age" not in stored, "None is not stored, as with put() and save()"
+    assert [found.user_id for found in await users.scan().filter(User.age == None).all()] == ["u1"]  # noqa: E711
+    # A NULL that another writer stored reads as None, and compares as None.
+    await users.table.put({**stored, "user_id": "u2", "email": "u2@example.com", "age": None})
+    assert (await users.get_or_raise("u2")).age is None
+    missing = await users.scan(consistent=True).filter(User.age == None).all()  # noqa: E711
+    assert sorted(found.user_id for found in missing) == ["u1", "u2"]
+    assert await users.scan(consistent=True).filter(User.age != None).count() == 0  # noqa: E711
+    with pytest.raises(dynamoxy.ValidationError, match="is required and cannot be removed"):
+        await users.update(user, User.name.set(None))  # type: ignore[call-overload]
+
+
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
     await client.create_tables(Counter, Event)
     counters = client.repository(Counter)

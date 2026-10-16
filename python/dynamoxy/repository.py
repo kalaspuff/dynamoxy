@@ -545,11 +545,15 @@ class Repository[M]:
             state.repository = self
 
     def _guard_conditions(self, old: Mapping[str, Any], specs: Iterable[FieldSpec]) -> list[Condition]:
-        """Conditions that the unique values of the stored item are still ``old``'s."""
+        """Conditions that the unique values of the stored item are still ``old``'s.
+
+        A value ``old`` does not have may be missing or stored as DynamoDB's ``NULL`` (by another
+        writer, or by ``set(None)`` of older versions), which reads as ``None`` too.
+        """
         return [
             F(spec.attribute) == old[spec.attribute]
             if old.get(spec.attribute) is not None
-            else F(spec.attribute).not_exists()
+            else F(spec.attribute).not_exists() | F(spec.attribute).is_type("NULL")
             for spec in specs
         ]
 

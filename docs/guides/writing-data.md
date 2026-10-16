@@ -91,6 +91,11 @@ Rules from DynamoDB: one action per path, no overlapping paths (`a` and `a.b`), 
 cannot change. dynamoxy also refuses updates of derived (templated) and `immutable` fields and of
 unique fields with anything but `set()`/`remove()`.
 
+`None` means "no attribute" for model fields, as in `put()` and `save()`: `User.nickname.set(None)`
+removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another writer stored
+reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
+`NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
+
 Values you `set()` are validated like constructor arguments (type, constraints such as `ge` or
 `pattern`, validators), and removing a required field is refused, all before any I/O. Arithmetic
 (`add`, `increment`, `set(path + n)`) happens in DynamoDB and cannot be checked locally: guard it

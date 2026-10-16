@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -17,6 +18,22 @@ class Membership(Model, table="memberships"):
     org_id: Attr[str] = partition_key()
     user_id: Attr[str] = sort_key()
     email: Attr[str] = field(unique=True)
+
+
+class Profile(Model, table="profiles"):
+    """Optional unique values, one of them a number."""
+
+    profile_id: Attr[str] = partition_key()
+    handle: Attr[str | None] = field(default=None, unique=True)
+    seat: Attr[Decimal | None] = field(default=None, unique=True)
+
+
+async def guards(repository: dynamoxy.Repository[Any]) -> list[str]:
+    """The partition keys of the guard items in the repository's table."""
+    partition = repository.schema.partition_key
+    assert partition is not None
+    items = await repository.table.scan(consistent=True).all()
+    return sorted(item[partition.attribute] for item in items if item[partition.attribute].startswith("_unique#"))
 
 
 def make_user(user_id: str, email: str, **changes: Any) -> User:
@@ -126,3 +143,39 @@ async def test_partitions_of_unique_models_can_be_queried(client: dynamoxy.Clien
     assert (await memberships.query(org_id="o1").descending().first()).user_id == "u3"  # type: ignore[union-attr]
     assert await memberships.count() == 3, "scans still leave guard items out"
     assert sorted(member.user_id for member in await memberships.scan().all()) == ["u1", "u2", "u3"]
+
+
+async def test_optional_unique_values_can_be_removed_and_set_again(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    profile = await profiles.create(Profile(profile_id="p1", handle="ada"))
+    await profiles.update(profile, Profile.handle.set(None))
+    assert profile.handle is None
+    await profiles.create(Profile(profile_id="p2", handle="ada"))  # the old value is free
+    await profiles.update(profile, Profile.handle.set("lovelace"))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("countess"))
+    assert (await profiles.get_or_raise("p1")).handle == "countess"
+    assert await guards(profiles) == ["_unique#Profile#handle#ada", "_unique#Profile#handle#countess"]
+
+
+async def test_unique_values_stored_as_null_can_be_set(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    # A NULL stored by another writer (or by set(None) of older versions) reads as None.
+    await profiles.table.put({"profile_id": "p1", "handle": None, "seat": None})
+    profile = await profiles.get_or_raise("p1")
+    assert (profile.handle, profile.seat) == (None, None)
+    await profiles.update(profile, Profile.handle.set("ada"))
+    await profiles.table.put({"profile_id": "p2", "seat": None})
+    other = await profiles.get_or_raise("p2")
+    other.seat = Decimal(7)
+    await other.save()
+    await profiles.table.put({"profile_id": "p3", "handle": None})
+    third = await profiles.get_or_raise("p3")
+    third.handle = "grace"
+    await profiles.put(third)
+    assert await guards(profiles) == [
+        "_unique#Profile#handle#ada",
+        "_unique#Profile#handle#grace",
+        "_unique#Profile#seat#7",
+    ]

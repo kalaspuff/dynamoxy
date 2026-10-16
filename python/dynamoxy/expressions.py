@@ -348,6 +348,10 @@ class Path[T](Operand):
     def _value(self, value: Any) -> Operand:
         return _operand(value, self._encoder)
 
+    def _none_is_missing(self) -> bool:
+        """Whether ``None`` means "no attribute" here (model fields), rather than DynamoDB's ``NULL``."""
+        return False
+
     # ---- conditions ---------------------------------------------------------------------
 
     # Decimal attributes also accept ints (``Account.balance >= 100``); the overloads say so.
@@ -359,6 +363,9 @@ class Path[T](Operand):
     @overload
     def __eq__(self, other: T | Operand) -> Condition: ...
     def __eq__(self, other: object) -> Condition:  # type: ignore[override]
+        if other is None and self._none_is_missing():
+            # A NULL that another writer stored reads as None too.
+            return Function("attribute_not_exists", self, None) | self.is_type("NULL")
         return Compare(self, "=", self._value(other))
 
     @overload
@@ -368,6 +375,8 @@ class Path[T](Operand):
     @overload
     def __ne__(self, other: T | Operand) -> Condition: ...
     def __ne__(self, other: object) -> Condition:  # type: ignore[override]
+        if other is None and self._none_is_missing():
+            return Function("attribute_exists", self, None) & ~self.is_type("NULL")
         return Compare(self, "<>", self._value(other))
 
     @overload
@@ -450,7 +459,13 @@ class Path[T](Operand):
     @overload
     def set(self, value: T | Operand) -> UpdateAction: ...
     def set(self, value: Any) -> UpdateAction:
-        """``SET path = value`` (a value, another path or arithmetic such as ``path + 1``)."""
+        """``SET path = value`` (a value, another path or arithmetic such as ``path + 1``).
+
+        For model fields, ``set(None)`` removes the attribute: a field that is ``None`` is not
+        stored (as ``put()`` and ``save()`` do), never stored as DynamoDB's ``NULL``.
+        """
+        if value is None and self._none_is_missing():
+            return UpdateAction("REMOVE", self, None)
         return UpdateAction("SET", self, self._value(value))
 
     @overload
@@ -459,6 +474,8 @@ class Path[T](Operand):
     def set_if_not_exists(self, value: T) -> UpdateAction: ...
     def set_if_not_exists(self, value: Any) -> UpdateAction:
         """``SET path = if_not_exists(path, value)``: set only when missing."""
+        if value is None and self._none_is_missing():
+            raise ValueError(f"{self}.set_if_not_exists(None) would store nothing: give a value")
         return UpdateAction("SET", self, IfNotExists(self, self._value(value)))
 
     @overload
