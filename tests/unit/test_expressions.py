@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -10,9 +11,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import dynamoxy
-from dynamoxy import F, _core
+from dynamoxy import Attr, F, Model, _core, field, partition_key
 from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition, attribute_roots, describe
 from tests.models import Event, Status, User
+
+
+class Timer(Model, table="timers"):
+    timer_id: Attr[str] = partition_key()
+    spent: Attr[timedelta] = field(default=timedelta(0))
 
 
 def compile_condition(condition: Condition) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -152,6 +158,25 @@ def test_none_means_no_attribute_for_model_fields() -> None:
     assert builder.update([F("x").set(None)]) == "SET #a0 = :v0"
     assert builder.values == {":v0": None}
     assert compile_condition(F("x") == None)[0] == "#a0 = :v0"  # noqa: E711
+
+
+def test_increments_of_model_fields_check_their_amount() -> None:
+    builder = ExpressionBuilder()
+    assert builder.update([User.visits.increment(2), Timer.spent.decrement(timedelta(seconds=1.5))]) == (
+        "ADD #a0 :v0, #a1 :v1"
+    )
+    assert builder.values == {":v0": 2, ":v1": Decimal("-1.5")}
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        User.visits.increment(1.5)
+    with pytest.raises(TypeError, match="need a number"):
+        User.name.increment()
+    with pytest.raises(TypeError, match="take a number"):
+        User.visits.increment(User.visits)  # type: ignore[arg-type]
+    builder = ExpressionBuilder()
+    assert builder.update([Timer.spent.set(Timer.spent + timedelta(seconds=2))]) == "SET #a0 = #a0 + :v0"
+    assert builder.values == {":v0": Decimal("2.000000")}, "arithmetic encodes with the field's codec"
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        User.visits + 0.5
 
 
 def test_attribute_roots_of_conditions() -> None:

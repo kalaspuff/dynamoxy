@@ -199,8 +199,9 @@ Rules that are easy to miss:
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
-  `updated_at`, `version`) start empty, so saving it writes a new item. `copy.copy(item)` and
-  pydantic's `model_copy()` duplicate the instance as it is, loaded state included.
+  `updated_at`, `version`) start empty, so saving it writes a new item. Unknown field names raise
+  `TypeError`. `copy.copy(item)` and pydantic's `model_copy()` duplicate the instance as it is,
+  loaded state included.
 - A loaded instance keeps its key and its `immutable=True` values: `save()`/`put()` of one whose
   key (or a field its key template uses) or immutable value changed raises `ValueError`. Write a
   copy instead (`create(item.copy(...))`) and delete the old item.
@@ -427,7 +428,8 @@ await users.delete("u2", condition=User.visits == 0)
 Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, `add(n or set)`,
 `increment(n)`, `decrement(n)`, `remove()`, `delete(set)` (alias `discard`), `append(list)`,
 `append_or_create(list)`, `prepend(list)`. Nested paths work: `User.address["city"].set("Lund")`.
-`User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Updates
+`User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Numbers
+are checked against the field (`User.visits.increment(0.5)` raises `ValidationError`). Updates
 refresh the instance in place with the stored result, and re-render templated attributes whose
 fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
 attributes cannot be updated. Keys can be stored keys or field values

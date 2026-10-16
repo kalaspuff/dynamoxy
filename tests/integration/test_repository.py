@@ -753,6 +753,18 @@ async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -
     assert (await tickets.get_or_raise("t1")).country == "DK"
 
 
+async def test_numbers_of_other_types(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+    await tickets.update(ticket, Ticket.spent.increment(timedelta(seconds=90)))
+    assert ticket.spent == timedelta(seconds=90)
+    await ticket.update(Ticket.spent.set(Ticket.spent - timedelta(seconds=30)))
+    assert ticket.spent == timedelta(seconds=60)
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        await tickets.update(ticket, User.visits.increment(0.5))
+
+
 async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Device)
     devices = client.repository(Device)

@@ -88,12 +88,22 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _model_from_generic(cls: type) -> type | None:
-    for base in types.get_original_bases(cls):
-        if typing.get_origin(base) is Repository:
-            (argument,) = typing.get_args(base)
-            if isinstance(argument, type):
-                return argument
+def _model_of_class(cls: type) -> type | None:
+    """The model of a repository class, inherited too.
+
+    It is the class's ``model``, or ``Model`` of a ``Repository[Model]`` base (also of a generic
+    subclass of ``Repository``).
+    """
+    for klass in cls.__mro__:
+        declared = klass.__dict__.get("model")
+        if isinstance(declared, type):
+            return declared
+        for base in types.get_original_bases(klass) if "__orig_bases__" in klass.__dict__ else ():
+            origin = typing.get_origin(base)
+            arguments = typing.get_args(base)
+            generic = isinstance(origin, type) and issubclass(origin, Repository) and len(arguments) == 1
+            if generic and isinstance(arguments[0], type):
+                return arguments[0]
     return None
 
 
@@ -193,7 +203,7 @@ class Repository[M]:
     model: ClassVar[type[Any] | None] = None
 
     def __init__(self, client: Client, model: type[M] | None = None) -> None:
-        resolved = model or type(self).__dict__.get("model") or _model_from_generic(type(self))
+        resolved = model or _model_of_class(type(self))
         if resolved is None:
             raise TypeError(
                 f"{type(self).__name__} does not know its model: pass it (Repository(client, User)) "

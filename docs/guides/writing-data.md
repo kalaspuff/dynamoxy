@@ -105,6 +105,10 @@ removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another
 reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
 `NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
 
+`increment()`, `decrement()` and arithmetic (`User.score + 5`) check their operand against the
+field: an `int` field takes integers (`User.visits.increment(0.5)` raises `ValidationError`), a
+`timedelta` field durations.
+
 Templated attributes are rendered again when an update changes a field they use, including the
 automatic ones: a template of `updated_at` or `version` (`"{status}#{updated_at}"`) follows every
 update.
