@@ -271,7 +271,8 @@ class Event(Model, table="events"):
 
 Index projections: `Projection.all()` (default), `Projection.keys_only()`,
 `Projection.include("a", "b")`. Index names default to the attribute name. Items without the
-index key attributes are not in the index (sparse indexes).
+index key attributes are not in the index (sparse indexes). For models with an entity type,
+dynamoxy also projects the type attribute (`_type`) into `KEYS_ONLY`/`INCLUDE` indexes it creates.
 
 Key templates build keys from other fields (`partition_key(template="CUSTOMER#{customer_id}")`,
 `field(template="STATUS#{status}")`). Templated fields are derived, never passed to the
@@ -349,9 +350,11 @@ latest = await entries.query(account_id="a1", consistent=True).all()  # strongly
 Query builders are immutable: every method returns a new query, so queries can be shared and
 reused. `where()` takes the one sort key condition DynamoDB allows: a comparison, `between()` or
 `begins_with()` (combine bounds with `between()`); on a templated sort key it replaces the prefix
-condition dynamoxy adds. Index entries with a `KEYS_ONLY` or `INCLUDE` projection hold only some
-attributes: add `.hydrate()` to fetch the full items, or `.project(...)` to get dicts with just the
-attributes you need.
+condition dynamoxy adds. Entries of a `KEYS_ONLY` or `INCLUDE` global index hold only some
+attributes: model reads of one need `.hydrate()` (the full items) or `.project(...)` (dicts of the
+attributes it holds) and raise `ValueError` otherwise, before any request; `count()` and
+`exists()` need neither. Local indexes read the missing attributes from the table. A filter on an
+attribute a global index does not hold raises `ValueError` (it would never match).
 
 Reads are eventually consistent by default. `consistent=True` on `query`, `scan` and `count` (as
 on `get`) reflects every write that succeeded before the read, at twice the read cost: use it to

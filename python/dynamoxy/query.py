@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from dynamoxy import _core
 from dynamoxy.errors import DynamoxyError
-from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, and_, as_condition, path_of
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, and_, as_condition, attribute_roots, path_of
 from dynamoxy.results import ConsumedCapacity, Page
 
 if TYPE_CHECKING:
@@ -102,7 +102,11 @@ class _Reader[T]:
         auto_filter: Condition | None = None,
         auto_sort: Condition | None = None,
         explicit_sort: bool = False,
+        checks: tuple[ItemCheck, ...] = (),
         where_checks: tuple[ItemCheck, ...] = (),
+        projected: frozenset[str] | None = None,
+        partial: bool = False,
+        select_all: bool = False,
     ) -> None:
         self._client = client
         self._table = table
@@ -133,7 +137,14 @@ class _Reader[T]:
         self._auto_sort = auto_sort
         self._explicit_sort = explicit_sort  # the key condition selects a sort key value already
         self._where: Condition | None = None
+        self._checks = checks  # checks of every item on the client
         self._where_checks = where_checks  # checks once where() replaced the automatic condition
+        self._projected = projected  # the attributes an index holds (None: every attribute)
+        # A global index that does not hold every attribute of the model: its entries cannot be
+        # decoded into complete instances (hydrate() or project() instead).
+        self._partial = partial
+        # A local index that does not hold every attribute: DynamoDB reads the rest from the table.
+        self._select_all = select_all
 
     def _replace(self, **changes: Any) -> Self:
         clone = copy.copy(self)
@@ -151,13 +162,33 @@ class _Reader[T]:
         """Adds a filter (AND-ed with earlier ones).
 
         Filters run after items are read: they reduce what is returned, not what is consumed.
+
+        Raises:
+            ValueError: The filter reads attributes that the global secondary index being read
+                does not hold (``KEYS_ONLY`` / ``INCLUDE`` projections), so it would never match.
         """
         combined = self._filter
         for condition in conditions:
             checked = as_condition(condition)
             assert checked is not None
+            self._check_projected(checked)
             combined = checked if combined is None else combined & checked
         return self._replace(filter=combined)
+
+    def _check_projected(self, condition: Condition) -> None:
+        projected = self._projected
+        if projected is None:
+            return
+        roots = attribute_roots(condition)
+        missing = sorted(roots - projected) if roots is not None else []
+        if missing:
+            owner = f"{self._model.__name__} index" if self._model is not None else "index"
+            names = ", ".join(repr(name) for name in missing)
+            raise ValueError(
+                f"{owner} {self._index!r} does not hold {names} (see its projection), and DynamoDB filters the "
+                "index entries before anything else, so this filter would never match: query the table, add the "
+                "attribute to the index with Projection.include(...), or check the items after .hydrate() in Python"
+            )
 
     def limit(self, count: int) -> Self:
         """Returns at most ``count`` items in total (iteration, ``all()``, ``count()``, ``page()``)."""
@@ -241,6 +272,8 @@ class _Reader[T]:
                 roots = {path.elements[0] for path in paths}
                 paths += tuple(F(name) for name in key_names if name not in roots)
             params["projection_expression"] = builder.projection(paths)
+        elif self._select_all and not self._hydrate:
+            params["select"] = "ALL_ATTRIBUTES"
         if limit is not None:
             params["limit"] = limit
         if start is not None:
@@ -273,6 +306,13 @@ class _Reader[T]:
         self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
     ) -> tuple[Page[T], list[dict[str, Any]]]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
+        if self._partial and not self._hydrate and not self._projection:
+            owner = self._model.__name__ if self._model is not None else "the models"
+            raise ValueError(
+                f"index {self._index!r} does not hold every attribute of {owner} (see its projection), so its entries "
+                "are not complete items: add .hydrate() to read the full items, or .project(...) to get dicts of the "
+                "attributes it holds"
+            )
         builder = ExpressionBuilder()
         names = await self._resolve_key_names() if self._projection and self._limit is not None else None
         params = self._params(builder, start, limit, names)
@@ -283,7 +323,7 @@ class _Reader[T]:
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
         entries: list[dict[str, Any]] = output["items"]
         items = entries
-        checks = self._where_checks if self._where is not None else ()
+        checks = self._checks + self._where_checks if self._where is not None else self._checks
         if self._hydrate and self._hydrator is not None and entries:
             full = await self._hydrator(entries, self._consistent)
             pairs = [(entry, item) for entry, item in zip(entries, full, strict=True) if item is not None]
@@ -496,7 +536,10 @@ class _Reader[T]:
                 return total
 
     async def exists(self) -> bool:
-        """Whether at least one item matches."""
+        """Whether at least one item matches (model reads read the keys only: nothing is decoded)."""
+        names = self._key_names
+        if isinstance(names, tuple) and names:
+            return await self.limit(1)._with_projection(*names).first() is not None
         return await self.first() is not None
 
 

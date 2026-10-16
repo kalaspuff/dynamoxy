@@ -9,10 +9,21 @@ from typing import Any
 import pytest
 
 import dynamoxy
-from dynamoxy import F
+from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
+
+
+class Counter(Model, table="counters"):
+    """Every field has a default: entries of a KEYS_ONLY index would decode without an error."""
+
+    counter_id: Attr[str] = partition_key()
+    group: Attr[str] = field(default="a")
+    count: Attr[int] = field(default=0)
+    note: Attr[str | None] = field(default=None)
+
+    by_group = GlobalIndex(partition_key=group, projection=Projection.keys_only())
 
 
 def make_user(user_id: str = "u1", **changes: Any) -> User:
@@ -393,8 +404,9 @@ async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -
     query = users.query(index=User.by_status, status=Status.ACTIVE)
     keys = await query.project(User.user_id).all()
     assert sorted(row["user_id"] for row in keys) == ["u0", "u1", "u2"]
-    with pytest.raises(dynamoxy.ItemDecodeError):
+    with pytest.raises(ValueError, match=r"add \.hydrate\(\)"):
         await query.all()
+    assert await query.exists(), "exists() decodes nothing"
     hydrated = await query.hydrate().all()
     assert sorted(user.name for user in hydrated) == ["U0", "U1", "U2"]
 
@@ -653,3 +665,21 @@ async def test_updates_validate_values_they_set(client: dynamoxy.Client) -> None
         user, User.age.remove(), User.visits.add(-5)
     )  # optional fields can go; arithmetic is not checked
     assert (user.age, user.visits) == (None, -5)
+
+
+async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
+    await client.create_tables(Counter, Event)
+    counters = client.repository(Counter)
+    await counters.create(Counter(counter_id="c1", count=42, note="important"))
+    by_group = counters.query(index=Counter.by_group, group="a")
+    with pytest.raises(ValueError, match="does not hold every attribute of Counter"):
+        await by_group.first()  # it would be Counter(count=0, note=None), and save() would store that
+    assert await by_group.exists()
+    assert [(item.count, item.note) for item in await by_group.hydrate().all()] == [(42, "important")]
+    assert await by_group.project("counter_id").all() == [{"counter_id": "c1"}]
+    events = client.repository(Event)
+    expires = datetime(2030, 1, 1, tzinfo=UTC)
+    await events.put(Event(stream="x", seq=1, kind="k", payload={"a": 1}, expires_at=expires))
+    local = await events.query(index="by_kind_local", stream="x").all()
+    if backend == "memory":  # MiniStack ignores Select=ALL_ATTRIBUTES on local indexes; DynamoDB reads the table
+        assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"

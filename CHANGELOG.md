@@ -29,6 +29,24 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   "ORDER#2026"))`) failed in DynamoDB with `Conditions can be of length 1 or 2 only`, because
   dynamoxy had already added `begins_with(sk, "ORDER#")`. A `where()` condition now replaces it.
   `where()` takes one condition, as DynamoDB does: a second one raises `ValueError`.
+- Queries of a model with an entity type through a `KEYS_ONLY` or `INCLUDE` global index
+  returned nothing in DynamoDB, also with `.hydrate()`: the entity filter read `_type`, which
+  the index did not hold. dynamoxy now projects the type attribute into such indexes when it
+  creates them, keeps the entries of older indexes without it, and checks the entity of hydrated
+  items.
+- Model reads of an index that does not hold every field returned instances with defaults
+  instead of the stored values (`Counter(count=0)` for a stored 42), and `save()` of one stored
+  those defaults. Reads of such a global index now raise `ValueError` before any request unless
+  they `.hydrate()` or `.project(...)`; reads of such a local index ask DynamoDB for every
+  attribute; `exists()` reads keys only. Filters on attributes a global index does not hold
+  raise `ValueError` (they could never match).
+
+### Changed
+
+- [**breaking**] Model reads of global indexes that do not hold every field raise `ValueError`
+  unless they `.hydrate()` or `.project(...)` (see above, and
+  [ADR 0012](docs/adr/0012-reads-of-partial-indexes.md)). `KEYS_ONLY` and `INCLUDE` indexes that
+  dynamoxy creates for models with an entity type now also hold `_type`.
 
 ## [0.2.0] - 2026-10-15
 

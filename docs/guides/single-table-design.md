@@ -68,6 +68,11 @@ paid = await orders.query(index=Order.by_status, status=OrderStatus.PAID).all()
 
 Models that should not appear in an index simply have no such fields (sparse index).
 
+An index with a `KEYS_ONLY` or `INCLUDE` projection of a model with an entity type also holds
+the type attribute when dynamoxy creates it, so that queries can filter on it. Read the full items
+with `.hydrate()`, or dicts with `.project(...)` (see
+[indexes and projections](reading-data.md#indexes-and-projections)).
+
 ## Collections
 
 ```python

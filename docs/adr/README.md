@@ -21,3 +21,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
 | [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |
 | [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted |
+| [0012](0012-reads-of-partial-indexes.md) | Model reads of indexes that hold only some attributes: the type attribute is projected, entries are never decoded into instances | Accepted |

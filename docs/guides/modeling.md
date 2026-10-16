@@ -146,8 +146,10 @@ class Order(dynamoxy.Model, table="orders"):
 - `GlobalIndex`: any partition and sort key; eventually consistent; can be added later.
 - `LocalIndex`: same partition key, another sort key; strongly consistent reads possible; only at
   table creation; limits item collections to 10 GB.
-- Projections: `Projection.all()` (default), `keys_only()`, `include(...)`. Queries on partial
-  projections return partially filled instances unless you call `.hydrate()` or `.project(...)`.
+- Projections: `Projection.all()` (default), `keys_only()`, `include(...)`. Model queries of a
+  global index that does not hold every field need `.hydrate()` (full items) or `.project(...)`
+  (dicts), and raise `ValueError` otherwise; local indexes read the missing attributes from the
+  table (see [indexes and projections](reading-data.md#indexes-and-projections)).
 - Indexes are sparse: items without the index key attributes are not indexed.
 - Fields declared without a specifier have no class attribute yet while the class body runs:
   name them as strings (`GlobalIndex(partition_key="kind")`).

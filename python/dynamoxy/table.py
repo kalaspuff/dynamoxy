@@ -173,6 +173,12 @@ def definitions_for(models: Iterable[type]) -> list[TableDefinition]:
                         for name in projection.attributes
                     )
                     projection = Projection("INCLUDE", names)
+                if schema.type_attribute is not None and projection.type != "ALL":
+                    # Reads of the model filter on its entity type, which DynamoDB can only see in
+                    # the index entries when the index holds it.
+                    held = projection.attributes
+                    if schema.type_attribute not in held:
+                        projection = Projection("INCLUDE", (*held, schema.type_attribute))
                 definition = IndexDefinition(
                     name=spec.name,
                     kind=spec.kind,
