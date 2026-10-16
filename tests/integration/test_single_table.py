@@ -215,6 +215,22 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
     ]
 
 
+async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> None:
+    orders = app.repository(Order)
+    placed = await orders.create(order("o1", 1))
+    placed.customer_id = "c2"
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await placed.save()
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await orders.put(placed)
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await orders.batch_put([placed])
+    assert [(item.customer_id, item.order_id) for item in await orders.scan().all()] == [("c1", "o1")]
+    await orders.create(placed.copy())  # a copy is a new item
+    await orders.delete(Order.key(customer_id="c1", order_id="o1"))
+    assert [item.customer_id for item in await orders.scan().all()] == ["c2"]
+
+
 async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None:
     await client.create_tables(Price)
     prices = client.repository(Price)

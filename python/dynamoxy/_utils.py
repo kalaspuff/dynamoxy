@@ -6,13 +6,13 @@ import asyncio
 import inspect
 import weakref
 from datetime import timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from decimal import Decimal
 
-__all__ = ["MISSING", "LoopLocal", "Missing", "maybe_await", "number_text", "seconds"]
+__all__ = ["MISSING", "LoopLocal", "Missing", "maybe_await", "number_text", "seconds", "stored_identity"]
 
 
 class Missing:
@@ -98,3 +98,24 @@ def number_text(value: float | Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return "0" if text in ("-0", "") else text
+
+
+def stored_identity(value: Any) -> Any:
+    """A hashable form of a stored value that compares like DynamoDB compares values.
+
+    Numbers are equal when DynamoDB's canonical numbers are (``5``, ``5.0`` and
+    ``Decimal("5.00")``), sets are unordered and maps compare by their members.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return ("N", number_text(value))
+    if isinstance(value, (set, frozenset)):
+        return frozenset(stored_identity(element) for element in value)
+    if isinstance(value, (list, tuple)):
+        return tuple(stored_identity(element) for element in value)
+    if isinstance(value, dict):
+        return ("M", frozenset((name, stored_identity(element)) for name, element in value.items()))
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    return value

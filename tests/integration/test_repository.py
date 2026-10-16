@@ -723,6 +723,25 @@ async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> Non
     assert (await tickets.get_or_raise("t1")).revision == "v4"
 
 
+async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+    ticket.country = "NO"
+    with pytest.raises(ValueError, match=r"Ticket\.country is immutable"):
+        await ticket.save()
+    with pytest.raises(ValueError, match=r"Ticket\.country is immutable"):
+        await tickets.put(ticket)
+    assert (await tickets.get_or_raise("t1")).country == "SE"
+    ticket.country = "SE"
+    ticket.title = "fine"
+    await ticket.save()
+    assert ticket.version == 2
+    # An instance that was not loaded replaces the item, as put() does.
+    await tickets.put(Ticket(ticket_id="t1", country="DK"))
+    assert (await tickets.get_or_raise("t1")).country == "DK"
+
+
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
     await client.create_tables(Counter, Event)
     counters = client.repository(Counter)

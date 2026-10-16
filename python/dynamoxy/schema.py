@@ -656,6 +656,9 @@ class ModelSchema:
         self._key_identity: Callable[[Mapping[str, Any]], Any] = (
             operator.itemgetter(*self._key_attributes) if self._key_attributes else lambda _: ()
         )
+        self._immutable: tuple[FieldSpec, ...] = tuple(
+            spec for spec in fields if spec.immutable and spec.role is None and spec.template is None
+        )
         self._derived: tuple[FieldSpec, ...] = tuple(spec for spec in fields if spec.template is not None)
         # (name, check of non-None values, optional) of the fields `validate` checks.
         self._validated: tuple[tuple[str, Callable[[Any], Any], bool], ...] = tuple(

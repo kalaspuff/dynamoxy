@@ -39,7 +39,8 @@ It is authoritative for the installed version; this skill only summarizes it.
    global index need `.hydrate()` (full items) or `.project(...)` (dicts). `where()` takes one
    sort key condition (use `between()` for ranges).
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
-   business rules, and `client.transaction()` for multi-item changes.
+   business rules, and `client.transaction()` for multi-item changes. Keys and
+   `immutable=True` fields of loaded instances cannot change: write a copy as a new item.
    `Model.field.set(None)` removes an attribute.
 8. Catch specific errors: `ItemNotFoundError`, `ItemAlreadyExistsError`, `UniqueConstraintError`,
    `VersionConflictError`, `ConditionalCheckFailedError`, `TransactionCanceledError`

@@ -13,6 +13,15 @@
 All writes validate first, run hooks, maintain automatic and derived fields and unique guards,
 and refresh the instance from DynamoDB's response.
 
+A write of an instance that was loaded (read or written by dynamoxy) keeps what it was loaded
+with:
+
+- Its key cannot change (nor a field that a key template uses): `put()`, `save()` and batch
+  puts raise `ValueError` before any I/O. Write a copy as a new item
+  (`await orders.create(order.copy(customer_id="c2"))`) and delete the old one.
+- `immutable=True` fields keep their stored value: a changed one raises `ValueError`. A field
+  that the stored item does not have yet can get its first value.
+
 ## Writing through an instance
 
 An instance that a repository read or wrote remembers that repository, so it can write itself:
