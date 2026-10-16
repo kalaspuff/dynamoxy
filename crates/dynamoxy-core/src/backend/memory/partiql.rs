@@ -1,7 +1,7 @@
 //! A PartiQL subset for the in-memory backend: the statements applications use with DynamoDB.
 //!
 //! ```text
-//! SELECT * | path, ... FROM "table"["index"] [WHERE condition]
+//! SELECT * | path, ... FROM "table"["index"] [WHERE condition] [ORDER BY key [ASC|DESC], ...]
 //! INSERT INTO "table" VALUE {'attr': value, ...}
 //! UPDATE "table" SET path = value [, ...] [REMOVE path [, ...]] WHERE key = value [AND ...] [RETURNING ALL NEW *|ALL OLD *]
 //! DELETE FROM "table" WHERE key = value [AND ...] [RETURNING ALL OLD *]
@@ -14,9 +14,16 @@
 //! `set_add(path, <<...>>)`, `set_delete(path, <<...>>)`.
 //!
 //! WHERE conditions become the same [`Condition`] AST as expressions, so evaluation matches.
+//!
+//! `ORDER BY` follows DynamoDB, which runs such a SELECT as one query per partition key value:
+//! the WHERE clause must name the partition key values (`=` or `IN`, joined by `AND`, or `OR`s of
+//! them), the keys are the partition and sort key of the table or index, and with more than one
+//! partition key value the partition key must be one of them. Results are ordered by partition
+//! key value, then by sort key, each in the direction of its first `ORDER BY` key (ascending by
+//! default), and pages continue in that order.
 
 use super::items::{Failure, Prepared, apply, prepare_delete, prepare_put, prepare_update};
-use super::table::{CapacityMeter, StoredKey, Table, read_units};
+use super::table::{CapacityMeter, KeyInfo, StoredKey, Table, read_units};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
@@ -147,12 +154,37 @@ enum Returning {
     AllNew,
 }
 
+/// One key of an `ORDER BY` clause.
+#[derive(Debug)]
+struct OrderKey {
+    name: String,
+    descending: bool,
+}
+
 #[derive(Debug)]
 enum Statement {
-    Select { table: String, index: Option<String>, projection: Option<Vec<Path>>, condition: Option<Condition> },
-    Insert { table: String, item: Item },
-    Update { table: String, update: UpdateExpression, condition: Condition, returning: Returning },
-    Delete { table: String, condition: Condition, returning: Returning },
+    Select {
+        table: String,
+        index: Option<String>,
+        projection: Option<Vec<Path>>,
+        condition: Option<Condition>,
+        order: Vec<OrderKey>,
+    },
+    Insert {
+        table: String,
+        item: Item,
+    },
+    Update {
+        table: String,
+        update: UpdateExpression,
+        condition: Condition,
+        returning: Returning,
+    },
+    Delete {
+        table: String,
+        condition: Condition,
+        returning: Returning,
+    },
 }
 
 impl Statement {
@@ -518,7 +550,17 @@ impl Parser<'_> {
             } else {
                 None
             };
-            Statement::Select { table, index, projection, condition }
+            let mut order = Vec::new();
+            if self.at_keyword("ORDER") {
+                self.position += 1;
+                self.keyword("BY")?;
+                order.push(self.order_key()?);
+                while self.at_symbol(",") {
+                    self.position += 1;
+                    order.push(self.order_key()?);
+                }
+            }
+            Statement::Select { table, index, projection, condition, order }
         } else if self.at_keyword("INSERT") {
             self.position += 1;
             self.keyword("INTO")?;
@@ -582,6 +624,19 @@ impl Parser<'_> {
             return Err(invalid("Number of parameters in request and statement don't match."));
         }
         Ok(statement)
+    }
+
+    fn order_key(&mut self) -> Result<OrderKey> {
+        let path = self.path()?;
+        let [PathElement::Name(name)] = path.0.as_slice() else {
+            return Err(invalid("Argument to ORDER BY must be of type VariableReference. Type: PATH"));
+        };
+        let name = name.clone();
+        let descending = self.at_keyword("DESC");
+        if descending || self.at_keyword("ASC") {
+            self.position += 1;
+        }
+        Ok(OrderKey { name, descending })
     }
 
     fn set_value(&mut self, path: Path, update: &mut UpdateExpression) -> Result<()> {
@@ -672,6 +727,71 @@ fn equalities(condition: &Condition, out: &mut Vec<(String, AttributeValue)>) {
     }
 }
 
+/// The partition key values a WHERE clause requires (DynamoDB's "non-optional hash key
+/// conditions"): `key = value` and `key IN [...]`, joined by `AND`, or `OR`s of them. `None` when
+/// an item with another partition key value could match.
+fn partition_values(condition: &Condition, partition: &str) -> Option<Vec<AttributeValue>> {
+    let names_partition = |path: &Path| path.is_top_level() && path.root() == partition;
+    match condition {
+        Condition::Compare(Operand::Path(path), Comparator::Eq, Operand::Value(value))
+        | Condition::Compare(Operand::Value(value), Comparator::Eq, Operand::Path(path))
+            if names_partition(path) =>
+        {
+            Some(vec![value.clone()])
+        }
+        Condition::In(Operand::Path(path), candidates) if names_partition(path) => candidates
+            .iter()
+            .map(|candidate| match candidate {
+                Operand::Value(value) => Some(value.clone()),
+                _ => None,
+            })
+            .collect(),
+        Condition::And(left, right) => partition_values(left, partition).or_else(|| partition_values(right, partition)),
+        Condition::Or(left, right) => {
+            let mut values = partition_values(left, partition)?;
+            values.extend(partition_values(right, partition)?);
+            Some(values)
+        }
+        _ => None,
+    }
+}
+
+/// Checks an `ORDER BY` clause like DynamoDB and returns the directions of the partition and
+/// the sort key (`true`: descending).
+fn order_directions(order: &[OrderKey], condition: Option<&Condition>, key: &KeyInfo) -> Result<(bool, bool)> {
+    let condition =
+        condition.ok_or_else(|| invalid("Must have WHERE clause in the statement when using ORDER BY clause."))?;
+    let values = partition_values(condition, &key.partition.name).ok_or_else(|| {
+        invalid("Must have at least one non-optional hash key condition in WHERE clause when using ORDER BY clause.")
+    })?;
+    let sort = key.sort.as_ref().map(|sort| sort.name.as_str());
+    if let Some(other) =
+        order.iter().find(|entry| entry.name != key.partition.name && Some(entry.name.as_str()) != sort)
+    {
+        return Err(invalid(format!(
+            "Variable reference {} in ORDER BY clause must be part of the primary key",
+            other.name
+        )));
+    }
+    let direction =
+        |name: Option<&str>| order.iter().find(|entry| Some(entry.name.as_str()) == name).map(|entry| entry.descending);
+    let partition = direction(Some(&key.partition.name));
+    if values.len() > 1 && partition.is_none() {
+        return Err(invalid(
+            "Must have hash key in ORDER BY clause when more than one hash key condition specified in WHERE clause.",
+        ));
+    }
+    Ok((partition.unwrap_or(false), direction(sort).unwrap_or(false)))
+}
+
+/// The order of two values of a key attribute (by value, as DynamoDB orders keys).
+fn key_order(left: &Item, right: &Item, name: &str) -> std::cmp::Ordering {
+    match (left.get(name), right.get(name)) {
+        (Some(left), Some(right)) => left.cmp_scalar(right).unwrap_or(std::cmp::Ordering::Equal),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
 /// The full primary key named by a WHERE clause (required by UPDATE and DELETE).
 fn full_key(table: &Table, condition: &Condition) -> Result<Item> {
     let mut found = Vec::new();
@@ -746,7 +866,7 @@ fn select(
     limit: Option<u32>,
     next_token: Option<&str>,
 ) -> Result<ExecuteStatementOutput> {
-    let Statement::Select { table: table_name, index, projection, condition } = statement else {
+    let Statement::Select { table: table_name, index, projection, condition, order } = statement else {
         return Err(invalid("not a SELECT statement"));
     };
     let table = state.table(table_name)?;
@@ -758,32 +878,38 @@ fn select(
         return Err(invalid("Consistent reads are not supported on global secondary indexes"));
     }
     let key = index.map_or(&table.key, |index| &index.key);
-    let mut equal = Vec::new();
-    if let Some(condition) = condition {
-        equalities(condition, &mut equal);
-    }
-    let partition = equal
-        .iter()
-        .find(|(name, _)| *name == key.partition.name)
-        .map(|(_, value)| StoredKey::new(value.clone(), None));
+    let directions = if order.is_empty() { None } else { Some(order_directions(order, condition.as_ref(), key)?) };
+    // A WHERE clause that names the partition key values is one query per value (no scan): only
+    // their items are read, evaluated (`Limit`) and charged.
+    let partitions: Option<Vec<StoredKey>> = condition
+        .as_ref()
+        .and_then(|condition| partition_values(condition, &key.partition.name))
+        .map(|values| values.into_iter().map(|value| StoredKey::new(value, None)).collect());
+    let queried = |stored: &StoredKey| {
+        partitions.as_ref().is_none_or(|partitions| {
+            partitions.iter().any(|partition| stored.hash == partition.hash && stored.partition == partition.partition)
+        })
+    };
     let mut candidates: Vec<&Item> = match index {
-        None => table
-            .items
-            .iter()
-            .filter(|(stored, _)| {
-                partition.as_ref().is_none_or(|p| stored.hash == p.hash && stored.partition == p.partition)
-            })
-            .map(|(_, item)| item)
-            .collect(),
+        None => table.items.iter().filter(|(stored, _)| queried(stored)).map(|(_, item)| item).collect(),
         Some(index) => index
             .entries
             .iter()
-            .filter(|(stored, _)| {
-                partition.as_ref().is_none_or(|p| stored.hash == p.hash && stored.partition == p.partition)
-            })
+            .filter(|(stored, _)| queried(stored))
             .filter_map(|(_, table_key)| table.items.get(table_key))
             .collect(),
     };
+    if let Some((partition_descending, sort_descending)) = directions {
+        // Candidates are in key order within a partition, but partitions are in hash order.
+        let directed =
+            |ordering: std::cmp::Ordering, descending: bool| if descending { ordering.reverse() } else { ordering };
+        candidates.sort_by(|left, right| {
+            directed(key_order(left, right, &key.partition.name), partition_descending).then_with(|| match &key.sort {
+                Some(sort) => directed(key_order(left, right, &sort.name), sort_descending),
+                None => std::cmp::Ordering::Equal,
+            })
+        });
+    }
     let offset: usize = match next_token {
         Some(token) => token
             .strip_prefix("offset:")

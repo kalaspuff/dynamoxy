@@ -6,8 +6,9 @@
 Rust. It implements the DynamoDB API with its semantics: key and item validation, the full
 expression language, conditional writes and `ReturnValues`, global and local indexes with
 projections, 1 MB pages and `Limit`, batches, transactions with cancellation reasons and
-idempotency tokens, TTL, PartiQL (a subset), streams settings, backups, consumed capacity and
-DynamoDB's error codes and messages. Tests need no network, credentials, Docker or emulator.
+idempotency tokens, TTL, PartiQL (a subset, with `ORDER BY`), streams settings, backups,
+consumed capacity and DynamoDB's error codes and messages. Tests need no network, credentials,
+Docker or emulator.
 
 ```python
 import pytest

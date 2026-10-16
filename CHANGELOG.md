@@ -8,6 +8,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Features
+
+- The in-memory DynamoDB runs PartiQL `SELECT ... ORDER BY` with DynamoDB's rules and
+  messages: `ORDER BY` takes the partition and sort key of the table or index (`ASC`, `DESC`),
+  the `WHERE` clause must name the partition key values, and with several of them the partition
+  key must be ordered too. A `SELECT` whose `WHERE` clause names the partition key values
+  (`IN`, `OR`) reads only those partitions, so `Limit` and consumed capacity match DynamoDB.
+
 ### Fixed
 
 - A parallel scan that stopped early (`scan().segments(n).limit(k)`, `first()`, or a `break`

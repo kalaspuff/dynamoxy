@@ -667,6 +667,7 @@ rows = await table.query(F("pk") == "a", F("sk").between(1, 10)).filter(F("paylo
 await table.batch_write(puts=items, deletes=keys)
 
 rows = await client.execute('SELECT * FROM "legacy" WHERE pk = ?', "a")
+rows = await client.execute('SELECT * FROM "legacy" WHERE pk IN [?, ?] ORDER BY pk, sk DESC', "a", "b")
 await client.execute_transaction([("INSERT INTO \"legacy\" VALUE {'pk': ?, 'sk': ?}", ["b", 1])])
 ```
 
