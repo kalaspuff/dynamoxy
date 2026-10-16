@@ -111,7 +111,8 @@ mine = await users.scan().segment(worker_index, 8).all() # one segment per worke
 
 Scans read the whole table (or index) and cost accordingly. Use them for maintenance jobs,
 exports and migrations, not request paths. Repository scans only return the model's items (entity
-filter in shared tables, guard items excluded).
+filter in shared tables, guard items excluded). `segments(n)` reads every segment from its start:
+continue a scan with one segment's cursor, `.segment(index, total).after(cursor)`.
 
 ## Counting
 

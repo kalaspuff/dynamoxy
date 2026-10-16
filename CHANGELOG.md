@@ -8,6 +8,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Fixed
+
+- A parallel scan that stopped early (`scan().segments(n).limit(k)`, `first()`, or a `break`
+  out of its iteration) could hang forever, and keep the interpreter from exiting: its segment
+  tasks blocked on a full queue while they were cancelled. They now stop at once.
+
 ## [0.2.0] - 2026-10-15
 
 ### Features

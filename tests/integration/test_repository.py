@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,7 +11,7 @@ import pytest
 import dynamoxy
 from dynamoxy import F
 from tests.conftest import ClientFactory
-from tests.helpers import at, record_consistent_reads
+from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
 
 
@@ -308,6 +309,26 @@ async def test_query_order_paging_and_cursors(events: dynamoxy.Repository[Event]
         await query.where(Event.seq > 100).one()
     with pytest.raises(ValueError, match="invalid cursor"):
         await query.after("not-a-cursor").page()
+
+
+async def test_parallel_scans_that_stop_early_finish(events: dynamoxy.Repository[Event]) -> None:
+    await events.batch_put([Event(stream=f"s{index % 7}", seq=index, kind="k") for index in range(300)])
+    scan = events.scan().segments(4)
+
+    def workers() -> list[asyncio.Task[Any]]:
+        return [task for task in asyncio.all_tasks() if task.get_coro().__qualname__.endswith("worker")]  # type: ignore[union-attr]
+
+    # Every segment fills the queue while the scan stops after one item: nothing may block.
+    assert len(await asyncio.wait_for(scan.limit(1).all(), timeout=10)) == 1
+    assert len(await asyncio.wait_for(scan.limit(5).all(), timeout=10)) == 5
+    assert await asyncio.wait_for(scan.first(), timeout=10) is not None
+    assert not workers(), "first() stops its segments"
+    async for _ in scan:
+        break
+    await wait_for(lambda: not workers())
+    assert len(await scan.all()) == 300
+    with pytest.raises(TypeError, match="every segment from its start"):
+        await events.scan().after({"stream": "s1", "seq": 1}).segments(2).all()
 
 
 async def test_projection_returns_dicts(events: dynamoxy.Repository[Event]) -> None:
