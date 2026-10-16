@@ -91,10 +91,10 @@ class RetryPolicy:
         base_delay: Seconds before the first retry; doubles each time, with full jitter.
         max_delay: Longest delay between attempts, in seconds.
         retry_timeouts: Retry requests that timed out or lost their connection. Such a write may
-            have been applied already: idempotent writes and transactions (retried with their
-            idempotency token) are unaffected, but a conditional write the first attempt applied
-            fails its own condition on the retry (``create()`` raises ``ItemAlreadyExistsError``
-            with ``.item`` set to the item it wrote, and ``.attempts`` above 1).
+            have been applied already: transactions (with their idempotency token) and writes
+            that apply once even when sent twice are sent again; other writes, and answers that
+            the earlier attempt may have caused (a failed condition, old values), raise
+            ``WriteOutcomeUnknownError``.
     """
 
     max_attempts: int = 4

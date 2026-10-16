@@ -7,6 +7,15 @@
 //! Managed batches ([`Client::batch_write`], [`Client::batch_get`]) split any number of requests
 //! into DynamoDB-sized chunks, send them with bounded concurrency and resend unprocessed items
 //! with backoff for up to `batch_max_rounds` rounds.
+//!
+//! An attempt that timed out, lost its connection or got a 5xx may have been applied
+//! ([`Error::may_have_been_applied`]). Reads, transactions (whose client request token makes
+//! them idempotent) and writes that apply once even when sent twice are sent again. An update
+//! that would apply twice (`ADD n :one`, `SET l = list_append(l, :v)`) is not: the call fails
+//! with [`Error::OutcomeUnknown`]. So does a write whose next attempt gives an answer that the
+//! earlier attempt may have caused: a failed condition (`create()` of an item the earlier
+//! attempt created), a `DuplicateItem` of a PartiQL `INSERT`, or old values (the item the
+//! earlier attempt wrote, or the absence of the item it deleted).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -20,9 +29,11 @@ use tokio::time::Instant;
 use crate::backend::Backend;
 use crate::backend::aws::AwsBackend;
 use crate::backend::memory::MemoryBackend;
+use crate::backend::memory::partiql::{self, Effect};
 use crate::config::ClientConfig;
 use crate::error::{Error, ErrorKind, Result};
 use crate::events::{Event, EventBus, EventKind};
+use crate::expr::{Placeholders, is_idempotent, parse_update};
 use crate::metrics::{Metrics, Operation};
 use crate::retry::{backoff, backoff_at_least};
 use crate::types::{
@@ -31,9 +42,10 @@ use crate::types::{
     CreateTableInput, DeleteItemInput, ExecuteStatementInput, ExecuteStatementOutput, ExecuteTransactionInput,
     ExecuteTransactionOutput, GetItemInput, GetItemOutput, IndexStatus, KeysAndAttributes, ListBackupsInput,
     ListBackupsOutput, ListTablesInput, ListTablesOutput, ListTagsOutput, PutItemInput, QueryInput, QueryOutput,
-    RestoreTableFromBackupInput, RestoreTableToPointInTimeInput, ReturnConsumedCapacity, ScanInput, TableDescription,
-    TableStatus, TimeToLiveDescription, TransactGetItemsInput, TransactGetItemsOutput, TransactWriteItemsInput,
-    TransactWriteItemsOutput, UpdateItemInput, UpdateTableInput, UpdateTimeToLiveInput, WriteItemOutput, WriteRequest,
+    RestoreTableFromBackupInput, RestoreTableToPointInTimeInput, ReturnConsumedCapacity, ReturnValues, ScanInput,
+    TableDescription, TableStatus, TimeToLiveDescription, TransactGetItemsInput, TransactGetItemsOutput,
+    TransactWriteItemsInput, TransactWriteItemsOutput, UpdateItemInput, UpdateTableInput, UpdateTimeToLiveInput,
+    WriteItemOutput, WriteRequest,
 };
 use crate::value::Item;
 
@@ -190,18 +202,104 @@ fn merge_capacity(totals: &mut BTreeMap<String, ConsumedCapacity>, capacities: V
     }
 }
 
-/// Runs one backend method with the client's retry policy.
+/// Runs one backend method with the client's retry policy (and the [`Safety`] of a write).
 macro_rules! call {
-    ($self:ident, $operation:ident, $table:expr, $method:ident($($arg:ident),*)) => {{
+    ($self:ident, $operation:ident, $table:expr, $method:ident($($arg:ident),*)) => {
+        call!($self, $operation, $table, $method($($arg),*); Safety::resendable())
+    };
+    ($self:ident, $operation:ident, $table:expr, $method:ident($($arg:ident),*); $safety:expr) => {{
         let backend = Arc::clone(&$self.inner.backend);
         $self
-            .run(Operation::$operation, $table, move || {
+            .run(Operation::$operation, $table, $safety, move || {
                 let backend = Arc::clone(&backend);
                 $(let $arg = $arg.clone();)*
                 async move { backend.$method($($arg),*).await }
             })
             .await
     }};
+}
+
+/// Why the answer to an attempt after one that may have been applied settles nothing.
+enum Unsettled {
+    /// A failed condition, which the earlier attempt may have caused; the item DynamoDB returned.
+    Condition(Option<Item>),
+    /// Old values, which may be the earlier attempt's own write.
+    OldValues(Option<Item>),
+    /// No old item, which the earlier attempt may have deleted.
+    Deleted,
+}
+
+/// Which old values of an item write the earlier attempt may have shaped.
+#[derive(Clone, Copy, PartialEq)]
+enum OldValues {
+    /// None are returned, or new values only (the same after a second application).
+    Trusted,
+    /// Returned old values may be the earlier attempt's own write (`PutItem`, `UpdateItem`).
+    Present,
+    /// A missing old item may have been deleted by the earlier attempt (`DeleteItem`).
+    Absent,
+}
+
+/// Says whether the answer to a later attempt settles nothing (see [`Unsettled`]).
+type Settle<T> = fn(&Result<T>, OldValues) -> Option<Unsettled>;
+
+/// What a call does after an attempt that may have been applied ([`Error::may_have_been_applied`]).
+struct Safety<T> {
+    /// Whether the request may be sent again: applying it twice in a row is applying it once.
+    resend: bool,
+    /// Whether the answer to a later attempt settles nothing.
+    settle: Option<Settle<T>>,
+    /// The old values the request returns.
+    old_values: OldValues,
+}
+
+impl<T> Safety<T> {
+    /// Reads, transactions and writes that apply once even when sent twice, without conditions.
+    fn resendable() -> Self {
+        Self { resend: true, settle: None, old_values: OldValues::Trusted }
+    }
+}
+
+/// Whether the answer to a single-item write settles nothing.
+fn settle_item_write(result: &Result<WriteItemOutput>, old_values: OldValues) -> Option<Unsettled> {
+    match result {
+        Err(error) if error.kind() == Some(ErrorKind::ConditionalCheckFailed) => {
+            Some(Unsettled::Condition(error.as_service().and_then(|service| service.item.clone())))
+        }
+        Ok(output) if old_values == OldValues::Present && output.attributes.is_some() => {
+            Some(Unsettled::OldValues(output.attributes.clone()))
+        }
+        Ok(output) if old_values == OldValues::Absent && output.attributes.is_none() => Some(Unsettled::Deleted),
+        _ => None,
+    }
+}
+
+/// Whether the answer to a PartiQL write settles nothing.
+fn settle_statement(result: &Result<ExecuteStatementOutput>, old_values: OldValues) -> Option<Unsettled> {
+    match result {
+        Err(error) if matches!(error.kind(), Some(ErrorKind::ConditionalCheckFailed | ErrorKind::DuplicateItem)) => {
+            Some(Unsettled::Condition(error.as_service().and_then(|service| service.item.clone())))
+        }
+        Ok(output) if old_values == OldValues::Present && !output.items.is_empty() => {
+            Some(Unsettled::OldValues(output.items.first().cloned()))
+        }
+        Ok(output) if old_values == OldValues::Absent && output.items.is_empty() => Some(Unsettled::Deleted),
+        _ => None,
+    }
+}
+
+/// The [`Safety`] of a single-item write.
+fn item_write(resend: bool, old_values: OldValues) -> Safety<WriteItemOutput> {
+    Safety { resend, settle: Some(settle_item_write), old_values }
+}
+
+/// What a failed attempt says, for messages.
+fn reason(error: &Error) -> String {
+    match error {
+        Error::Transport { message, .. } => message.clone(),
+        Error::Service(service) => format!("{}: {}", service.code, service.message),
+        other => other.to_string(),
+    }
 }
 
 impl Client {
@@ -277,8 +375,15 @@ impl Client {
         self.inner.events.emit(kind, build);
     }
 
-    /// Runs `attempt` with retries, timeouts, events and metrics.
-    async fn run<T, F, Fut>(&self, operation: Operation, table: Option<&str>, mut attempt: F) -> Call<T>
+    /// Runs `attempt` with retries, timeouts, events and metrics; `safety` says what to do after
+    /// an attempt that may have been applied.
+    async fn run<T, F, Fut>(
+        &self,
+        operation: Operation,
+        table: Option<&str>,
+        safety: Safety<T>,
+        mut attempt: F,
+    ) -> Call<T>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -290,6 +395,8 @@ impl Client {
         let table = table.unwrap_or("");
         let mut attempts = 0;
         let mut throttles = 0;
+        // What the last attempt that may have been applied failed with.
+        let mut uncertain: Option<String> = None;
         let result = loop {
             if self.is_closed() {
                 break Err(Error::Shutdown);
@@ -334,6 +441,20 @@ impl Client {
                 });
                 break Err(error);
             }
+            if error.may_have_been_applied() {
+                if !safety.resend {
+                    break Err(Error::OutcomeUnknown {
+                        operation: operation.as_str(),
+                        message: format!(
+                            "the outcome is unknown: the attempt may have been applied ({}), and sending the write \
+                             again could apply it twice",
+                            reason(&error)
+                        ),
+                        item: None,
+                    });
+                }
+                uncertain = Some(reason(&error));
+            }
             let delay = backoff(&config.retry, attempts);
             self.emit(EventKind::RequestRetry, || {
                 Event::new(EventKind::RequestRetry, format!("retrying {} after: {error}", operation.as_str()))
@@ -344,6 +465,47 @@ impl Client {
             });
             tokio::time::sleep(delay).await;
         };
+        let unsettled = match (&uncertain, safety.settle) {
+            (Some(_), Some(settle)) => settle(&result, safety.old_values),
+            _ => None,
+        };
+        let result = match (unsettled, uncertain) {
+            (Some(unsettled), Some(earlier)) => {
+                let (message, item) = match unsettled {
+                    Unsettled::Condition(item) => (
+                        format!(
+                            "the outcome is unknown: an attempt may have been applied ({earlier}), and the next \
+                             attempt's condition may have failed because of it"
+                        ),
+                        item,
+                    ),
+                    Unsettled::OldValues(item) => (
+                        format!(
+                            "the outcome is unknown: an attempt may have been applied ({earlier}), so the old \
+                             values the next attempt returned may be its own"
+                        ),
+                        item,
+                    ),
+                    Unsettled::Deleted => (
+                        format!(
+                            "the outcome is unknown: an attempt may have deleted the item ({earlier}), so what it \
+                             held is not known"
+                        ),
+                        None,
+                    ),
+                };
+                Err(Error::OutcomeUnknown { operation: operation.as_str(), message, item })
+            }
+            _ => result,
+        };
+        if let Err(Error::OutcomeUnknown { message, .. }) = &result {
+            self.emit(EventKind::RequestOutcomeUnknown, || {
+                Event::new(EventKind::RequestOutcomeUnknown, format!("{}: {message}", operation.as_str()))
+                    .field("operation", operation.as_str())
+                    .field("table", table)
+                    .field("attempts", attempts)
+            });
+        }
         let duration = started.elapsed();
         let metrics = &self.inner.metrics;
         metrics.record(operation, duration, attempts, throttles, result.is_err());
@@ -377,19 +539,36 @@ impl Client {
     /// `PutItem`.
     pub async fn put_item(&self, input: PutItemInput) -> Call<WriteItemOutput> {
         let table = input.table_name.clone();
-        call!(self, PutItem, Some(&table), put_item(input))
+        let old_values =
+            if input.return_values == ReturnValues::AllOld { OldValues::Present } else { OldValues::Trusted };
+        call!(self, PutItem, Some(&table), put_item(input); item_write(true, old_values))
     }
 
-    /// `UpdateItem`.
+    /// `UpdateItem`. After an attempt that may have been applied, it is sent again only when it
+    /// is idempotent ([`is_idempotent`]).
     pub async fn update_item(&self, input: UpdateItemInput) -> Call<WriteItemOutput> {
         let table = input.table_name.clone();
-        call!(self, UpdateItem, Some(&table), update_item(input))
+        let resend = match &input.update_expression {
+            None => true,
+            Some(text) => {
+                let mut placeholders =
+                    Placeholders::new(&input.expression_attribute_names, &input.expression_attribute_values);
+                parse_update(text, &mut placeholders).is_ok_and(|update| is_idempotent(&update))
+            }
+        };
+        let old_values = match input.return_values {
+            ReturnValues::AllOld | ReturnValues::UpdatedOld => OldValues::Present,
+            _ => OldValues::Trusted,
+        };
+        call!(self, UpdateItem, Some(&table), update_item(input); item_write(resend, old_values))
     }
 
     /// `DeleteItem`.
     pub async fn delete_item(&self, input: DeleteItemInput) -> Call<WriteItemOutput> {
         let table = input.table_name.clone();
-        call!(self, DeleteItem, Some(&table), delete_item(input))
+        let old_values =
+            if input.return_values == ReturnValues::AllOld { OldValues::Absent } else { OldValues::Trusted };
+        call!(self, DeleteItem, Some(&table), delete_item(input); item_write(true, old_values))
     }
 
     /// `Query` (one page).
@@ -432,17 +611,35 @@ impl Client {
         call!(self, TransactWriteItems, table.as_deref(), transact_write_items(input))
     }
 
-    /// `ExecuteStatement` (PartiQL).
+    /// `ExecuteStatement` (PartiQL). Writes are classified like item writes ([`partiql::effect`]).
     pub async fn execute_statement(&self, input: ExecuteStatementInput) -> Call<ExecuteStatementOutput> {
-        call!(self, ExecuteStatement, None, execute_statement(input))
+        let safety = match partiql::effect(&input.statement, &input.parameters) {
+            Effect::Read => Safety::resendable(),
+            Effect::Resendable { returns_old, delete } => {
+                let old_values = match (returns_old, delete) {
+                    (false, _) => OldValues::Trusted,
+                    (true, false) => OldValues::Present,
+                    (true, true) => OldValues::Absent,
+                };
+                Safety { resend: true, settle: Some(settle_statement), old_values }
+            }
+            Effect::Once => Safety { resend: false, settle: Some(settle_statement), old_values: OldValues::Trusted },
+        };
+        call!(self, ExecuteStatement, None, execute_statement(input); safety)
     }
 
-    /// `BatchExecuteStatement` (PartiQL).
+    /// `BatchExecuteStatement` (PartiQL). With writes, it is not sent again after an attempt that
+    /// may have been applied: their errors are part of the response.
     pub async fn batch_execute_statement(
         &self,
         input: BatchExecuteStatementInput,
     ) -> Call<BatchExecuteStatementOutput> {
-        call!(self, BatchExecuteStatement, None, batch_execute_statement(input))
+        let reads = input
+            .statements
+            .iter()
+            .all(|statement| partiql::effect(&statement.statement, &statement.parameters) == Effect::Read);
+        let safety = if reads { Safety::resendable() } else { Safety { resend: false, ..Safety::resendable() } };
+        call!(self, BatchExecuteStatement, None, batch_execute_statement(input); safety)
     }
 
     /// `ExecuteTransaction` (PartiQL). Without a client request token one is generated.
@@ -480,7 +677,7 @@ impl Client {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
         let call = self
-            .run(Operation::DeleteTable, Some(table_name), move || {
+            .run(Operation::DeleteTable, Some(table_name), Safety::resendable(), move || {
                 let backend = Arc::clone(&backend);
                 let name = name.clone();
                 async move { backend.delete_table(&name).await }
@@ -496,7 +693,7 @@ impl Client {
     pub async fn describe_table(&self, table_name: &str) -> Call<TableDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::DescribeTable, Some(table_name), move || {
+        self.run(Operation::DescribeTable, Some(table_name), Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.describe_table(&name).await }
@@ -529,7 +726,7 @@ impl Client {
     pub async fn describe_time_to_live(&self, table_name: &str) -> Call<TimeToLiveDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::DescribeTimeToLive, Some(table_name), move || {
+        self.run(Operation::DescribeTimeToLive, Some(table_name), Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.describe_time_to_live(&name).await }
@@ -541,7 +738,7 @@ impl Client {
     pub async fn tag_resource(&self, resource_arn: &str, tags: BTreeMap<String, String>) -> Call<()> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = resource_arn.to_owned();
-        self.run(Operation::TagResource, None, move || {
+        self.run(Operation::TagResource, None, Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let (arn, tags) = (arn.clone(), tags.clone());
             async move { backend.tag_resource(&arn, tags).await }
@@ -553,7 +750,7 @@ impl Client {
     pub async fn untag_resource(&self, resource_arn: &str, tag_keys: Vec<String>) -> Call<()> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = resource_arn.to_owned();
-        self.run(Operation::UntagResource, None, move || {
+        self.run(Operation::UntagResource, None, Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let (arn, keys) = (arn.clone(), tag_keys.clone());
             async move { backend.untag_resource(&arn, keys).await }
@@ -578,7 +775,7 @@ impl Client {
             let arn = resource_arn.to_owned();
             let token = next_token.clone();
             let call = self
-                .run(Operation::ListTagsOfResource, None, move || {
+                .run(Operation::ListTagsOfResource, None, Safety::resendable(), move || {
                     let backend = Arc::clone(&backend);
                     let (arn, token) = (arn.clone(), token.clone());
                     async move { backend.list_tags_of_resource(&arn, token).await }
@@ -608,7 +805,7 @@ impl Client {
     pub async fn describe_continuous_backups(&self, table_name: &str) -> Call<ContinuousBackupsDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::DescribeContinuousBackups, Some(table_name), move || {
+        self.run(Operation::DescribeContinuousBackups, Some(table_name), Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.describe_continuous_backups(&name).await }
@@ -625,7 +822,7 @@ impl Client {
     ) -> Call<ContinuousBackupsDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::UpdateContinuousBackups, Some(table_name), move || {
+        self.run(Operation::UpdateContinuousBackups, Some(table_name), Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.update_continuous_backups(&name, enabled, recovery_period_in_days).await }
@@ -637,7 +834,7 @@ impl Client {
     pub async fn create_backup(&self, table_name: &str, backup_name: &str) -> Call<BackupDetails> {
         let backend = Arc::clone(&self.inner.backend);
         let (name, backup) = (table_name.to_owned(), backup_name.to_owned());
-        self.run(Operation::CreateBackup, Some(table_name), move || {
+        self.run(Operation::CreateBackup, Some(table_name), Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let (name, backup) = (name.clone(), backup.clone());
             async move { backend.create_backup(&name, &backup).await }
@@ -649,7 +846,7 @@ impl Client {
     pub async fn describe_backup(&self, backup_arn: &str) -> Call<BackupDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = backup_arn.to_owned();
-        self.run(Operation::DescribeBackup, None, move || {
+        self.run(Operation::DescribeBackup, None, Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let arn = arn.clone();
             async move { backend.describe_backup(&arn).await }
@@ -661,7 +858,7 @@ impl Client {
     pub async fn delete_backup(&self, backup_arn: &str) -> Call<BackupDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = backup_arn.to_owned();
-        self.run(Operation::DeleteBackup, None, move || {
+        self.run(Operation::DeleteBackup, None, Safety::resendable(), move || {
             let backend = Arc::clone(&backend);
             let arn = arn.clone();
             async move { backend.delete_backup(&arn).await }

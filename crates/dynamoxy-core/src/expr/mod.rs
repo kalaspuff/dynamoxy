@@ -24,7 +24,7 @@ pub use ast::{
 pub use eval::{condition_paths, evaluate, resolve, size_of, validate_condition};
 pub use parser::{ExpressionKind, Placeholders, parse_condition, parse_projection, parse_update};
 pub use projection::{Projector, project, validate_projection};
-pub use update::{apply_update, validate_update};
+pub use update::{apply_update, is_idempotent, validate_update};
 
 use crate::error::{Error, Result};
 use crate::value::AttributeValue;

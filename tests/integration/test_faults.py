@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, Model, field, partition_key, testing
+from dynamoxy import Attr, F, Model, field, partition_key, testing
 from tests.models import Event, User
 
 SAVED: list[str] = []
@@ -125,6 +125,57 @@ async def test_timeouts_of_writes_can_be_left_to_the_caller() -> None:
         with pytest.raises(dynamoxy.TransportError):
             await client.repository(Event).put(event(1))
         assert client.metrics().operations["PutItem"].attempts == 1
+
+
+async def test_conditions_that_fail_after_a_lost_response_have_an_unknown_outcome(client: dynamoxy.Client) -> None:
+    table = client.repository(Event).table
+    item = {"stream": "s", "seq": 1, "kind": "k"}
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    with (
+        testing.capture_events(client, "request.outcome_unknown") as events,
+        pytest.raises(dynamoxy.WriteOutcomeUnknownError, match="condition may have failed because of it") as caught,
+    ):
+        await table.put(item, condition=F("stream").not_exists())
+    # The first attempt wrote the item; the second one failed its condition because of it.
+    error = caught.value
+    assert isinstance(error, dynamoxy.TransportError)
+    assert not isinstance(error, dynamoxy.ConditionalCheckFailedError)
+    assert not error.retryable
+    assert error.item == item
+    assert error.attempts == 2
+    assert [entry.kind for entry in events] == [dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN]
+    assert await table.get({"stream": "s", "seq": 1}) == item
+
+    # Not a false ItemAlreadyExistsError for an item that this create() wrote.
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError):
+        await client.repository(Event).create(event(2))
+    assert await client.repository(Event).get("s", 2) is not None
+
+
+async def test_updates_that_would_apply_twice_are_not_sent_again(client: dynamoxy.Client) -> None:
+    table = client.repository(Event).table
+    await table.put({"stream": "s", "seq": 1, "kind": "k", "n": 0})
+    testing.inject_fault(client, operation="UpdateItem", lose_response=True)
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError, match="could apply it twice") as caught:
+        await table.update({"stream": "s", "seq": 1}, F("n").add(1))
+    assert caught.value.attempts == 1
+    assert caught.value.item is None
+    assert (await table.get({"stream": "s", "seq": 1}) or {})["n"] == 1, "applied once"
+
+    testing.inject_fault(client, operation="UpdateItem", lose_response=True)
+    updated = await table.update({"stream": "s", "seq": 1}, F("kind").set("x"))
+    assert updated is not None
+    assert updated["kind"] == "x", "an idempotent update is sent again"
+    assert client.metrics().operations["UpdateItem"].attempts == 3
+
+
+async def test_transactions_are_sent_again_after_a_lost_response(client: dynamoxy.Client) -> None:
+    users = client.repository(User)  # unique emails: create() is a transaction
+    testing.inject_fault(client, operation="TransactWriteItems", lose_response=True)
+    await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+    assert client.metrics().operations["TransactWriteItems"].attempts == 2
+    assert await users.get("u1") is not None
 
 
 async def test_slow_operations_emit_events() -> None:

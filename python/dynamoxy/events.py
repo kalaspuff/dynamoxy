@@ -46,6 +46,7 @@ class EventKind(StrEnum):
     REQUEST_RETRY = "request.retry"
     REQUEST_THROTTLED = "request.throttled"
     REQUEST_GAVE_UP = "request.gave_up"
+    REQUEST_OUTCOME_UNKNOWN = "request.outcome_unknown"
     REQUEST_SLOW = "request.slow"
     BATCH_UNPROCESSED = "batch.unprocessed"
     BATCH_INCOMPLETE = "batch.incomplete"

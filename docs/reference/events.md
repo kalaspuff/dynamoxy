@@ -13,6 +13,7 @@ Log records carry the event as `record.dynamoxy`. Change levels or disable kinds
 | `request.retry` | `dynamoxy.request` | info | core | A request failed with a retryable error and will be retried after a delay. |
 | `request.throttled` | `dynamoxy.request` | warning | core | DynamoDB throttled a request (ProvisionedThroughputExceeded, ThrottlingException, RequestLimitExceeded). |
 | `request.gave_up` | `dynamoxy.request` | error | core | A request still failed with a retryable error after the last attempt. |
+| `request.outcome_unknown` | `dynamoxy.request` | warning | core | A write may have been applied (an attempt timed out, lost its connection or got a 5xx), and no answer settled whether it was: it was not sent again, or the next attempt's answer may be the earlier attempt's doing. |
 | `request.slow` | `dynamoxy.request` | warning | core | A request took longer than slow_operation_threshold. |
 | `batch.unprocessed` | `dynamoxy.batch` | info | core | A batch request returned unprocessed items or keys; they are sent again. |
 | `batch.incomplete` | `dynamoxy.batch` | error | core | Unprocessed batch items or keys remained after batch_max_rounds rounds. |

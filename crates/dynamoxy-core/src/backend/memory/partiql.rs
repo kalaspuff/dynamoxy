@@ -27,8 +27,8 @@ use super::table::{CapacityMeter, KeyInfo, StoredKey, Table, read_units};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
-    Comparator, Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand, evaluate, project,
-    validate_update,
+    Comparator, Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand, evaluate,
+    is_idempotent, project, validate_update,
 };
 use crate::types::{
     BatchExecuteStatementInput, BatchExecuteStatementOutput, BatchStatementError, BatchStatementResponse,
@@ -708,6 +708,43 @@ fn set_value(values: Vec<AttributeValue>) -> Result<AttributeValue> {
 fn parse(statement: &str, parameters: &[AttributeValue]) -> Result<Statement> {
     let tokens = lex(statement)?;
     Parser { tokens, position: 0, parameters, next_parameter: 0 }.statement()
+}
+
+/// What a statement does, for the client's retries of attempts that may have been applied (any
+/// backend: statements are classified with this parser).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Effect {
+    /// A `SELECT`.
+    Read,
+    /// A write that may be sent again: `INSERT`, `DELETE` or an idempotent `UPDATE`.
+    Resendable {
+        /// `RETURNING ALL OLD *`.
+        returns_old: bool,
+        /// A `DELETE`.
+        delete: bool,
+    },
+    /// An `UPDATE` that would apply twice, or a statement this parser does not know.
+    Once,
+}
+
+/// The [`Effect`] of a statement.
+pub(crate) fn effect(statement: &str, parameters: &[AttributeValue]) -> Effect {
+    match parse(statement, parameters) {
+        Ok(Statement::Select { .. }) => Effect::Read,
+        Ok(Statement::Insert { .. }) => Effect::Resendable { returns_old: false, delete: false },
+        Ok(Statement::Update { update, returning, .. }) if is_idempotent(&update) => {
+            Effect::Resendable { returns_old: returning == Returning::AllOld, delete: false }
+        }
+        Ok(Statement::Update { .. }) => Effect::Once,
+        Ok(Statement::Delete { returning, .. }) => {
+            Effect::Resendable { returns_old: returning == Returning::AllOld, delete: true }
+        }
+        // Syntax this subset does not parse: reads are safe to send again, writes may not be.
+        Err(_) => {
+            let first = statement.split_whitespace().next().unwrap_or_default();
+            if first.eq_ignore_ascii_case("SELECT") { Effect::Read } else { Effect::Once }
+        }
+    }
 }
 
 /// The values of top-level `attr = value` equalities joined by `AND`.

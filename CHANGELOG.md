@@ -117,6 +117,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `delete()` say when the write was applied but the item it returned does not decode, and
   `timedelta` fields decode exactly. Find such items with a scan of `repository.table` and
   rewrite them, or declare the stored types (`Attr[int | str]`) while both are stored.
+- [**breaking**] A write retried after an attempt that may have been applied (a timeout, a lost
+  connection, a 5xx) no longer reports a failure it may have caused itself, and is no longer
+  applied twice. A failed condition after such an attempt (`create()` of the item the first
+  attempt wrote, a version check, a PartiQL `INSERT`) and old values it may have shaped raise
+  `WriteOutcomeUnknownError` (a `TransportError`, with `.item`) instead of
+  `ItemAlreadyExistsError`, `VersionConflictError` or `ConditionalCheckFailedError`. Updates that
+  would apply twice (`add()` and `increment()` of numbers, `append()`, arithmetic in PartiQL)
+  are not sent again and raise it too; before, they were applied twice. Transactions, and writes
+  that apply once even when sent twice, are still sent again. Each such call emits
+  `request.outcome_unknown`, and `testing.inject_fault(..., lose_response=True)` reproduces it.
 
 ## [0.2.0] - 2026-10-15
 

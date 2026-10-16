@@ -88,6 +88,7 @@ from dynamoxy.errors import (
     UnprocessedItemsError,
     ValidationError,
     VersionConflictError,
+    WriteOutcomeUnknownError,
     cancellation_reasons,
 )
 from dynamoxy.events import Event, EventHook, EventKind, LoggingConfig
@@ -220,6 +221,7 @@ __all__ = [
     "ValidationError",
     "Version",
     "VersionConflictError",
+    "WriteOutcomeUnknownError",
     "__version__",
     "after_delete",
     "after_load",

@@ -8,6 +8,8 @@
 //!   produces the same codes and messages as DynamoDB for the same situations. Its
 //!   [`ErrorKind`] classifies the service error code in one place ([`ErrorKind::from_code`]).
 //! * [`Error::Transport`] covers network failures and timeouts.
+//! * [`Error::OutcomeUnknown`] is a write that may have been applied, without an answer that
+//!   says whether it was (see [`crate::client`]).
 
 use std::fmt;
 
@@ -38,6 +40,20 @@ pub enum Error {
         message: String,
         /// Whether retrying the operation may succeed.
         retryable: bool,
+    },
+    /// A write that may have been applied, without an answer that says whether it was: an
+    /// attempt timed out, lost its connection or got a 5xx, and the write was not sent again (it
+    /// could apply twice), or the answer to the next attempt may be the earlier attempt's doing
+    /// (a failed condition, or old values).
+    #[error("{operation} failed: {message}")]
+    OutcomeUnknown {
+        /// The operation (`PutItem`, ...).
+        operation: &'static str,
+        /// What happened.
+        message: String,
+        /// The item DynamoDB returned to the later attempt (with its failed condition, or as its
+        /// old values), when there is one.
+        item: Option<Item>,
     },
     /// Credentials are missing or could not be loaded.
     #[error("could not load AWS credentials: {0}")]
@@ -296,6 +312,17 @@ impl Error {
         match self {
             Self::Service(error) => error.is_retryable(),
             Self::Transport { retryable, .. } => *retryable,
+            _ => false,
+        }
+    }
+
+    /// Whether the request may have been applied although it failed: a timeout, a lost
+    /// connection or a 5xx (DynamoDB: "the operation may have succeeded or failed"). DynamoDB
+    /// applies nothing of a request it throttles or rejects.
+    pub fn may_have_been_applied(&self) -> bool {
+        match self {
+            Self::Transport { .. } => true,
+            Self::Service(error) => error.kind == ErrorKind::Internal,
             _ => false,
         }
     }
