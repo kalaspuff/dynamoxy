@@ -119,6 +119,27 @@ def test_epoch_datetimes() -> None:
         codecs.DateTimeCodec("weekly")  # type: ignore[arg-type]
 
 
+def test_epoch_datetimes_are_exact() -> None:
+    milliseconds = codecs.DateTimeCodec("epoch_ms")
+    # As a float, this timestamp is 2183226373.4109998: truncated, it would be stored 1 ms early.
+    moment = datetime(2039, 3, 8, 19, 46, 13, 411000, tzinfo=UTC)
+    assert milliseconds.encode(moment) == 2183226373411
+    assert milliseconds.decode(2183226373411) == moment
+    assert milliseconds.encode(milliseconds.decode(1095954883735)) == 1095954883735, "loading and saving keeps it"
+    seconds = codecs.DateTimeCodec("epoch")
+    assert seconds.encode(datetime(1969, 12, 31, 23, 59, 59, 500000, tzinfo=UTC)) == -1, "rounded down before 1970 too"
+    assert seconds.decode(Decimal("1767225600.25")) == datetime(2026, 1, 1, 0, 0, 0, 250000, tzinfo=UTC)
+    assert seconds.decode(1767225600) == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+@given(st.integers(min_value=-(10**12), max_value=253402300799999))
+def test_epoch_milliseconds_round_trip(stored: int) -> None:
+    codec = codecs.DateTimeCodec("epoch_ms")
+    moment = codec.decode(stored)
+    assert codec.encode(moment) == stored
+    assert codec.decode(codec.encode(moment)) == moment
+
+
 def test_datetime_format_of_resolved_codecs() -> None:
     moment = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     assert resolve_codec(datetime, datetime_format="iso_z").encode(moment) == "2026-01-02T03:04:05.000000Z"

@@ -179,3 +179,15 @@ async def test_unique_values_stored_as_null_can_be_set(client: dynamoxy.Client) 
         "_unique#Profile#handle#grace",
         "_unique#Profile#seat#7",
     ]
+
+
+async def test_unique_numbers_compare_as_numbers(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    await profiles.create(Profile(profile_id="p1", seat=Decimal("5.0")))
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await profiles.create(Profile(profile_id="p2", seat=Decimal(5)))
+    loaded = await profiles.get_or_raise("p1")
+    await profiles.update(loaded, Profile.seat.set(Decimal(6)))
+    await profiles.create(Profile(profile_id="p3", seat=Decimal("5.00")))  # the guard of 5 went with the change
+    assert await guards(profiles) == ["_unique#Profile#seat#5", "_unique#Profile#seat#6"]

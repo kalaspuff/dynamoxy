@@ -17,10 +17,11 @@ import re
 import string
 import typing
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
-from dynamoxy._utils import MISSING
+from dynamoxy._utils import MISSING, number_text
 from dynamoxy.codecs import (
     AnyCodec,
     BoolCodec,
@@ -123,7 +124,12 @@ class KeyTemplate:
         return not self.fields
 
     def render(self, values: Mapping[str, Any], codecs: Mapping[str, Codec[Any]]) -> str | None:
-        """The key for ``values`` (Python values by field name), or ``None`` if one is missing."""
+        """The key for ``values`` (Python values by field name), or ``None`` if one is missing.
+
+        The text is the same for a new instance and for the item read back: ``Decimal`` values
+        are rendered as DynamoDB stores them (``1.5`` for ``Decimal("1.50")``), and datetimes
+        formatted with a spec are formatted in UTC, as they are stored.
+        """
         text = ""
         for literal, name, spec in self._parts:
             text += literal
@@ -133,12 +139,17 @@ class KeyTemplate:
             if value is None:
                 return None
             if spec:
+                if isinstance(value, datetime) and value.tzinfo is not None:
+                    value = value.astimezone(UTC)
                 text += format(value, spec)
                 continue
             codec = codecs.get(name)
             stored = codec.encode(value) if codec is not None else value
             if isinstance(stored, bytes):
                 raise ValueError(f"key template {self.template!r}: {name} is binary and cannot be part of a text key")
+            if isinstance(stored, Decimal) and codec is not None and type(_inner_codec(codec)) is DecimalCodec:
+                text += number_text(stored)
+                continue
             text += str(stored)
         return text
 
@@ -993,6 +1004,10 @@ class ModelSchema:
         for name in used:
             remaining.pop(name, None)
         return value, remaining
+
+
+def _inner_codec(codec: Codec[Any]) -> Codec[Any]:
+    return codec.inner if isinstance(codec, OptionalCodec) else codec
 
 
 def _value_check(spec: FieldSpec) -> Callable[[Any], Any]:

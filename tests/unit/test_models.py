@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -22,8 +22,17 @@ from dynamoxy import (
     ttl,
     updated_at,
 )
+from dynamoxy.constraints import guard_key
 from dynamoxy.expressions import ExpressionBuilder
 from tests.models import Customer, Event, LineItem, Order, OrderStatus, Status, User
+
+
+class Price(Model, table="prices"):
+    sku: Attr[str] = partition_key()
+    sk: Attr[str] = sort_key(template="PRICE#{amount}#{at:%Y-%m-%d}")
+    amount: Attr[Decimal]
+    at: Attr[datetime]
+    seat: Attr[Decimal | None] = field(default=None, unique=True)
 
 
 def make_user(**changes: Any) -> User:
@@ -297,6 +306,22 @@ def test_copy_starts_automatic_fields_empty() -> None:
     assert (clone.user_id, clone.name) == ("u1", "Bob")
     assert (stored.version, stored.name) == (3, "Ada"), "the original keeps its values"
     assert stored.copy(version=3).version == 3, "unless they are given"
+
+
+def test_key_templates_render_what_is_stored() -> None:
+    local = timezone(timedelta(hours=2))
+    price = Price(sku="a", amount=Decimal("1.50"), at=datetime(2026, 1, 1, 0, 30, tzinfo=local))
+    item = price.to_item()
+    assert item["sk"] == "PRICE#1.5#2025-12-31", "the number as DynamoDB stores it, the date in UTC"
+    assert Price.from_item({**item, "amount": Decimal("1.5")}).to_item()["sk"] == item["sk"], "read back: the same key"
+
+
+def test_guard_keys_use_the_stored_numbers() -> None:
+    schema = schema_of(Price)
+    spec = schema.fields["seat"]
+    keys = {guard_key(schema, spec, value)["sku"] for value in (Decimal("5.0"), Decimal(5), 5, 5.0, Decimal("5E0"))}
+    assert keys == {"_unique#Price#seat#5"}
+    assert guard_key(schema, spec, 1e16)["sku"] == "_unique#Price#seat#10000000000000000"
 
 
 def test_python_copies_have_their_own_persistence_state() -> None:
