@@ -71,8 +71,11 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
 #: reads), or an async function that looks them up (dict-level reads of any table).
 type KeyNames = tuple[str, ...] | Callable[[], Awaitable[tuple[str, ...]]]
 
-#: How much larger the next request gets when filters dynamoxy adds itself removed items from a
-#: page: a few requests then find what a limit asks for.
+#: A check of a stored item on the client, for conditions a request cannot express.
+type ItemCheck = Callable[[dict[str, Any]], bool]
+
+#: How much larger the next request gets when filters dynamoxy adds itself (or checks on the
+#: client) removed items from a page: a few requests then find what a limit asks for.
 _GROWTH = 4
 
 
@@ -97,6 +100,9 @@ class _Reader[T]:
         decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
         key_names: KeyNames | None = None,
         auto_filter: Condition | None = None,
+        auto_sort: Condition | None = None,
+        explicit_sort: bool = False,
+        where_checks: tuple[ItemCheck, ...] = (),
     ) -> None:
         self._client = client
         self._table = table
@@ -122,6 +128,12 @@ class _Reader[T]:
         # Filters dynamoxy adds (the entity type, guard items of unique values): unlike the
         # caller's filters, they rarely remove items, so a limit still bounds each request.
         self._auto_filter = auto_filter
+        # The sort key condition dynamoxy adds (a template's constant prefix); where() replaces it,
+        # since DynamoDB takes one sort key condition per query.
+        self._auto_sort = auto_sort
+        self._explicit_sort = explicit_sort  # the key condition selects a sort key value already
+        self._where: Condition | None = None
+        self._where_checks = where_checks  # checks once where() replaced the automatic condition
 
     def _replace(self, **changes: Any) -> Self:
         clone = copy.copy(self)
@@ -213,8 +225,12 @@ class _Reader[T]:
         params: dict[str, Any] = {"table_name": self._table, "consistent_read": self._consistent}
         if self._index is not None:
             params["index_name"] = self._index
-        if self._key_condition is not None:
-            params["key_condition_expression"] = builder.condition(self._key_condition)
+        key = self._key_condition
+        sort = self._where if self._where is not None else self._auto_sort
+        if sort is not None:
+            key = sort if key is None else key & sort
+        if key is not None:
+            params["key_condition_expression"] = builder.condition(key)
         filters = [condition for condition in (self._auto_filter, self._filter) if condition is not None]
         if filters:
             params["filter_expression"] = builder.condition(filters[0] if len(filters) == 1 else and_(*filters))
@@ -267,11 +283,16 @@ class _Reader[T]:
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
         entries: list[dict[str, Any]] = output["items"]
         items = entries
+        checks = self._where_checks if self._where is not None else ()
         if self._hydrate and self._hydrator is not None and entries:
             full = await self._hydrator(entries, self._consistent)
             pairs = [(entry, item) for entry, item in zip(entries, full, strict=True) if item is not None]
+            if checks:
+                pairs = [(entry, item) for entry, item in pairs if all(check(item) for check in checks)]
             entries = [entry for entry, _ in pairs]
             items = [item for _, item in pairs]
+        elif checks:
+            entries = items = [item for item in entries if all(check(item) for check in checks)]
         capacity = output["consumed_capacity"]
         last = output["last_evaluated_key"]
         decode_page = self._decode_page
@@ -440,7 +461,11 @@ class _Reader[T]:
         return items
 
     async def count(self) -> int:
-        """The number of matching items (``Select=COUNT``; reads every page, returns no items)."""
+        """The number of matching items (``Select=COUNT``; reads every page, returns no items).
+
+        DynamoDB counts what matches the key condition and the filters; checks dynamoxy makes on
+        the client (see ``where()``) do not apply.
+        """
         if self._segments is not None:
             totals = await asyncio.gather(
                 *(
@@ -494,16 +519,27 @@ class Query[T](_Reader[T]):
         return self._replace(forward=not self._forward)
 
     def where(self, *conditions: Condition | bool) -> Self:
-        """Adds sort key conditions to the key condition.
+        """Adds the sort key condition to the key condition.
 
-        Allowed: ``=``, ``<``, ``<=``, ``>``, ``>=``, ``between`` or ``begins_with`` on the sort key.
+        Allowed: ``=``, ``<``, ``<=``, ``>``, ``>=``, ``between`` or ``begins_with`` on the sort key,
+        one per query (DynamoDB takes one sort key condition). It replaces the ``begins_with`` that
+        model queries add for templated sort keys with a constant prefix
+        (``orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2026"))``).
+
+        Raises:
+            ValueError: The query has a sort key condition already (a ``where()`` before, or a sort
+                key value given to ``query()``), or several conditions are given: combine bounds
+                with ``between()``.
         """
-        combined = self._key_condition
-        for condition in conditions:
-            checked = as_condition(condition)
-            assert checked is not None
-            combined = checked if combined is None else combined & checked
-        return self._replace(key_condition=combined)
+        checked = [as_condition(condition) for condition in conditions]
+        if not checked:
+            return self
+        if len(checked) > 1 or self._where is not None or self._explicit_sort:
+            raise ValueError(
+                "a query takes one sort key condition (DynamoDB allows one): combine bounds with between(), "
+                "and give either a sort key value to query() or a where() condition"
+            )
+        return self._replace(where=checked[0])
 
     def project(self, *paths: Path[Any] | str) -> Query[dict[str, Any]]:
         """Returns only these attributes, as dicts (by field name for model queries)."""

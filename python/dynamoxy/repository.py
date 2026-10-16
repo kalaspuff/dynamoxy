@@ -38,6 +38,7 @@ subclasses included.
 
 from __future__ import annotations
 
+import functools
 import types
 import typing
 from datetime import UTC, datetime
@@ -240,14 +241,16 @@ class Repository[M]:
             return self.schema.key_from(target, {})
         return self.schema.key_from((target,), {})
 
-    def _reader_options(self, spec: IndexSpec | None) -> dict[str, Any]:
+    def _reader_options(self, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
         """What reads of the table or of an index need to return this model's items only."""
         # Options depend on the schema alone (conditions are immutable): built once per target.
-        cache: dict[str | None, dict[str, Any]] = self.schema.__dict__.setdefault("_reader_options_cache", {})
-        key = spec.name if spec is not None else None
+        cache: dict[tuple[str | None, bool], dict[str, Any]] = self.schema.__dict__.setdefault(
+            "_reader_options_cache", {}
+        )
+        key = (spec.name if spec is not None else None, query)
         options = cache.get(key)
         if options is None:
-            options = cache[key] = _reader_options(self.schema, spec)
+            options = cache[key] = _reader_options(self.schema, spec, query=query)
         return options
 
     async def _get_raw(self, key: dict[str, Any], *, consistent: bool = True) -> dict[str, Any] | None:
@@ -355,10 +358,15 @@ class Repository[M]:
         else:
             partition_value, remaining = self.schema.index_key(spec, key_values)
         condition: Condition = F(partition_spec.attribute) == partition_value
+        automatic: Condition | None = None
+        explicit = False
         if sort_spec is not None:
-            sort_condition, remaining = self._sort_condition(sort_spec, remaining)
-            if sort_condition is not None:
+            sort_condition, is_automatic, remaining = self._sort_condition(sort_spec, remaining)
+            if is_automatic:
+                automatic = sort_condition
+            elif sort_condition is not None:
                 condition = condition & sort_condition
+                explicit = True
         if remaining:
             raise ValueError(
                 f"{self.model_class.__name__}.query(): unexpected arguments {', '.join(sorted(remaining))}"
@@ -374,7 +382,9 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
-            **self._reader_options(spec),
+            auto_sort=automatic,
+            explicit_sort=explicit,
+            **self._reader_options(spec, query=True),
         )
 
     def _index(self, index: str | GlobalIndex | LocalIndex | None) -> IndexSpec | None:
@@ -395,19 +405,26 @@ class Repository[M]:
             remaining.pop(name, None)
         return value, remaining
 
-    def _sort_condition(self, spec: FieldSpec, remaining: dict[str, Any]) -> tuple[Condition | None, dict[str, Any]]:
+    def _sort_condition(
+        self, spec: FieldSpec, remaining: dict[str, Any]
+    ) -> tuple[Condition | None, bool, dict[str, Any]]:
+        """The sort key condition of a query, whether dynamoxy added it, and the unused arguments.
+
+        A sort key value among the arguments selects it; otherwise a template's constant prefix
+        (``"ORDER#{order_id}"``) or a constant template restricts the query to this model's items.
+        """
         template = spec.template
         names = {spec.name, spec.attribute}
         if names & remaining.keys() or (
             template is not None and template.fields and all(name in remaining for name in template.fields)
         ):
             value, remaining = self._partition_value(spec, remaining)
-            return F(spec.attribute) == value, remaining
+            return F(spec.attribute) == value, False, remaining
         if template is not None and template.prefix and not template.is_constant:
-            return F(spec.attribute).begins_with(template.prefix), remaining
+            return F(spec.attribute).begins_with(template.prefix), True, remaining
         if template is not None and template.is_constant:
-            return F(spec.attribute) == template.template, remaining
-        return None, remaining
+            return F(spec.attribute) == template.template, True, remaining
+        return None, False, remaining
 
     async def _hydrate(self, items: list[dict[str, Any]], consistent: bool) -> list[dict[str, Any] | None]:
         """The full items of index entries, in order (``None`` for items deleted meanwhile)."""
@@ -438,7 +455,7 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
-            **self._reader_options(spec),
+            **self._reader_options(spec, query=False),
         )
 
     async def count(
@@ -1177,19 +1194,49 @@ def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[s
     return tuple(names)
 
 
-def _reader_options(schema: ModelSchema, spec: IndexSpec | None) -> dict[str, Any]:
+def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
     """Keyword arguments of ``Query``/``Scan`` that keep a read to the items of one model.
 
     * Models with an entity type are filtered on it.
     * Models with unique attributes and no entity type skip guard items, by their partition key
-      prefix.
+      prefix. Queries of the table, of local indexes and of global indexes keyed on the table's
+      partition key need no filter: they select one partition key value (and DynamoDB refuses
+      filters on the key attributes of what a query reads).
+    * Queries of templated sort keys check the prefix on the client when ``where()`` replaces
+      the ``begins_with`` condition and no entity type tells the models apart.
 
     The filters are dynamoxy's own (``auto_filter``): they rarely remove items, so a limit still
     bounds each request.
     """
-    options: dict[str, Any] = {"key_names": index_key_attributes(schema, spec)}
-    if schema.type_attribute is not None and schema.entity is not None:
-        options["auto_filter"] = schema._path(schema.type_attribute) == schema.entity
+    names = index_key_attributes(schema, spec)
+    options: dict[str, Any] = {"key_names": names}
+    type_attribute, entity = schema.type_attribute, schema.entity
+    if type_attribute is not None and entity is not None:
+        options["auto_filter"] = schema._path(type_attribute) == entity
     elif schema.unique_fields and schema.partition_key is not None:
-        options["auto_filter"] = ~schema._path(schema.partition_key.attribute).begins_with(GUARD_PREFIX)
+        partition = schema.partition_key.attribute
+        target_keys = (
+            {spec.partition_key.attribute, *([spec.sort_key.attribute] if spec.sort_key else ())}
+            if spec is not None
+            else set(schema._key_attributes)
+        )
+        if not query or partition not in target_keys:
+            options["auto_filter"] = ~schema._path(partition).begins_with(GUARD_PREFIX)
+    sort = (spec.sort_key if spec is not None else schema.sort_key) if query else None
+    template = sort.template if sort is not None else None
+    typed = type_attribute is not None and entity is not None
+    if template is not None and template.prefix and not typed:
+        if template.is_constant:
+            options["where_checks"] = (functools.partial(_has_value, sort.attribute, template.template),)  # type: ignore[union-attr]
+        else:
+            options["where_checks"] = (functools.partial(_has_prefix, sort.attribute, template.prefix),)  # type: ignore[union-attr]
     return options
+
+
+def _has_prefix(attribute: str, prefix: str, item: dict[str, Any]) -> bool:
+    value = item.get(attribute)
+    return isinstance(value, str) and value.startswith(prefix)
+
+
+def _has_value(attribute: str, expected: str, item: dict[str, Any]) -> bool:
+    return item.get(attribute) == expected

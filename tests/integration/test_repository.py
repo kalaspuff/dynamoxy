@@ -338,6 +338,17 @@ async def test_limits_bound_requests_and_cursors_continue_after_the_last_item(
     assert rows == [{"kind": "even"}] * 3, "key attributes read for cursors stay out of projections"
 
 
+async def test_queries_take_one_sort_key_condition(events: dynamoxy.Repository[Event]) -> None:
+    query = events.query(stream="q")
+    with pytest.raises(ValueError, match="one sort key condition"):
+        query.where(Event.seq >= 1).where(Event.seq <= 5)
+    with pytest.raises(ValueError, match="one sort key condition"):
+        query.where(Event.seq >= 1, Event.seq <= 5)
+    with pytest.raises(ValueError, match="one sort key condition"):
+        events.query(stream="q", seq=1).where(Event.seq >= 1)
+    assert await query.where(Event.seq.between(1, 5)).all() == []
+
+
 async def test_parallel_scans_that_stop_early_finish(events: dynamoxy.Repository[Event]) -> None:
     await events.batch_put([Event(stream=f"s{index % 7}", seq=index, kind="k") for index in range(300)])
     scan = events.scan().segments(4)

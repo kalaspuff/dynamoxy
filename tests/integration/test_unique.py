@@ -7,7 +7,16 @@ from typing import Any
 import pytest
 
 import dynamoxy
+from dynamoxy import Attr, Model, field, partition_key, sort_key
 from tests.models import Account, User
+
+
+class Membership(Model, table="memberships"):
+    """Unique values in a table with a sort key, and no entity type."""
+
+    org_id: Attr[str] = partition_key()
+    user_id: Attr[str] = sort_key()
+    email: Attr[str] = field(unique=True)
 
 
 def make_user(user_id: str, email: str, **changes: Any) -> User:
@@ -98,3 +107,22 @@ async def test_pydantic_unique_and_versions(client: dynamoxy.Client, users: dyna
     assert account.version == 2
     with pytest.raises(dynamoxy.VersionConflictError):
         await accounts.save(stale)
+
+
+async def test_partitions_of_unique_models_can_be_queried(client: dynamoxy.Client) -> None:
+    await client.create_tables(Membership)
+    memberships = client.repository(Membership)
+    for user_id in ("u1", "u2", "u3"):
+        await memberships.create(Membership(org_id="o1", user_id=user_id, email=f"{user_id}@example.com"))
+    # DynamoDB refuses filters on the key attributes a query reads: guard items need none here.
+    assert [member.user_id for member in await memberships.query(org_id="o1").all()] == ["u1", "u2", "u3"]
+    assert await memberships.count(org_id="o1") == 3
+    assert [
+        member.user_id for member in await memberships.query(org_id="o1").where(Membership.user_id > "u1").all()
+    ] == [
+        "u2",
+        "u3",
+    ]
+    assert (await memberships.query(org_id="o1").descending().first()).user_id == "u3"  # type: ignore[union-attr]
+    assert await memberships.count() == 3, "scans still leave guard items out"
+    assert sorted(member.user_id for member in await memberships.scan().all()) == ["u1", "u2", "u3"]

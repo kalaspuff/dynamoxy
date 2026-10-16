@@ -59,6 +59,11 @@ Ways to consume it:
 
 Queries are immutable: every builder method returns a new query.
 
+`where()` takes the one sort key condition DynamoDB allows per query: combine bounds with
+`between()` (two `where()` calls, or a sort key value given to `query()` and a `where()`, raise
+`ValueError`). For a templated sort key with a constant prefix (`"ORDER#{order_id}"`), the
+`where()` condition replaces the `begins_with` dynamoxy adds otherwise.
+
 ### Filters cost reads
 
 A filter is applied after DynamoDB reads items: filtered items still consume read capacity, and a

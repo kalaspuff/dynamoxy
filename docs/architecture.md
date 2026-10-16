@@ -107,10 +107,12 @@ are refreshed by evaluating the update on the item as loaded with the core's eva
 ### A query (`repository.query(...)`)
 
 1. **Python**: resolve the index and render key values through templates
-   (`ModelSchema.index_key`); add `begins_with` for templated sort keys with a constant prefix,
-   and an entity filter (`_type`) or guard-item filter where needed (`repository._reader_options`).
+   (`ModelSchema.index_key`); add `begins_with` for templated sort keys with a constant prefix
+   (replaced by a `where()` condition, since DynamoDB takes one sort key condition), and an
+   entity filter (`_type`) or guard-item filter where needed (`repository._reader_options`).
    Such filters are kept apart from the caller's filters: they rarely remove items, so a limit
-   still bounds each request.
+   still bounds each request. A guard-item filter is left out where DynamoDB refuses one, on the
+   key attributes of what a query reads.
 2. Each page is one `Query` call (`Limit` = `page_size`, or what a `limit` still needs);
    `LastEvaluatedKey` becomes an opaque cursor (`query.encode_cursor`: base64url JSON of typed
    values), and a page cut at the limit gets the key of its last item. Items are decoded into

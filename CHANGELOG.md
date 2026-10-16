@@ -21,6 +21,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   limit kept the cursor of the whole page, so an API continuing with it skipped the items after
   the limit. `page()` now evaluates at most `limit` items, and a cut page gets a cursor right
   after its last item.
+- Queries of the table (and of local indexes) of a model with unique attributes and no entity
+  type failed in DynamoDB with `ValidationException: Filter Expression can only contain
+  non-primary key attributes`: the guard-item filter read the partition key. Such queries need
+  no filter and no longer send one.
+- `where()` on a templated sort key (`orders.query(customer_id="c1").where(Order.sk.begins_with(
+  "ORDER#2026"))`) failed in DynamoDB with `Conditions can be of length 1 or 2 only`, because
+  dynamoxy had already added `begins_with(sk, "ORDER#")`. A `where()` condition now replaces it.
+  `where()` takes one condition, as DynamoDB does: a second one raises `ValueError`.
 
 ## [0.2.0] - 2026-10-15
 

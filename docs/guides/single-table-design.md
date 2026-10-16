@@ -49,7 +49,10 @@ values, datetimes as ISO text, numbers as text). Templated fields:
 
 When a model's sort key template starts with a constant (`"ORDER#"`) and a query gives only the
 partition key, dynamoxy adds `begins_with(sk, "ORDER#")`, so `orders.query(customer_id="c1")`
-does not return the customer profile.
+does not return the customer profile. A `where()` condition replaces it, since DynamoDB takes one
+sort key condition per query:
+`orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2026-05"))`. The entity type
+still keeps other models out (`Order.sk >= "ORDER#2026"` would reach the profile otherwise).
 
 Template values must not contain the separators you rely on: validate them (`pattern=`) when
 they come from users.

@@ -347,9 +347,11 @@ latest = await entries.query(account_id="a1", consistent=True).all()  # strongly
 ```
 
 Query builders are immutable: every method returns a new query, so queries can be shared and
-reused. `where()` takes sort key conditions: comparisons, `between()` and `begins_with()`. Index entries
-with a `KEYS_ONLY` or `INCLUDE` projection hold only some attributes: add `.hydrate()` to fetch
-the full items, or `.project(...)` to get dicts with just the attributes you need.
+reused. `where()` takes the one sort key condition DynamoDB allows: a comparison, `between()` or
+`begins_with()` (combine bounds with `between()`); on a templated sort key it replaces the prefix
+condition dynamoxy adds. Index entries with a `KEYS_ONLY` or `INCLUDE` projection hold only some
+attributes: add `.hydrate()` to fetch the full items, or `.project(...)` to get dicts with just the
+attributes you need.
 
 Reads are eventually consistent by default. `consistent=True` on `query`, `scan` and `count` (as
 on `get`) reflects every write that succeeded before the read, at twice the read cost: use it to
@@ -583,7 +585,9 @@ class Order(Model, table="app", entity="Order"):
 ```
 
 - `orders.query(customer_id="c1")` queries `pk = "CUSTOMER#c1"` and adds
-  `begins_with(sk, "ORDER#")` automatically, so only orders come back.
+  `begins_with(sk, "ORDER#")` automatically, so only orders come back. A `where()` condition
+  replaces it (`.where(Order.sk.begins_with("ORDER#2026"))`); the entity type keeps other models
+  out.
 - `orders.query(index=Order.by_status, status="paid")` renders the index key from the template.
 - Updating `status` recomputes `gsi1pk` (dynamoxy reads the item first when the template needs
   fields the update does not set).

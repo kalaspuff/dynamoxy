@@ -108,6 +108,22 @@ async def test_entity_types_keep_models_apart(app: dynamoxy.Client) -> None:
     assert sorted(item["_type"] for item in raw) == ["Customer", "Order"]
 
 
+async def test_where_replaces_the_prefix_of_templated_sort_keys(app: dynamoxy.Client) -> None:
+    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
+    orders = app.repository(Order)
+    for order_id, day in (("2025-01", 1), ("2025-02", 2), ("2026-01", 3)):
+        await orders.create(order(order_id, day))
+    query = orders.query(customer_id="c1")
+    in_2025 = await query.where(Order.sk.begins_with("ORDER#2025")).all()
+    assert [item.order_id for item in in_2025] == ["2025-01", "2025-02"]
+    # "PROFILE" sorts after every "ORDER#...": the entity type keeps the customer out.
+    later = await query.where(Order.sk >= "ORDER#2025-02").descending().all()
+    assert [item.order_id for item in later] == ["2026-01", "2025-02"]
+    window = await query.where(Order.sk.between("ORDER#2025-02", "ORDER#2026-12")).all()
+    assert [item.order_id for item in window] == ["2025-02", "2026-01"]
+    assert await query.where(Order.sk < "ORDER#2025-02").count() == 1
+
+
 async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> None:
     orders = app.repository(Order)
     await orders.batch_put([order(f"o{index:02}", 1 + index % 27) for index in range(30)])
