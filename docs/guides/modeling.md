@@ -115,6 +115,8 @@ class Reading(Base, table="readings"):
   model use the `Annotated` form.
 - Reading accepts ISO text in either style whatever the format: `Z` or an offset, with or without
   fractional seconds. Items written by other services, or before a format change, decode.
+- Epoch formats are exact: a datetime is stored as the whole seconds or milliseconds since 1970
+  before it (rounded down, also before 1970), and read back unchanged.
 - Keys, key templates, conditions and unique values compare the stored text: a sort key stored as
   `...+00:00` is not found with a key built as `...Z`. Keep one format per attribute, and change
   the format of a key or templated attribute like a key (see

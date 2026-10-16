@@ -494,7 +494,7 @@ and writes it in the same transaction as the item. Creates, saves, puts, updates
 keep the guards consistent; a taken value raises `UniqueConstraintError` (`.field`, `.value`).
 
 - Change unique values with `set(...)` or `remove()` (or `set(None)`; dynamoxy needs the new
-  value).
+  value). Numbers are guarded as DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` collide.
 - Writes of unique models are transactions: twice the write capacity, plus one guard write per
   changed value. Batch writes are refused for them.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
@@ -596,6 +596,8 @@ class Order(Model, table="app", entity="Order"):
   `begins_with(sk, "ORDER#")` automatically, so only orders come back. A `where()` condition
   replaces it (`.where(Order.sk.begins_with("ORDER#2026"))`); the entity type keeps other models
   out.
+- Templates render numbers as stored (`Decimal("1.50")` → `1.5`) and format datetimes with a spec
+  (`{placed_at:%Y-%m}`) in UTC, so items read back render the same keys.
 - `orders.query(index=Order.by_status, status="paid")` renders the index key from the template.
 - Updating `status` recomputes `gsi1pk` (dynamoxy reads the item first when the template needs
   fields the update does not set).

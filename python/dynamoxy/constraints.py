@@ -19,7 +19,10 @@ models with unique attributes.
 from __future__ import annotations
 
 import base64
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+
+from dynamoxy._utils import number_text
 
 if TYPE_CHECKING:
     from dynamoxy.schema import FieldSpec, ModelSchema
@@ -33,8 +36,15 @@ GUARD_TYPE = "_unique"
 
 
 def _text(value: Any) -> str:
+    """A stored unique value as guard key text.
+
+    Numbers are written as DynamoDB stores them (``5``, not ``5.0`` or ``Decimal("5.00")``), so
+    the text is the same whether it comes from a new value or from an item read back.
+    """
     if isinstance(value, (bytes, bytearray)):
         return "b64:" + base64.b64encode(bytes(value)).decode()
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        return number_text(value)
     return str(value)
 
 

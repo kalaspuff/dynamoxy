@@ -47,6 +47,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   Unique fields that hold a `NULL` (from that bug, or another writer) take new values again.
 - `update()` did not render templated attributes that use `updated_at` or `version` again, so
   an index sort key such as `"{status}#{updated_at}"` kept the time of an older write.
+- Unique guards of numbers depended on how the number was written (`5.0` and `5` were
+  different values), and changing or deleting a `Decimal("5.0")` deleted the wrong guard, so the
+  value stayed taken forever. Guards now use DynamoDB's canonical numbers (ADR 0013).
+- Key templates rendered `Decimal` values with their exponent and formatted datetimes in their
+  own time zone, so an item read back rendered another key and `save()` wrote a duplicate. They
+  now render what DynamoDB stores (ADR 0013).
+- `datetime_format="epoch_ms"` stored about one timestamp in 160 a millisecond early, and every
+  load and save moved it again; `"epoch"` rounded toward zero before 1970. Both are exact now.
 
 ### Changed
 
@@ -54,6 +62,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   unless they `.hydrate()` or `.project(...)` (see above, and
   [ADR 0012](docs/adr/0012-reads-of-partial-indexes.md)). `KEYS_ONLY` and `INCLUDE` indexes that
   dynamoxy creates for models with an entity type now also hold `_type`.
+- Stored forms that change for new writes, with migration notes in
+  [ADR 0013](docs/adr/0013-stored-forms-read-back-as-written.md): guard keys of non-canonical
+  numbers, template keys of non-canonical `Decimal`s and non-UTC formatted datetimes, and epoch
+  milliseconds that were a millisecond early.
 
 ## [0.2.0] - 2026-10-15
 

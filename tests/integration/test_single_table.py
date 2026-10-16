@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -25,6 +25,16 @@ class Payment(Model, table="ledger", entity="Payment"):
     gsi1pk: Attr[str] = field(template="STATE#{state}")
 
     by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.keys_only())
+
+
+class Price(Model, table="catalog", entity="Price"):
+    """Key templates with a Decimal and a formatted datetime."""
+
+    pk: Attr[str] = partition_key(template="SKU#{sku}")
+    sk: Attr[str] = sort_key(template="PRICE#{amount}#{valid_from:%Y-%m-%d}")
+    sku: Attr[str]
+    amount: Attr[Decimal]
+    valid_from: Attr[datetime]
 
 
 class Refund(Model, table="ledger", entity="Refund"):
@@ -203,3 +213,18 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
     assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
         "r1"
     ]
+
+
+async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None:
+    await client.create_tables(Price)
+    prices = client.repository(Price)
+    local = timezone(timedelta(hours=2))
+    price = await prices.create(
+        Price(sku="a", amount=Decimal("1.50"), valid_from=datetime(2026, 1, 1, 0, 30, tzinfo=local))
+    )
+    assert price.sk == "PRICE#1.5#2025-12-31"
+    loaded = await prices.get_or_raise(
+        sku="a", amount=Decimal("1.5"), valid_from=datetime(2025, 12, 31, 22, 30, tzinfo=UTC)
+    )
+    await loaded.save()
+    assert [item.sk for item in await prices.query(sku="a").all()] == ["PRICE#1.5#2025-12-31"], "the same item"

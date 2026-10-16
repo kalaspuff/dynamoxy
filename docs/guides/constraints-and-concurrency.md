@@ -25,7 +25,8 @@ sort key). A write that sets or changes a unique value is a transaction:
 
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
 nothing is written. `None` values have no guard (several items may have no handle), and
-`update(user, User.handle.set(None))` removes the value and its guard.
+`update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
+DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value.
 
 **Costs and requirements.**
 

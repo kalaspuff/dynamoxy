@@ -1,6 +1,6 @@
 # 0005: Unique attributes with guard items written in transactions
 
-Status: Accepted
+Status: Accepted, amended by [0013](0013-stored-forms-read-back-as-written.md)
 
 ## Context
 

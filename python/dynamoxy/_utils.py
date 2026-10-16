@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from decimal import Decimal
 
-__all__ = ["MISSING", "LoopLocal", "Missing", "maybe_await", "seconds"]
+__all__ = ["MISSING", "LoopLocal", "Missing", "maybe_await", "number_text", "seconds"]
 
 
 class Missing:
@@ -78,3 +79,22 @@ async def maybe_await[T](value: T | Awaitable[T]) -> T:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def number_text(value: float | Decimal) -> str:
+    """The text DynamoDB stores a number as: no exponent, no trailing fractional zeros, ``0`` for zero.
+
+    ``Decimal("1.50")``, ``1.5`` and ``Decimal("15E-1")`` are all ``"1.5"``; ``1e16`` is
+    ``"10000000000000000"``. Floats are converted by the core, exactly as when they are stored
+    (its shortest representation breaks ties differently from ``repr()``).
+    """
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        from dynamoxy import _core
+
+        return _core.value_to_wire(value)["N"]
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
