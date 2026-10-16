@@ -23,17 +23,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from dynamoxy._utils import MISSING, number_text
 from dynamoxy.codecs import (
-    AnyCodec,
-    BoolCodec,
+    _UNCHANGED,
     Codec,
     DateTimeCodec,
     DecimalCodec,
     FloatCodec,
     IntCodec,
     OptionalCodec,
-    StrCodec,
     _check_datetime_format,
     _decoder,
+    _decodes_unchanged,
     resolve_codec,
 )
 from dynamoxy.errors import FieldError, ItemDecodeError, validation_error
@@ -1060,14 +1059,9 @@ def _decoding(codec: Codec[Any]) -> tuple[Callable[[Any], Any] | None, type | No
     subclass may decode differently).
     """
     inner = codec.inner if type(codec) is OptionalCodec else codec
-    kind = type(inner)
-    if kind is AnyCodec or kind is Codec:  # also when optional: None decodes to None
+    if _decodes_unchanged(inner):  # also when optional: None decodes to None
         return None, None
-    return _decoder(codec), _UNCHANGED.get(kind)
-
-
-#: The type of stored values each built-in codec class decodes to themselves.
-_UNCHANGED: dict[type, type] = {StrCodec: str, IntCodec: int, BoolCodec: bool, DecimalCodec: Decimal}
+    return _decoder(codec), _UNCHANGED.get(type(inner))
 
 
 def schema_of(model: type) -> ModelSchema:
@@ -1183,7 +1177,7 @@ def make_field(
 
 def _ttl_codec(codec: Codec[Any], where: str) -> Codec[Any]:
     """TTL attributes are epoch seconds: ``datetime`` fields switch to the epoch format."""
-    from dynamoxy.codecs import DateTimeCodec, IntCodec
+    from dynamoxy.codecs import DateTimeCodec
 
     inner = codec.inner if isinstance(codec, OptionalCodec) else codec
     if isinstance(inner, DateTimeCodec):

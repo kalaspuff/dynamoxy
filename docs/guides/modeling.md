@@ -30,6 +30,11 @@ the important rules:
 
 - Numbers are stored exactly. `int` reads back as `int`, `Decimal` as `Decimal`, `float` as
   `float`. NaN and infinity are rejected; DynamoDB keeps 38 significant digits.
+- Reading is exact: a stored value of another type, or one the field's type cannot hold exactly
+  (`2.5` in an `int` field, `"false"` in a `bool` field, a list in a `set` field), raises
+  `ItemDecodeError` instead of being converted, since the next write would store the converted
+  value ([ADR 0015](../adr/0015-stored-values-decode-exactly.md)). Unions (`int | str`) read the
+  types they name.
 - `datetime` values must be timezone-aware; they are stored in UTC as fixed-width ISO 8601 text
   (`2026-01-02T03:04:05.000000+00:00`, or `2026-01-02T03:04:05.000000Z` with
   `datetime_format="iso_z"`), so string order is time order and sort keys and `BETWEEN` work.

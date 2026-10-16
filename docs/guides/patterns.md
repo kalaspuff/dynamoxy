@@ -102,6 +102,9 @@ summary item in the same transaction as the write keeps them consistent and make
 
 - Adding a field: give it a default; old items decode with it.
 - Renaming a field: keep the stored name with `attribute_name=`.
+- Changing a field's type: items stored with the old type raise `ItemDecodeError` (reading is
+  exact). Rewrite them first (a scan of `repository.table` returns dicts), or declare both types
+  (`Attr[int | str]`), or a `codec=` that converts, until every item is rewritten.
 - Changing a shape: upgrade in `@dynamoxy.after_load`, write back lazily on the next save, and
   backfill with a scan job (`scan().segment(i, n)` per worker, `save()` each item).
 - Changing keys or templates: create a new table (or new items), dual-write, backfill, switch

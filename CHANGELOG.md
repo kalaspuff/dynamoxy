@@ -100,6 +100,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   no longer erases fields a newer one wrote during a rolling deploy
   ([ADR 0014](docs/adr/0014-writes-keep-undeclared-attributes.md)). Remove a retired attribute
   with `update(item, F("name").remove())`.
+- [**breaking**] Reading is exact ([ADR 0015](docs/adr/0015-stored-values-decode-exactly.md)): a
+  stored value of another type, or one the field's type cannot hold, raises `ItemDecodeError`
+  instead of being converted. A `2.5` read as `2` in an `int` field (and the next `save()`
+  stored the `2`), an `int` sort key with a fraction pointed at another item (`delete(instance)`
+  deleted that one), `"false"` read as `True` in a `bool` field, a string as the set of its
+  characters, and unions (`int | str`) returned types they do not name. `update()` and
+  `delete()` say when the write was applied but the item it returned does not decode, and
+  `timedelta` fields decode exactly. Find such items with a scan of `repository.table` and
+  rewrite them, or declare the stored types (`Attr[int | str]`) while both are stored.
 
 ## [0.2.0] - 2026-10-15
 

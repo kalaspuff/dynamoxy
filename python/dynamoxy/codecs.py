@@ -25,6 +25,10 @@ nested ``Document`` / pydantic      ``M``
 ``Any``                             as given
 ==================================  ==========================================================
 
+Reading is exact: ``decode`` raises ``ValueError`` (an ``ItemDecodeError`` for the item) for a stored
+value of another type, or one the type cannot hold exactly, such as ``2.5`` for an ``int``,
+instead of converting it (see ADR 0015).
+
 A model chooses the format of all its ``datetime`` fields with the ``datetime_format`` class
 keyword (see :class:`DateTimeCodec`). Use ``codec=`` on a field (or
 ``Annotated[X, dynamoxy.UseCodec(...)]``) for anything else, for example :class:`JsonCodec` to
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 import enum
 import json
+import operator
 import types
 import typing
 import uuid
@@ -102,7 +107,11 @@ class Codec[T]:
         return value
 
     def decode(self, value: Any) -> T:
-        """Converts a stored value back."""
+        """Converts a stored value back.
+
+        Raises:
+            ValueError: The stored value is of another type, or the type cannot hold it exactly.
+        """
         return value
 
     def element(self) -> Codec[Any] | None:
@@ -127,6 +136,53 @@ def _type_error(expected: str, value: Any) -> ValueError:
     return ValueError(f"expected {expected}, got {type(value).__name__}")
 
 
+# Decoding is exact: a stored value of another type, or one the declared type cannot hold (a
+# number with a fraction in an ``int`` field), raises instead of being converted, which would
+# change it silently on the next write (or, for keys, read another item's key). Integral numbers
+# arrive as ``int`` and other numbers as ``Decimal``; items built in Python (``from_item()``)
+# may also hold ``float``s and other ``int`` and ``str`` subclasses.
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _decode_str(value: Any) -> str:
+    if type(value) is str:
+        return value
+    if isinstance(value, str):
+        return str.__str__(value)  # the plain text of a str subclass (a StrEnum member)
+    raise _type_error("text", value)
+
+
+def _decode_int(value: Any) -> int:
+    if type(value) is int:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return operator.index(value)  # a plain int from an int subclass (an IntEnum member)
+    if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+        return int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if _is_number(value):
+        raise ValueError(f"expected a whole number, got a {type(value).__name__} that is not one")
+    raise _type_error("a number", value)
+
+
+def _decode_float(value: Any) -> float:
+    if type(value) is float:
+        return value
+    if _is_number(value):
+        return float(value)
+    raise _type_error("a number", value)
+
+
+def _decode_bool(value: Any) -> bool:
+    if value is True or value is False:
+        return value
+    raise _type_error("a boolean", value)
+
+
 class StrCodec(Codec[str]):
     """``str`` as ``S``."""
 
@@ -140,7 +196,7 @@ class StrCodec(Codec[str]):
 
     @override
     def decode(self, value: Any) -> str:
-        return str(value)
+        return _decode_str(value)
 
     @override
     def describe(self) -> str:
@@ -162,7 +218,7 @@ class IntCodec(Codec[int]):
 
     @override
     def decode(self, value: Any) -> int:
-        return int(value)
+        return _decode_int(value)
 
     @override
     def describe(self) -> str:
@@ -185,7 +241,7 @@ class FloatCodec(Codec[float]):
 
     @override
     def decode(self, value: Any) -> float:
-        return float(value)
+        return _decode_float(value)
 
     @override
     def describe(self) -> str:
@@ -220,7 +276,11 @@ class DecimalCodec(Codec[Decimal]):
 
     @override
     def decode(self, value: Any) -> Decimal:
-        return value if isinstance(value, Decimal) else Decimal(value)
+        if isinstance(value, Decimal):
+            return value
+        if _is_number(value):
+            return Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+        raise _type_error("a number", value)
 
     @override
     def describe(self) -> str:
@@ -240,7 +300,7 @@ class BoolCodec(Codec[bool]):
 
     @override
     def decode(self, value: Any) -> bool:
-        return bool(value)
+        return _decode_bool(value)
 
     @override
     def describe(self) -> str:
@@ -262,7 +322,9 @@ class BytesCodec(Codec[bytes]):
 
     @override
     def decode(self, value: Any) -> bytes:
-        return bytes(value)
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return bytes(value)
+        raise _type_error("bytes", value)
 
     @override
     def describe(self) -> str:
@@ -339,13 +401,17 @@ class DateTimeCodec(Codec[datetime]):
 
     @override
     def decode(self, value: Any) -> datetime:
-        if self.format in ("iso", "iso_z") or isinstance(value, str):
-            text = str(value)
+        if isinstance(value, str):
+            text = value if type(value) is str else str.__str__(value)
             # RFC 3339 allows a lower-case "z"; fromisoformat only accepts "Z".
             parsed = datetime.fromisoformat(text[:-1] + "Z" if text.endswith("z") else text)
             return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+        if self.format in ("iso", "iso_z") or not _is_number(value):
+            raise _type_error("ISO 8601 text" if self.format in ("iso", "iso_z") else "a number or text", value)
+        # Python keeps microseconds: finer fractions that other writers store are rounded.
         scale = 1_000 if self.format == "epoch_ms" else 1_000_000
-        return _EPOCH + timedelta(microseconds=round(Decimal(value) * scale))
+        number = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+        return _EPOCH + timedelta(microseconds=round(number * scale))
 
     @override
     def describe(self) -> str:
@@ -373,7 +439,9 @@ class DateCodec(Codec[date]):
 
     @override
     def decode(self, value: Any) -> date:
-        return date.fromisoformat(str(value))
+        if not isinstance(value, str):
+            raise _type_error("ISO 8601 text", value)
+        return date.fromisoformat(str.__str__(value))
 
     @override
     def describe(self) -> str:
@@ -397,7 +465,11 @@ class TimedeltaCodec(Codec[timedelta]):
 
     @override
     def decode(self, value: Any) -> timedelta:
-        return timedelta(seconds=float(value))
+        if not _is_number(value):
+            raise _type_error("a number", value)
+        # Exact (a float loses microseconds of long durations); finer fractions are rounded.
+        seconds = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+        return timedelta(microseconds=round(seconds * 1_000_000))
 
     @override
     def describe(self) -> str:
@@ -426,7 +498,11 @@ class UUIDCodec(Codec[uuid.UUID]):
 
     @override
     def decode(self, value: Any) -> uuid.UUID:
-        return uuid.UUID(str(value))
+        if isinstance(value, uuid.UUID):
+            return value
+        if not isinstance(value, str):
+            raise _type_error("text", value)
+        return uuid.UUID(str.__str__(value))
 
     @override
     def describe(self) -> str:
@@ -469,9 +545,20 @@ class EnumCodec[E: enum.Enum](Codec[E]):
 
     @override
     def decode(self, value: Any) -> E:
+        kind = type(value)
+        if (kind is str and self._dynamo_type == "S") or (kind is int and self._dynamo_type == "N"):
+            return self.enum_type(value)
+        if isinstance(value, self.enum_type):
+            return value
         if self._dynamo_type == "N":
-            value = int(value)
-        return self.enum_type(value)
+            value = _decode_int(value)
+        elif self._dynamo_type == "S":
+            value = _decode_str(value)
+        member = self.enum_type(value)
+        # `True == 1`: a stored boolean only reads as a member whose value is a boolean.
+        if isinstance(value, bool) != isinstance(member.value, bool):
+            raise ValueError(f"expected a {self.enum_type.__name__}, got bool")
+        return member
 
     @override
     def describe(self) -> str:
@@ -509,7 +596,11 @@ class LiteralCodec(Codec[Any]):
 
     @override
     def decode(self, value: Any) -> Any:
-        return int(value) if self._dynamo_type == "N" else value
+        if self._dynamo_type == "N":
+            value = _decode_int(value)
+        elif self._dynamo_type == "S":
+            value = _decode_str(value)
+        return self.validate(value)
 
     @override
     def describe(self) -> str:
@@ -528,9 +619,49 @@ class AnyCodec(Codec[Any]):
 
     @override
     def validate(self, value: Any) -> Any:
-        if self.allowed and not isinstance(value, self.allowed):
-            raise _type_error(" | ".join(kind.__name__ for kind in self.allowed), value)
+        allowed = self.allowed
+        # `bool` is an `int`: a boolean only fits a union that names bool.
+        if allowed and (not isinstance(value, allowed) or (isinstance(value, bool) and bool not in allowed)):
+            raise _type_error(self.describe(), value)
         return value
+
+    @override
+    def decode(self, value: Any) -> Any:
+        allowed = self.allowed
+        if not allowed or value is None:
+            return value
+        if isinstance(value, bool):
+            if bool in allowed:
+                return value
+        elif isinstance(value, str):
+            if str in allowed:
+                return _decode_str(value)
+        elif isinstance(value, (bytes, bytearray, memoryview)):
+            if bytes in allowed:
+                return bytes(value)
+        elif _is_number(value):
+            return self._number(value)
+        raise _type_error(self.describe(), value)
+
+    def _number(self, value: float | Decimal) -> Any:
+        """A stored number as the first type of the union that holds it exactly (``float`` last)."""
+        allowed = self.allowed
+        if isinstance(value, int) and int in allowed:
+            return _decode_int(value)
+        if isinstance(value, Decimal) and Decimal in allowed:
+            return value
+        if isinstance(value, float) and float in allowed:
+            return value
+        if int in allowed:
+            try:
+                return _decode_int(value)
+            except ValueError:
+                pass
+        if Decimal in allowed:
+            return Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+        if float in allowed:
+            return float(value)
+        raise ValueError(f"expected {self.describe()}, got a {type(value).__name__} that none of them holds")
 
     @override
     def element(self) -> Codec[Any] | None:
@@ -545,20 +676,51 @@ class AnyCodec(Codec[Any]):
         return " | ".join(kind.__name__ for kind in self.allowed) if self.allowed else "Any"
 
 
-#: Codec classes whose ``encode`` and ``decode`` return values unchanged (exact types: subclasses
-#: may override them), so collections of their values are copied without calling them.
-_IDENTITY = frozenset({Codec, AnyCodec})
+#: Codec classes whose ``encode`` returns values unchanged (exact types: subclasses may override
+#: it), so collections of their values are copied without calling it.
+_ENCODED_UNCHANGED = frozenset(
+    {Codec, AnyCodec, StrCodec, IntCodec, FloatCodec, DecimalCodec, BoolCodec, BytesCodec, LiteralCodec}
+)
 
-#: Codec classes whose ``encode`` returns values unchanged (exact types).
-_ENCODED_UNCHANGED = _IDENTITY | {StrCodec, IntCodec, FloatCodec, DecimalCodec, BoolCodec, BytesCodec, LiteralCodec}
+#: The function that the ``decode`` of these codec classes is (exact types: a cheaper call).
+_CONVERSIONS: dict[type, Callable[[Any], Any]] = {
+    StrCodec: _decode_str,
+    IntCodec: _decode_int,
+    FloatCodec: _decode_float,
+    BoolCodec: _decode_bool,
+}
 
-#: The builtin conversion that the ``decode`` of these codec classes is (exact types).
-_CONVERSIONS: dict[type, Callable[[Any], Any]] = {StrCodec: str, IntCodec: int, FloatCodec: float, BoolCodec: bool}
+
+def _decodes_unchanged(codec: Codec[Any]) -> bool:
+    """Whether ``codec.decode`` returns stored values as they are.
+
+    Exact types only (subclasses may decode differently): collections of their values are copied
+    without calling it.
+    """
+    if type(codec) is AnyCodec:
+        return not codec.allowed
+    return type(codec) is Codec
 
 
 def _decoder(codec: Codec[Any]) -> Callable[[Any], Any]:
-    """``codec.decode``, or the builtin conversion it is (a cheaper call)."""
+    """``codec.decode``, or the function it is (a cheaper call)."""
     return _CONVERSIONS.get(type(codec)) or codec.decode
+
+
+#: The type of stored values each built-in codec class decodes to themselves (exact types), so
+#: decoding skips the call for them.
+_UNCHANGED: dict[type, type] = {StrCodec: str, IntCodec: int, BoolCodec: bool, DecimalCodec: Decimal}
+
+
+def _element_decoding(codec: Codec[Any]) -> tuple[Callable[[Any], Any] | None, type | None]:
+    """How a collection decodes its elements: ``(decode, unchanged type)``.
+
+    ``decode`` is ``None`` when elements are kept as they are; elements of exactly the unchanged
+    type are kept without calling it.
+    """
+    if _decodes_unchanged(codec):
+        return None, None
+    return _decoder(codec), _UNCHANGED.get(type(codec))
 
 
 class OptionalCodec[T](Codec[T | None]):
@@ -609,6 +771,7 @@ class ListCodec[T](Codec[list[T]]):
     def __init__(self, inner: Codec[T], *, as_tuple: bool = False) -> None:
         self.inner = inner
         self.as_tuple = as_tuple
+        self._elements = _element_decoding(inner)
 
     @override
     def validate(self, value: Any) -> Any:
@@ -631,10 +794,12 @@ class ListCodec[T](Codec[list[T]]):
 
     @override
     def decode(self, value: Any) -> Any:
-        inner = self.inner
-        if type(inner) in _IDENTITY:
+        if not isinstance(value, (list, tuple)):
+            raise _type_error("a list", value)
+        decode, unchanged = self._elements
+        if decode is None:
             return tuple(value) if self.as_tuple else list(value)
-        items = [inner.decode(element) for element in value]
+        items = [element if type(element) is unchanged else decode(element) for element in value]
         return tuple(items) if self.as_tuple else items
 
     @override
@@ -657,6 +822,7 @@ class SetCodec[T](Codec[set[T]]):
             raise TypeError(f"sets can hold str, numbers or bytes, not {inner.describe()}; use a list instead")
         self.inner = inner
         self.frozen = frozen
+        self._elements = _element_decoding(inner)
 
     @property
     def dynamo_type(self) -> str | None:  # type: ignore[override]
@@ -679,7 +845,15 @@ class SetCodec[T](Codec[set[T]]):
 
     @override
     def decode(self, value: Any) -> Any:
-        items = {self.inner.decode(element) for element in (value or ())}
+        if value is None:  # an empty set is not stored
+            return frozenset() if self.frozen else set()
+        if type(value) is not set and not isinstance(value, AbstractSet):
+            raise _type_error("a set", value)
+        decode, unchanged = self._elements
+        if decode is None:
+            items = set(value)
+        else:
+            items = {element if type(element) is unchanged else decode(element) for element in value}
         return frozenset(items) if self.frozen else items
 
     @override
@@ -702,6 +876,7 @@ class DictCodec[T](Codec[dict[str, T]]):
 
     def __init__(self, inner: Codec[T]) -> None:
         self.inner = inner
+        self._elements = _element_decoding(inner)
 
     @override
     def validate(self, value: Any) -> dict[str, T]:
@@ -726,10 +901,15 @@ class DictCodec[T](Codec[dict[str, T]]):
 
     @override
     def decode(self, value: Any) -> dict[str, T]:
-        inner = self.inner
-        if type(inner) in _IDENTITY:
+        if type(value) is not dict and not isinstance(value, Mapping):
+            raise _type_error("a map", value)
+        decode, unchanged = self._elements
+        if decode is None:
             return dict(value.items())
-        return {key: inner.decode(element) for key, element in value.items()}
+        items: dict[str, Any] = {
+            key: element if type(element) is unchanged else decode(element) for key, element in value.items()
+        }
+        return items
 
     @override
     def element(self) -> Codec[Any] | None:
@@ -770,6 +950,8 @@ class JsonCodec(Codec[Any]):
 
     @override
     def decode(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            raise _type_error("JSON text", value)
         return self._loads(value)
 
     @override
@@ -809,6 +991,8 @@ class DocumentCodec(Codec[Any]):
 
     @override
     def decode(self, value: Any) -> Any:
+        if type(value) is not dict and not isinstance(value, Mapping):
+            raise _type_error("a map", value)
         return self._schema().decode(value)
 
     @override
