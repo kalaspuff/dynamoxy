@@ -33,7 +33,7 @@ Durations accept seconds (`float`) or `timedelta`.
 | `max_attempts` | `4` | Attempts per request, the first included; `1` disables retries (`RetryPolicy.none()`) |
 | `base_delay` | `0.05` | Seconds before the first retry; doubles with every attempt, with full jitter |
 | `max_delay` | `5.0` | Longest delay between attempts, in seconds |
-| `retry_timeouts` | `True` | Retry requests that timed out or lost their connection (such a write may have been applied; harmless for conditional writes and transactions, which carry an idempotency token) |
+| `retry_timeouts` | `True` | Retry requests that timed out or lost their connection. Such a write may have been applied: transactions are retried with their idempotency token, but a conditional write applied by the first attempt then fails its own condition (see [writes with unknown outcome](../guides/errors-and-retries.md#writes-with-unknown-outcome)) |
 
 ## `Credentials(...)`
 
