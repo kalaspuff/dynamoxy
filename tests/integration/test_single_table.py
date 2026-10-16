@@ -8,8 +8,34 @@ from decimal import Decimal
 import pytest
 
 import dynamoxy
+from dynamoxy import Attr, GlobalIndex, IndexDefinition, Model, Projection, field, partition_key, sort_key
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, LineItem, Order, OrderStatus
+
+
+class Payment(Model, table="ledger", entity="Payment"):
+    """Two entities sharing an index that holds only some attributes."""
+
+    pk: Attr[str] = partition_key(template="ACCOUNT#{account_id}")
+    sk: Attr[str] = sort_key(template="PAYMENT#{payment_id}")
+    account_id: Attr[str]
+    payment_id: Attr[str]
+    state: Attr[str] = field(default="open")
+    amount: Attr[int] = field(default=0)
+    gsi1pk: Attr[str] = field(template="STATE#{state}")
+
+    by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.keys_only())
+
+
+class Refund(Model, table="ledger", entity="Refund"):
+    pk: Attr[str] = partition_key(template="ACCOUNT#{account_id}")
+    sk: Attr[str] = sort_key(template="REFUND#{refund_id}")
+    account_id: Attr[str]
+    refund_id: Attr[str]
+    state: Attr[str] = field(default="open")
+    gsi1pk: Attr[str] = field(template="STATE#{state}")
+
+    by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.include("state"))
 
 
 @pytest.fixture
@@ -140,3 +166,40 @@ async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> N
     assert newest.order_id == "o29"
     assert [item.order_id for item in await orders.query(customer_id="c1").limit(3).all()] == ["o00", "o01", "o02"]
     assert limits == [1, 3], "the entity filter dynamoxy adds does not make limits read whole pages"
+
+
+async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> None:
+    await client.create_tables(Payment, Refund)
+    gsi1 = (await client.table("ledger").describe()).indexes["gsi1"]
+    assert gsi1.projection == "INCLUDE"
+    assert set(gsi1.projected_attributes) == {"_type", "state"}, "the entity type is projected for its filter"
+    payments, refunds = client.repository(Payment), client.repository(Refund)
+
+    async def write_items() -> None:
+        await payments.create(Payment(account_id="a1", payment_id="p1", amount=5))
+        await refunds.create(Refund(account_id="a1", refund_id="r1"))
+
+    await write_items()
+    open_payments = payments.query(index=Payment.by_state, state="open")
+    assert [item.payment_id for item in await open_payments.hydrate().all()] == ["p1"]
+    assert [row["sk"] for row in await open_payments.project("sk").all()] == ["PAYMENT#p1"]
+    assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
+        "r1"
+    ]
+    with pytest.raises(ValueError, match=r"add \.hydrate\(\)"):
+        await open_payments.all()
+    with pytest.raises(ValueError, match="does not hold 'amount'"):
+        open_payments.filter(Payment.amount > 1)
+    # A table whose index does not hold the entity type (created before dynamoxy projected it):
+    # the entries pass the filter, and hydrated items are checked on the client.
+    await client.delete_tables(Payment)
+    await client.table("ledger").create(
+        partition_key=("pk", "S"),
+        sort_key=("sk", "S"),
+        indexes=[IndexDefinition("gsi1", "global", ("gsi1pk", "S"), projection=Projection.keys_only())],
+    )
+    await write_items()
+    assert [item.payment_id for item in await open_payments.hydrate().all()] == ["p1"]
+    assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
+        "r1"
+    ]

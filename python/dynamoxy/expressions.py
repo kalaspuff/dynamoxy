@@ -768,6 +768,52 @@ def path_of(value: Path[Any] | str) -> Path[Any]:
     return value if isinstance(value, Path) else F(value)
 
 
+def _operand_roots(operand: Operand | None, roots: set[str]) -> None:
+    if isinstance(operand, Path):
+        roots.add(str(operand.elements[0]))
+    elif isinstance(operand, Size):
+        roots.add(str(operand.path.elements[0]))
+    elif isinstance(operand, Arithmetic):
+        _operand_roots(operand.left, roots)
+        _operand_roots(operand.right, roots)
+    elif isinstance(operand, IfNotExists):
+        roots.add(str(operand.path.elements[0]))
+        _operand_roots(operand.default, roots)
+    elif isinstance(operand, ListAppend):
+        _operand_roots(operand.first, roots)
+        _operand_roots(operand.second, roots)
+
+
+def attribute_roots(condition: Condition) -> set[str] | None:
+    """The top-level attributes ``condition`` reads, or ``None`` when a hand-written part hides them."""
+    roots: set[str] = set()
+    pending: list[Condition] = [condition]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, RawCondition):
+            return None
+        if isinstance(current, Compare):
+            _operand_roots(current.left, roots)
+            _operand_roots(current.right, roots)
+        elif isinstance(current, Between):
+            for operand in (current.operand, current.low, current.high):
+                _operand_roots(operand, roots)
+        elif isinstance(current, In):
+            _operand_roots(current.operand, roots)
+            for candidate in current.candidates:
+                _operand_roots(candidate, roots)
+        elif isinstance(current, Function):
+            roots.add(str(current.path.elements[0]))
+            _operand_roots(current.argument, roots)
+        elif isinstance(current, (And, Or)):
+            pending.extend(current.parts)
+        elif isinstance(current, Not):
+            pending.append(current.inner)
+        else:
+            return None
+    return roots
+
+
 def attr[T](value: T) -> Path[T]:
     """Types an attribute of a pydantic (or plain-annotated) model as a path.
 

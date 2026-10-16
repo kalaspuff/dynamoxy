@@ -337,7 +337,9 @@ class Repository[M]:
         a constant prefix (``"ORDER#{order_id}"``) restricts the query to this model's items.
         Add sort key conditions with ``.where()`` and filters with ``.filter()``.
         ``consistent=True`` reads with strong consistency (twice the read cost), which global
-        secondary indexes do not support.
+        secondary indexes do not support. Entries of a global index that does not hold every
+        field (``KEYS_ONLY``, ``INCLUDE``) are read with ``.hydrate()`` (full items) or
+        ``.project(...)`` (dicts); other reads of them raise ``ValueError`` before any request.
 
         Example::
 
@@ -1184,6 +1186,20 @@ class Repository[M]:
         await self.client.create_tables(self.model_class, **options)
 
 
+def projects_attribute(schema: ModelSchema, spec: IndexSpec, attribute: str) -> bool:
+    """Whether the index ``spec`` as declared holds ``attribute`` (keys always are)."""
+    projection = spec.projection
+    if projection.type == "ALL" or attribute in index_key_attributes(schema, spec):
+        return True
+    included = (schema.fields[name].attribute if name in schema.fields else name for name in projection.attributes)
+    return projection.type == "INCLUDE" and attribute in included
+
+
+def projects_every_field(schema: ModelSchema, spec: IndexSpec) -> bool:
+    """Whether the entries of the index ``spec`` hold every attribute of the model."""
+    return all(projects_attribute(schema, spec, field.attribute) for field in schema.fields.values())
+
+
 def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[str, ...]:
     """The key attributes of an index entry (table key, then index key), or of a table item."""
     names = list(schema._key_attributes)
@@ -1197,22 +1213,37 @@ def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[s
 def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
     """Keyword arguments of ``Query``/``Scan`` that keep a read to the items of one model.
 
-    * Models with an entity type are filtered on it.
+    * Models with an entity type are filtered on it. An index declared without the type
+      attribute (``KEYS_ONLY``, ``INCLUDE``) may not hold it - tables created before dynamoxy
+      projected it into such indexes - so entries without one pass, and the items are checked
+      on the client once they are known (``hydrate()``).
     * Models with unique attributes and no entity type skip guard items, by their partition key
       prefix. Queries of the table, of local indexes and of global indexes keyed on the table's
       partition key need no filter: they select one partition key value (and DynamoDB refuses
       filters on the key attributes of what a query reads).
     * Queries of templated sort keys check the prefix on the client when ``where()`` replaces
       the ``begins_with`` condition and no entity type tells the models apart.
+    * Reads of an index that does not hold every field never decode its entries into instances
+      (``partial``; reads of such a local index ask for every attribute instead), and filters of
+      such a global index are checked against what it holds (``projected``).
 
     The filters are dynamoxy's own (``auto_filter``): they rarely remove items, so a limit still
     bounds each request.
     """
     names = index_key_attributes(schema, spec)
     options: dict[str, Any] = {"key_names": names}
+    if spec is not None and not projects_every_field(schema, spec):
+        # Entries of such an index are not complete items: instances decoded from them would hold
+        # defaults instead of the stored values (and writing them would store the defaults).
+        options["partial" if spec.kind == "global" else "select_all"] = True
     type_attribute, entity = schema.type_attribute, schema.entity
     if type_attribute is not None and entity is not None:
-        options["auto_filter"] = schema._path(type_attribute) == entity
+        path = schema._path(type_attribute)
+        if spec is None or projects_attribute(schema, spec, type_attribute):
+            options["auto_filter"] = path == entity
+        else:
+            options["auto_filter"] = path.not_exists() | (path == entity)
+            options["checks"] = (functools.partial(_has_entity, type_attribute, entity),)
     elif schema.unique_fields and schema.partition_key is not None:
         partition = schema.partition_key.attribute
         target_keys = (
@@ -1230,7 +1261,19 @@ def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool)
             options["where_checks"] = (functools.partial(_has_value, sort.attribute, template.template),)  # type: ignore[union-attr]
         else:
             options["where_checks"] = (functools.partial(_has_prefix, sort.attribute, template.prefix),)  # type: ignore[union-attr]
+    if spec is not None and spec.kind == "global" and spec.projection.type != "ALL":
+        held = set(names)
+        held.update(
+            schema.fields[name].attribute if name in schema.fields else name for name in spec.projection.attributes
+        )
+        if type_attribute is not None:
+            held.add(type_attribute)
+        options["projected"] = frozenset(held)
     return options
+
+
+def _has_entity(attribute: str, entity: str, item: dict[str, Any]) -> bool:
+    return item.get(attribute, entity) == entity
 
 
 def _has_prefix(attribute: str, prefix: str, item: dict[str, Any]) -> bool:
