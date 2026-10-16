@@ -23,3 +23,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted |
 | [0012](0012-reads-of-partial-indexes.md) | Model reads of indexes that hold only some attributes: the type attribute is projected, entries are never decoded into instances | Accepted |
 | [0013](0013-stored-forms-read-back-as-written.md) | Stored numbers and timestamps read back as written: canonical numbers in guards and templates, UTC for formatted datetimes, exact epochs | Accepted |
+| [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |

@@ -664,6 +664,10 @@ class ModelSchema:
         self._immutable: tuple[FieldSpec, ...] = tuple(
             spec for spec in fields if spec.immutable and spec.role is None and spec.template is None
         )
+        # The attributes the model writes itself (its fields and the type attribute).
+        self._stored_names: frozenset[str] = frozenset(self.attributes) | (
+            {self.type_attribute} if self.type_attribute is not None else set()
+        )
         self._derived: tuple[FieldSpec, ...] = tuple(spec for spec in fields if spec.template is not None)
         # (name, check of non-None values, optional) of the fields `validate` checks.
         self._validated: tuple[tuple[str, Callable[[Any], Any], bool], ...] = tuple(
