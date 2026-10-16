@@ -274,6 +274,10 @@ type DateTimeFormat = Literal["iso", "iso_z", "epoch", "epoch_ms"]
 
 _DATETIME_FORMATS: tuple[DateTimeFormat, ...] = typing.get_args(DateTimeFormat.__value__)
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_SECOND = timedelta(seconds=1)
+_MILLISECOND = timedelta(milliseconds=1)
+
 
 def _check_datetime_format(format: Any, what: str) -> DateTimeFormat:
     """``format`` if it is a :data:`DateTimeFormat`.
@@ -294,7 +298,8 @@ class DateTimeCodec(Codec[datetime]):
     order: they work in sort keys and ``between`` queries. ``"iso"`` writes
     ``2026-10-13T08:48:47.966937+00:00`` and ``"iso_z"`` the RFC 3339 form with a ``Z`` suffix,
     ``2026-10-13T08:48:47.966937Z``. Naive datetimes are rejected (use ``datetime.now(UTC)``).
-    Epoch seconds is the format DynamoDB's Time to Live needs.
+    Epoch seconds is the format DynamoDB's Time to Live needs. Epoch values are exact: the
+    whole seconds or milliseconds since 1970 before the datetime (rounded down).
 
     Text is read in either ISO style whatever the format: ``Z`` or an offset, with or without
     fractional seconds, so items written by other services or before a format change decode.
@@ -327,9 +332,9 @@ class DateTimeCodec(Codec[datetime]):
             return utc.isoformat(timespec="microseconds")
         if self.format == "iso_z":
             return utc.replace(tzinfo=None).isoformat(timespec="microseconds") + "Z"
-        if self.format == "epoch":
-            return int(utc.timestamp())
-        return int(utc.timestamp() * 1000)
+        # Exact integer arithmetic (a float timestamp is a millisecond early for some values),
+        # rounding down, also before 1970.
+        return (utc - _EPOCH) // (_SECOND if self.format == "epoch" else _MILLISECOND)
 
     @override
     def decode(self, value: Any) -> datetime:
@@ -338,8 +343,8 @@ class DateTimeCodec(Codec[datetime]):
             # RFC 3339 allows a lower-case "z"; fromisoformat only accepts "Z".
             parsed = datetime.fromisoformat(text[:-1] + "Z" if text.endswith("z") else text)
             return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        number = float(value)
-        return datetime.fromtimestamp(number / 1000 if self.format == "epoch_ms" else number, UTC)
+        scale = 1_000 if self.format == "epoch_ms" else 1_000_000
+        return _EPOCH + timedelta(microseconds=round(Decimal(value) * scale))
 
     @override
     def describe(self) -> str:

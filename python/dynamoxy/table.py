@@ -173,6 +173,12 @@ def definitions_for(models: Iterable[type]) -> list[TableDefinition]:
                         for name in projection.attributes
                     )
                     projection = Projection("INCLUDE", names)
+                if schema.type_attribute is not None and projection.type != "ALL":
+                    # Reads of the model filter on its entity type, which DynamoDB can only see in
+                    # the index entries when the index holds it.
+                    held = projection.attributes
+                    if schema.type_attribute not in held:
+                        projection = Projection("INCLUDE", (*held, schema.type_attribute))
                 definition = IndexDefinition(
                     name=spec.name,
                     kind=spec.kind,
@@ -559,7 +565,8 @@ class Table:
             Whether anything changed.
 
         Raises:
-            TypeError: The table's keys differ from the definition (cannot be changed in place).
+            TypeError: The table's keys, the key of one of its indexes or its TTL attribute differ
+                from the definition (none of them can be changed in place).
         """
         description = await self.describe()
         keys = (description.partition_key, description.sort_key)
@@ -576,7 +583,16 @@ class Table:
             else Billing.provisioned(description.read_capacity or 1, description.write_capacity or 1)
         )
         for index in definition.indexes:
-            if index.name in description.indexes:
+            existing = description.indexes.get(index.name)
+            if existing is not None:
+                found = (existing.kind, existing.partition_key, existing.sort_key)
+                wanted = (index.kind, index.partition_key[0], index.sort_key[0] if index.sort_key else None)
+                if found != wanted:
+                    raise TypeError(
+                        f"table {self.physical_name} has the {found[0]} index {index.name!r} with the key "
+                        f"{found[1:]}, the models expect a {wanted[0]} index with {wanted[1:]}; an index's key cannot "
+                        "change: give the new index another name (and delete the old one with delete_index())"
+                    )
                 continue
             if index.kind == "local":
                 raise TypeError(
@@ -590,6 +606,12 @@ class Table:
             if not ttl.enabled:
                 await self.enable_time_to_live(definition.ttl_attribute)
                 changed = True
+            elif ttl.attribute != definition.ttl_attribute:
+                raise TypeError(
+                    f"table {self.physical_name} has Time to Live on {ttl.attribute!r}, the models expect "
+                    f"{definition.ttl_attribute!r}: a table has one TTL attribute; disable it first "
+                    "(table.disable_time_to_live(); DynamoDB takes up to an hour) or keep the attribute"
+                )
         return changed
 
     async def delete_table(self, *, wait: bool = True, missing_ok: bool = False) -> None:

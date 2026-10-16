@@ -8,8 +8,9 @@
 - A model without `table=` (or with `abstract=True`) is a base class: its fields are inherited.
 - `item.copy(**changes)` makes a new, unsaved instance with the same values: automatic fields
   (`created_at`, `updated_at`, `version`) start empty, so saving the copy writes a new item
-  (pass `created_at=item.created_at` to keep one). `copy.copy(item)`, `copy.deepcopy(item)` and
-  pydantic's `model_copy()` make exact duplicates that still know the item they mirror.
+  (pass `created_at=item.created_at` to keep one); an unknown field name raises `TypeError`.
+  `copy.copy(item)`, `copy.deepcopy(item)` and pydantic's `model_copy()` make exact duplicates
+  that still know the item they mirror.
 
 ```python
 class Timestamped(dynamoxy.Model, abstract=True):
@@ -115,6 +116,8 @@ class Reading(Base, table="readings"):
   model use the `Annotated` form.
 - Reading accepts ISO text in either style whatever the format: `Z` or an offset, with or without
   fractional seconds. Items written by other services, or before a format change, decode.
+- Epoch formats are exact: a datetime is stored as the whole seconds or milliseconds since 1970
+  before it (rounded down, also before 1970), and read back unchanged.
 - Keys, key templates, conditions and unique values compare the stored text: a sort key stored as
   `...+00:00` is not found with a key built as `...Z`. Keep one format per attribute, and change
   the format of a key or templated attribute like a key (see
@@ -124,7 +127,8 @@ class Reading(Base, table="readings"):
 
 Every model has a `partition_key()` and optionally a `sort_key()`. Key values are strings,
 numbers or bytes. Keys are immutable: changing a key means writing a new item and deleting the
-old one (in a transaction if both must happen).
+old one (in a transaction if both must happen). A write of a loaded instance whose key changed
+(also through a field its key template uses) raises `ValueError`.
 
 Keys can be generated (`partition_key(default_factory=lambda: uuid4().hex)`) or built from other
 fields with templates (`partition_key(template="USER#{user_id}")`, see
@@ -146,8 +150,10 @@ class Order(dynamoxy.Model, table="orders"):
 - `GlobalIndex`: any partition and sort key; eventually consistent; can be added later.
 - `LocalIndex`: same partition key, another sort key; strongly consistent reads possible; only at
   table creation; limits item collections to 10 GB.
-- Projections: `Projection.all()` (default), `keys_only()`, `include(...)`. Queries on partial
-  projections return partially filled instances unless you call `.hydrate()` or `.project(...)`.
+- Projections: `Projection.all()` (default), `keys_only()`, `include(...)`. Model queries of a
+  global index that does not hold every field need `.hydrate()` (full items) or `.project(...)`
+  (dicts), and raise `ValueError` otherwise; local indexes read the missing attributes from the
+  table (see [indexes and projections](reading-data.md#indexes-and-projections)).
 - Indexes are sparse: items without the index key attributes are not indexed.
 - Fields declared without a specifier have no class attribute yet while the class body runs:
   name them as strings (`GlobalIndex(partition_key="kind")`).

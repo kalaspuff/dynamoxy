@@ -302,8 +302,15 @@ class Transaction:
         except TransactionCanceledError as error:
             self._explain(error, owners)
             raise
+        # Every write was made: each instance is finalized even when a hook of another one raises.
+        errors: list[Exception] = []
         for plan in plans:
-            await plan.finalize(None)
+            try:
+                await plan.finalize(None)
+            except Exception as error:  # noqa: BLE001 - raised once every plan is final
+                errors.append(error)
+        if errors:
+            raise errors[0]
 
     def _explain(self, error: TransactionCanceledError, owners: list[tuple[int, _WritePlan | None, Any]]) -> None:
         reasons: list[CancellationReason] = []

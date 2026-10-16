@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 import dynamoxy
-from dynamoxy import F
+from dynamoxy import Attr, F, GlobalIndex, Model, field, partition_key, ttl
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, Event, Order, User
+
+
+class SessionV1(Model, table="sessions"):
+    session_id: Attr[str] = partition_key()
+    user: Attr[str] = field(default="")
+    team: Attr[str] = field(default="")
+    old_expiry: Attr[datetime | None] = ttl(default=None)
+
+    by_user = GlobalIndex(partition_key=user)
+
+
+class SessionV2(Model, table="sessions"):
+    """The same table, with another key for an index of the same name."""
+
+    session_id: Attr[str] = partition_key()
+    user: Attr[str] = field(default="")
+    team: Attr[str] = field(default="")
+
+    by_user = GlobalIndex(partition_key=team)
+
+
+class SessionV3(Model, table="sessions"):
+    """The same table, with another TTL attribute."""
+
+    session_id: Attr[str] = partition_key()
+    user: Attr[str] = field(default="")
+    expires_at: Attr[datetime | None] = ttl(default=None)
+
+    by_user = GlobalIndex(partition_key=user)
 
 
 async def test_create_describe_list_and_delete(client: dynamoxy.Client) -> None:
@@ -47,6 +78,15 @@ async def test_ensure_tables_adds_what_is_missing(client: dynamoxy.Client) -> No
     await client.table("app").create(partition_key=("pk", "S"))
     with pytest.raises(TypeError, match="a table's key cannot change"):
         await client.ensure_tables(Customer)
+
+
+async def test_ensure_tables_refuses_indexes_and_ttl_that_differ(client: dynamoxy.Client) -> None:
+    await client.create_tables(SessionV1)
+    assert await client.ensure_tables(SessionV1) == []
+    with pytest.raises(TypeError, match="index 'by_user' with the key"):
+        await client.ensure_tables(SessionV2)
+    with pytest.raises(TypeError, match="Time to Live on 'old_expiry', the models expect 'expires_at'"):
+        await client.ensure_tables(SessionV3)
 
 
 async def test_indexes_can_be_added_and_removed(client: dynamoxy.Client) -> None:

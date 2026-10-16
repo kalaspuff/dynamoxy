@@ -91,8 +91,10 @@ class RetryPolicy:
         base_delay: Seconds before the first retry; doubles each time, with full jitter.
         max_delay: Longest delay between attempts, in seconds.
         retry_timeouts: Retry requests that timed out or lost their connection. Such a write may
-            have been applied already, which is harmless for conditional and idempotent writes
-            (transactions get an idempotency token automatically).
+            have been applied already: idempotent writes and transactions (retried with their
+            idempotency token) are unaffected, but a conditional write the first attempt applied
+            fails its own condition on the retry (``create()`` raises ``ItemAlreadyExistsError``
+            with ``.item`` set to the item it wrote, and ``.attempts`` above 1).
     """
 
     max_attempts: int = 4
@@ -739,6 +741,10 @@ class Client:
 
         Returns:
             The physical names of the tables that were created or changed.
+
+        Raises:
+            TypeError: A table's key, the key of an index with the same name or the TTL
+                attribute differs from the models (none of them can change in place).
         """
         from dynamoxy.table import definitions_for
 

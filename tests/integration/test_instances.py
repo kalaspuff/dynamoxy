@@ -12,10 +12,26 @@ import pytest
 
 import dynamoxy
 from dynamoxy import Attr, F, field, partition_key, testing
+from tests.conftest import ClientFactory
 from tests.models import Account, Customer, Event, Order, Player
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+
+class ProfileV1(dynamoxy.Model, table="profiles_v"):
+    """An older version of a model: it does not know the field ``ProfileV2.nickname``."""
+
+    profile_id: Attr[str] = partition_key()
+    name: Attr[str] = field(default="")
+    version: Attr[int] = dynamoxy.version()
+
+
+class ProfileV2(dynamoxy.Model, table="profiles_v"):
+    profile_id: Attr[str] = partition_key()
+    name: Attr[str] = field(default="")
+    nickname: Attr[str | None] = field(default=None)
+    version: Attr[int] = dynamoxy.version()
 
 
 @pytest.fixture
@@ -401,3 +417,27 @@ async def test_atomic_changes_send_documented_update_actions() -> None:
             "ADD payload.tags :v0",
         ]
         assert event.payload == {"n": 2, "tags": {"a"}}
+
+
+async def test_writes_of_loaded_instances_keep_attributes_their_model_does_not_declare(
+    client_factory: ClientFactory,
+) -> None:
+    # Two versions of an application during a rolling deploy, or two services sharing a table.
+    newer = client_factory()
+    await newer.create_tables(ProfileV2)
+    older = client_factory(store=newer.store) if newer.store is not None else client_factory()  # the same tables
+    await newer.repository(ProfileV2).create(ProfileV2(profile_id="p1", name="Ada", nickname="ada"))
+    loaded = await older.repository(ProfileV1).get_or_raise("p1")
+    loaded.name = "Ada L."
+    await loaded.save()
+    await older.repository(ProfileV1).put(loaded)
+    stored = await newer.repository(ProfileV2).get_or_raise("p1")
+    assert (stored.name, stored.nickname, stored.version) == ("Ada L.", "ada", 3)
+    await older.repository(ProfileV1).update(loaded, F("nickname").remove())  # how to remove one
+    assert (await newer.repository(ProfileV2).get_or_raise("p1")).nickname is None
+    await older.repository(ProfileV1).put(ProfileV1(profile_id="p1", name="New"))  # not loaded: replaced
+    assert await newer.table("profiles_v").get({"profile_id": "p1"}) == {
+        "profile_id": "p1",
+        "name": "New",
+        "version": 1,
+    }

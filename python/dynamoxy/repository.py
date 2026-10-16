@@ -38,13 +38,15 @@ subclasses included.
 
 from __future__ import annotations
 
+import functools
 import types
 import typing
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from dynamoxy import _core
-from dynamoxy._utils import MISSING
+from dynamoxy._utils import MISSING, stored_identity
 from dynamoxy.constraints import GUARD_PREFIX, guard_item, guard_key
 from dynamoxy.errors import (
     ConditionalCheckFailedError,
@@ -67,7 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     from dynamoxy.client import Client
-    from dynamoxy.schema import GlobalIndex, LocalIndex
+    from dynamoxy.schema import GlobalIndex, HookPoint, LocalIndex
 
 __all__ = ["Repository"]
 
@@ -86,12 +88,22 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _model_from_generic(cls: type) -> type | None:
-    for base in types.get_original_bases(cls):
-        if typing.get_origin(base) is Repository:
-            (argument,) = typing.get_args(base)
-            if isinstance(argument, type):
-                return argument
+def _model_of_class(cls: type) -> type | None:
+    """The model of a repository class, inherited too.
+
+    It is the class's ``model``, or ``Model`` of a ``Repository[Model]`` base (also of a generic
+    subclass of ``Repository``).
+    """
+    for klass in cls.__mro__:
+        declared = klass.__dict__.get("model")
+        if isinstance(declared, type):
+            return declared
+        for base in types.get_original_bases(klass) if "__orig_bases__" in klass.__dict__ else ():
+            origin = typing.get_origin(base)
+            arguments = typing.get_args(base)
+            generic = isinstance(origin, type) and issubclass(origin, Repository) and len(arguments) == 1
+            if generic and isinstance(arguments[0], type):
+                return arguments[0]
     return None
 
 
@@ -122,6 +134,8 @@ class _WritePlan:
         upsert: bool = False,
         instance: Any = None,
         old: dict[str, Any] | None = None,
+        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+        stale: bool = False,
     ) -> None:
         self.repository = repository
         self.plan = plan
@@ -132,6 +146,10 @@ class _WritePlan:
         self.upsert = upsert
         self.instance = instance
         self.old = old
+        self.prepared = prepared
+        # The guard conditions use the unique values the instance was loaded with: a failure may
+        # only mean that another writer changed them since (no version, no caller's condition).
+        self.stale = stale
 
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
@@ -185,7 +203,7 @@ class Repository[M]:
     model: ClassVar[type[Any] | None] = None
 
     def __init__(self, client: Client, model: type[M] | None = None) -> None:
-        resolved = model or type(self).__dict__.get("model") or _model_from_generic(type(self))
+        resolved = model or _model_of_class(type(self))
         if resolved is None:
             raise TypeError(
                 f"{type(self).__name__} does not know its model: pass it (Repository(client, User)) "
@@ -233,21 +251,27 @@ class Repository[M]:
         if isinstance(target, self.model_class):
             return self.schema.key_of(target)
         if isinstance(target, dict):
-            if target.keys() == self.schema._key_attribute_set:
+            schema = self.schema
+            if target.keys() == schema._key_attribute_set and all(
+                _is_stored_key_value(spec, target[spec.attribute]) for spec in schema._key_specs
+            ):
                 return dict(target)
-            return self.schema.key_from((), target)
+            # Field values (a UUID, a datetime, ... where the attribute has the field's name).
+            return schema.key_from((), target)
         if isinstance(target, tuple):
             return self.schema.key_from(target, {})
         return self.schema.key_from((target,), {})
 
-    def _reader_options(self, spec: IndexSpec | None) -> dict[str, Any]:
+    def _reader_options(self, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
         """What reads of the table or of an index need to return this model's items only."""
         # Options depend on the schema alone (conditions are immutable): built once per target.
-        cache: dict[str | None, dict[str, Any]] = self.schema.__dict__.setdefault("_reader_options_cache", {})
-        key = spec.name if spec is not None else None
+        cache: dict[tuple[str | None, bool], dict[str, Any]] = self.schema.__dict__.setdefault(
+            "_reader_options_cache", {}
+        )
+        key = (spec.name if spec is not None else None, query)
         options = cache.get(key)
         if options is None:
-            options = cache[key] = _reader_options(self.schema, spec)
+            options = cache[key] = _reader_options(self.schema, spec, query=query)
         return options
 
     async def _get_raw(self, key: dict[str, Any], *, consistent: bool = True) -> dict[str, Any] | None:
@@ -334,7 +358,9 @@ class Repository[M]:
         a constant prefix (``"ORDER#{order_id}"``) restricts the query to this model's items.
         Add sort key conditions with ``.where()`` and filters with ``.filter()``.
         ``consistent=True`` reads with strong consistency (twice the read cost), which global
-        secondary indexes do not support.
+        secondary indexes do not support. Entries of a global index that does not hold every
+        field (``KEYS_ONLY``, ``INCLUDE``) are read with ``.hydrate()`` (full items) or
+        ``.project(...)`` (dicts); other reads of them raise ``ValueError`` before any request.
 
         Example::
 
@@ -355,10 +381,15 @@ class Repository[M]:
         else:
             partition_value, remaining = self.schema.index_key(spec, key_values)
         condition: Condition = F(partition_spec.attribute) == partition_value
+        automatic: Condition | None = None
+        explicit = False
         if sort_spec is not None:
-            sort_condition, remaining = self._sort_condition(sort_spec, remaining)
-            if sort_condition is not None:
+            sort_condition, is_automatic, remaining = self._sort_condition(sort_spec, remaining)
+            if is_automatic:
+                automatic = sort_condition
+            elif sort_condition is not None:
                 condition = condition & sort_condition
+                explicit = True
         if remaining:
             raise ValueError(
                 f"{self.model_class.__name__}.query(): unexpected arguments {', '.join(sorted(remaining))}"
@@ -374,7 +405,9 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
-            **self._reader_options(spec),
+            auto_sort=automatic,
+            explicit_sort=explicit,
+            **self._reader_options(spec, query=True),
         )
 
     def _index(self, index: str | GlobalIndex | LocalIndex | None) -> IndexSpec | None:
@@ -395,19 +428,26 @@ class Repository[M]:
             remaining.pop(name, None)
         return value, remaining
 
-    def _sort_condition(self, spec: FieldSpec, remaining: dict[str, Any]) -> tuple[Condition | None, dict[str, Any]]:
+    def _sort_condition(
+        self, spec: FieldSpec, remaining: dict[str, Any]
+    ) -> tuple[Condition | None, bool, dict[str, Any]]:
+        """The sort key condition of a query, whether dynamoxy added it, and the unused arguments.
+
+        A sort key value among the arguments selects it; otherwise a template's constant prefix
+        (``"ORDER#{order_id}"``) or a constant template restricts the query to this model's items.
+        """
         template = spec.template
         names = {spec.name, spec.attribute}
         if names & remaining.keys() or (
             template is not None and template.fields and all(name in remaining for name in template.fields)
         ):
             value, remaining = self._partition_value(spec, remaining)
-            return F(spec.attribute) == value, remaining
+            return F(spec.attribute) == value, False, remaining
         if template is not None and template.prefix and not template.is_constant:
-            return F(spec.attribute).begins_with(template.prefix), remaining
+            return F(spec.attribute).begins_with(template.prefix), True, remaining
         if template is not None and template.is_constant:
-            return F(spec.attribute) == template.template, remaining
-        return None, remaining
+            return F(spec.attribute) == template.template, True, remaining
+        return None, False, remaining
 
     async def _hydrate(self, items: list[dict[str, Any]], consistent: bool) -> list[dict[str, Any] | None]:
         """The full items of index entries, in order (``None`` for items deleted meanwhile)."""
@@ -438,7 +478,7 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
-            **self._reader_options(spec),
+            **self._reader_options(spec, query=False),
         )
 
     async def count(
@@ -490,7 +530,10 @@ class Repository[M]:
     # Transactions (`client.transaction()`) execute the plans of several writes together.
 
     def _prepare(self, instance: M, mode: str) -> tuple[dict[str, Any], dict[str, Any], int | None]:
-        """Validates and computes the stored item. Returns (item, changes to apply, expected version)."""
+        """Validates and computes the stored item. Returns (item, changes to apply, expected version).
+
+        Except for creates, the item keeps the attributes of the loaded item that no field declares.
+        """
         schema = self.schema
         if not isinstance(instance, self.model_class):
             raise TypeError(f"expected a {self.model_class.__name__}, got {type(instance).__name__}")
@@ -514,7 +557,24 @@ class Repository[M]:
             values.update(derived)
             changes.update(derived)
         item = schema._encode_rendered(values)
+        if mode != "create":
+            state = schema.state(instance)
+            stored = state.stored if state is not None and state.loaded else None
+            if stored is not None:
+                self._check_unchanged(stored, item)
+                item = self._with_undeclared(stored, item)
         return item, changes, expected
+
+    def _with_undeclared(self, stored: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        """``item`` with the attributes of the ``stored`` item (same key) that no field declares.
+
+        A newer version of the application (during a rolling deploy) or another service may have
+        written them: a write of the item as loaded keeps them, and ``update(F(name).remove())``
+        removes one.
+        """
+        declared = self.schema._stored_names
+        undeclared = {name: value for name, value in stored.items() if name not in declared}
+        return {**undeclared, **item} if undeclared else item
 
     def _apply(self, instance: M, changes: Mapping[str, Any], item: dict[str, Any] | None) -> None:
         adapter = self.schema.adapter
@@ -526,11 +586,15 @@ class Repository[M]:
             state.repository = self
 
     def _guard_conditions(self, old: Mapping[str, Any], specs: Iterable[FieldSpec]) -> list[Condition]:
-        """Conditions that the unique values of the stored item are still ``old``'s."""
+        """Conditions that the unique values of the stored item are still ``old``'s.
+
+        A value ``old`` does not have may be missing or stored as DynamoDB's ``NULL`` (by another
+        writer, or by ``set(None)`` of older versions), which reads as ``None`` too.
+        """
         return [
             F(spec.attribute) == old[spec.attribute]
             if old.get(spec.attribute) is not None
-            else F(spec.attribute).not_exists()
+            else F(spec.attribute).not_exists() | F(spec.attribute).is_type("NULL")
             for spec in specs
         ]
 
@@ -568,13 +632,46 @@ class Repository[M]:
                     ("guard", spec, after),
                 )
 
-    async def _plan_put(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> _WritePlan:
+    def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> None:
+        """Refuses a write of a loaded instance that changes its key or an immutable field.
+
+        Raises:
+            ValueError: The key (or a field a key template uses) or an immutable value changed
+                since the instance was loaded.
+        """
+        schema = self.schema
+        name = self.model_class.__name__
+        before, key = schema.key_values(stored), schema.key_values(item)
+        if stored_identity(before) != stored_identity(key):
+            raise ValueError(
+                f"{name}: the key of this instance changed since it was loaded ({before} -> {key}), and DynamoDB "
+                "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
+            )
+        for spec in schema._immutable:
+            old = stored.get(spec.attribute)
+            if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
+                raise ValueError(f"{name}.{spec.name} is immutable: it cannot change once stored")
+
+    async def _plan_put(
+        self,
+        instance: M,
+        mode: WriteMode,
+        condition: Condition | bool | None,
+        *,
+        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+    ) -> _WritePlan:
+        """Plans a put; ``prepared`` (a plan's) plans it again with the item as stored now."""
         schema = self.schema
         hooks = self.client.hooks
-        if hooks.has("before_save", type(instance)):
-            await hooks.run("before_save", instance, self._context(mode))
-        item, changes, expected = self._prepare(instance, mode)
+        fresh = prepared is not None
+        if prepared is None:
+            if hooks.has("before_save", type(instance)):
+                await hooks.run("before_save", instance, self._context(mode))
+            prepared = self._prepare(instance, mode)
+        item, changes, expected = prepared
         key = schema.key_values(item)
+        state = schema.state(instance)
+        loaded = state.stored if state is not None and state.loaded else None
         assert schema.partition_key is not None
         partition = schema._path(schema.partition_key.attribute)
         parts: list[Condition] = []
@@ -588,10 +685,12 @@ class Repository[M]:
         if user_condition is not None:
             parts.append(user_condition)
         old: dict[str, Any] | None = None
+        stale = False
         if schema.unique_fields and mode != "create":
-            state = schema.state(instance)
-            if state is not None and state.loaded and schema.key_values(state.stored or {}) == key:
-                old = state.stored
+            if loaded is not None and not fresh:
+                old = loaded
+                versioned = mode == "save" and schema.version_field is not None
+                stale = user_condition is None and not versioned
             else:
                 old = await self._get_raw(key)
             if old is None:
@@ -619,7 +718,19 @@ class Repository[M]:
             if hooks.has("after_save", type(instance)):
                 await hooks.run("after_save", instance, self._context(mode))
 
-        return _WritePlan(self, plan, mode, key, expected, finalize)
+        return _WritePlan(self, plan, mode, key, expected, finalize, prepared=prepared, stale=stale)
+
+    async def _write(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> M:
+        write = await self._plan_put(instance, mode, condition)
+        try:
+            await write.execute()
+        except ConditionalCheckFailedError as error:
+            if not write.stale or type(error) is not ConditionalCheckFailedError:
+                raise
+            # Another writer changed the unique values since the instance was loaded: plan the
+            # guards again from the item as stored now (the write itself is unchanged).
+            await (await self._plan_put(instance, mode, condition, prepared=write.prepared)).execute()
+        return instance
 
     async def create(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes a new item.
@@ -629,8 +740,7 @@ class Repository[M]:
             UniqueConstraintError: A unique value is taken.
             ValidationError: The instance is invalid.
         """
-        await (await self._plan_put(item, "create", condition)).execute()
-        return item
+        return await self._write(item, "create", condition)
 
     async def put(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes an item, replacing any stored item with the same key.
@@ -638,9 +748,9 @@ class Repository[M]:
         Raises:
             ConditionalCheckFailedError: ``condition`` did not hold.
             UniqueConstraintError: A unique value is taken.
+            ValueError: The instance was loaded and its key or an immutable field changed since.
         """
-        await (await self._plan_put(item, "put", condition)).execute()
-        return item
+        return await self._write(item, "put", condition)
 
     async def save(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes an item with optimistic locking (models with a ``version()`` field).
@@ -649,9 +759,9 @@ class Repository[M]:
             VersionConflictError: The stored version differs from the instance's (or, for a
                 new instance, the key exists).
             ConditionalCheckFailedError: ``condition`` did not hold.
+            ValueError: The instance was loaded and its key or an immutable field changed since.
         """
-        await (await self._plan_put(item, "save", condition)).execute()
-        return item
+        return await self._write(item, "save", condition)
 
     async def _plan_update(
         self,
@@ -712,8 +822,11 @@ class Repository[M]:
             parts.append(schema._path(schema.partition_key.attribute).exists())
         expected: Any = None
         now = utcnow() if schema._timestamps else None
+        # Automatic fields the update changes: their new value, or MISSING when DynamoDB computes it.
+        automatic: dict[str, Any] = {}
         if schema.version_field is not None:
             actions_list.append(UpdateAction("ADD", schema._path(schema.version_field.attribute), Value(1)))
+            automatic[schema.version_field.name] = MISSING
             if instance is not None:
                 expected = schema.adapter.get(instance, schema.version_field.name)
                 if expected is not None:
@@ -721,9 +834,11 @@ class Repository[M]:
         if schema.updated_at_field is not None and schema.updated_at_field.name not in touched:
             field = schema.updated_at_field
             actions_list.append(UpdateAction("SET", schema._path(field.attribute), Value(field.codec.encode(now))))
+            automatic[field.name] = now
         if upsert and schema.created_at_field is not None and schema.created_at_field.name not in touched:
             field = schema.created_at_field
             actions_list.append(schema._path(field.attribute).set_if_not_exists(field.codec.encode(now)))
+            automatic[field.name] = MISSING
         completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
         if upsert:
             provided = self._field_values_of(target) if instance is None else {}
@@ -737,11 +852,14 @@ class Repository[M]:
                     f"{self.model_class.__name__}.{spec.name} is unique: update it with .set(value) or .remove() so "
                     "dynamoxy can maintain its guard item"
                 )
+        # Values the update sets outright, automatic ones (updated_at) included.
+        assigned = {**literals, **{name: value for name, value in automatic.items() if value is not MISSING}}
+        changed = touched.keys() | automatic.keys()
         derived_specs = (
             [
                 spec
                 for spec in schema._derived
-                if spec.role is None and set(spec.template.fields) & touched.keys()  # type: ignore[union-attr]
+                if spec.role is None and set(spec.template.fields) & changed  # type: ignore[union-attr]
             ]
             if schema._derived
             else []
@@ -749,7 +867,7 @@ class Repository[M]:
         needs_read = bool(unique_touched) and stored_old is None
         if derived_specs and stored_old is None and instance is None:
             needs_read = needs_read or any(
-                name not in literals
+                name not in assigned
                 for spec in derived_specs
                 for name in spec.template.fields  # pyrefly: ignore[missing-attribute]
             )
@@ -761,7 +879,8 @@ class Repository[M]:
                 )
         if derived_specs:
             known: dict[str, Any] = {}
-            computed = touched.keys() - literals.keys()  # changed by arithmetic, functions or in nested paths
+            # Changed by arithmetic, functions or in nested paths (the version: ADD).
+            computed = changed - assigned.keys()
             if any(computed.intersection(spec.template.fields) for spec in derived_specs):  # type: ignore[union-attr]
                 # The new values of such fields are what the update makes of the item as last read,
                 # evaluated like DynamoDB does (exact for versioned models, whose version is checked).
@@ -778,7 +897,7 @@ class Repository[M]:
                 known.update(schema.values(instance))
             else:
                 known.update(completion)  # an upsert that creates the item writes these values
-            known.update(literals)
+            known.update(assigned)
             for spec in derived_specs:
                 assert spec.template is not None
                 rendered = spec.template.render(known, schema.codecs)
@@ -1103,9 +1222,12 @@ class Repository[M]:
                 value=decoded,
                 cause=cause,
             )
-        failed = ConditionalCheckFailedError(
-            f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
-        )
+        message = f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
+        if write.stale:
+            message += (
+                " (the unique values stored may have changed since the instance was loaded: refresh() it and retry)"
+            )
+        failed = ConditionalCheckFailedError(message)
         failed.item = item
         for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
             value = getattr(cause, name, None)
@@ -1116,8 +1238,12 @@ class Repository[M]:
     async def batch_put(self, items: Iterable[M]) -> None:
         """Writes many items (managed ``BatchWriteItem``: unconditional, not atomic).
 
+        A key given more than once is written once, with the last item. Only the items that were
+        written update their instances and run ``after_save`` hooks.
+
         Raises:
             TypeError: The model has unique attributes (use ``create``/``save`` or a transaction).
+            ValueError: A loaded instance's key or immutable value changed.
             UnprocessedItemsError: Some writes stayed unprocessed after every retry round.
         """
         if self.schema.unique_fields:
@@ -1125,26 +1251,30 @@ class Repository[M]:
                 f"{self.model_class.__name__} has unique attributes; batch writes cannot maintain them "
                 "(use create/save or a transaction)"
             )
-        prepared: list[tuple[M, dict[str, Any], dict[str, Any]]] = []
+        # By key: DynamoDB refuses a request that writes one key twice, so the last item wins.
+        prepared: dict[Any, tuple[M, dict[str, Any], dict[str, Any]]] = {}
         hooks = self.client.hooks
         for instance in items:
             if hooks.has("before_save", type(instance)):
                 await hooks.run("before_save", instance, self._context("batch_put"))
             item, changes, _ = self._prepare(instance, "batch")
-            prepared.append((instance, item, changes))
+            identity = stored_identity(self.schema.key_values(item))
+            prepared.pop(identity, None)
+            prepared[identity] = (instance, item, changes)
         if not prepared:
             return
-        await self.table.batch_write(puts=[item for _, item, _ in prepared])
-        for instance, item, changes in prepared:
+        left = await self._batch_write([("put", item) for _, item, _ in prepared.values()])
+        done = [entry for identity, entry in prepared.items() if identity not in left]
+        for instance, item, changes in done:
             self._apply(instance, changes, item)
-            if hooks.has("after_save", type(instance)):
-                await hooks.run("after_save", instance, self._context("batch_put"))
+        await self._run_hooks("after_save", [instance for instance, _, _ in done], "batch_put", left)
 
     async def batch_delete(self, targets: Iterable[M | Mapping[str, Any] | Any]) -> None:
         """Deletes many items by instance or key (managed ``BatchWriteItem``; not atomic).
 
         Raises:
             TypeError: The model has unique attributes.
+            UnprocessedItemsError: Some deletes stayed unprocessed after every retry round.
         """
         if self.schema.unique_fields:
             raise TypeError(f"{self.model_class.__name__} has unique attributes; delete items one by one")
@@ -1153,18 +1283,74 @@ class Repository[M]:
         for target in targets:
             if isinstance(target, self.model_class) and hooks.has("before_delete", type(target)):
                 await hooks.run("before_delete", target, self._context("batch_delete"))
-        await self.table.batch_write(deletes=[self._target_key(target) for target in targets])
-        for target in targets:
-            if isinstance(target, self.model_class):
-                self._apply(target, {}, None)
-                if hooks.has("after_delete", type(target)):
-                    await hooks.run("after_delete", target, self._context("batch_delete"))
+        keys = {stored_identity(key): key for key in (self._target_key(target) for target in targets)}
+        if not keys:
+            return
+        left = await self._batch_write([("delete", key) for key in keys.values()])
+        done = [
+            target
+            for target in targets
+            if isinstance(target, self.model_class) and stored_identity(self.schema.key_of(target)) not in left
+        ]
+        for target in done:
+            self._apply(target, {}, None)
+        await self._run_hooks("after_delete", done, "batch_delete", left)
+
+    async def _batch_write(self, requests: list[tuple[str, dict[str, Any]]]) -> dict[Any, tuple[str, dict[str, Any]]]:
+        """Sends a managed ``BatchWriteItem``; returns the unprocessed requests by key identity."""
+        output = await self.client.call(
+            "batch_write",
+            "BatchWriteItem",
+            table=self.table_name,
+            model=self.model_class,
+            requests=[(self.table_name, kind, item) for kind, item in requests],
+        )
+        return {stored_identity(self.schema.key_values(item)): (kind, item) for _, kind, item in output["unprocessed"]}
+
+    async def _run_hooks(
+        self, point: HookPoint, instances: list[M], operation: str, left: dict[Any, tuple[str, dict[str, Any]]]
+    ) -> None:
+        """Runs ``after_*`` hooks of written instances, then raises what failed.
+
+        Raises:
+            UnprocessedItemsError: Some requests stayed unprocessed (``left``).
+            Exception: The first hook that raised (after every hook ran).
+        """
+        hooks = self.client.hooks
+        errors: list[Exception] = []
+        for instance in instances:
+            if hooks.has(point, type(instance)):
+                try:
+                    await hooks.run(point, instance, self._context(operation))
+                except Exception as error:  # noqa: BLE001 - raised once every hook ran
+                    errors.append(error)
+        if left:
+            raise UnprocessedItemsError(
+                f"{len(left)} writes of {self.table_name} stayed unprocessed (throttling)",
+                unprocessed=list(left.values()),
+            ) from (errors[0] if errors else None)
+        if errors:
+            raise errors[0]
 
     # ---- table ----------------------------------------------------------------------------
 
     async def create_table(self, **options: Any) -> None:
         """Creates this model's table (see ``Client.create_tables`` for options)."""
         await self.client.create_tables(self.model_class, **options)
+
+
+def projects_attribute(schema: ModelSchema, spec: IndexSpec, attribute: str) -> bool:
+    """Whether the index ``spec`` as declared holds ``attribute`` (keys always are)."""
+    projection = spec.projection
+    if projection.type == "ALL" or attribute in index_key_attributes(schema, spec):
+        return True
+    included = (schema.fields[name].attribute if name in schema.fields else name for name in projection.attributes)
+    return projection.type == "INCLUDE" and attribute in included
+
+
+def projects_every_field(schema: ModelSchema, spec: IndexSpec) -> bool:
+    """Whether the entries of the index ``spec`` hold every attribute of the model."""
+    return all(projects_attribute(schema, spec, field.attribute) for field in schema.fields.values())
 
 
 def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[str, ...]:
@@ -1177,19 +1363,86 @@ def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[s
     return tuple(names)
 
 
-def _reader_options(schema: ModelSchema, spec: IndexSpec | None) -> dict[str, Any]:
+def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
     """Keyword arguments of ``Query``/``Scan`` that keep a read to the items of one model.
 
-    * Models with an entity type are filtered on it.
+    * Models with an entity type are filtered on it. An index declared without the type
+      attribute (``KEYS_ONLY``, ``INCLUDE``) may not hold it - tables created before dynamoxy
+      projected it into such indexes - so entries without one pass, and the items are checked
+      on the client once they are known (``hydrate()``).
     * Models with unique attributes and no entity type skip guard items, by their partition key
-      prefix.
+      prefix. Queries of the table, of local indexes and of global indexes keyed on the table's
+      partition key need no filter: they select one partition key value (and DynamoDB refuses
+      filters on the key attributes of what a query reads).
+    * Queries of templated sort keys check the prefix on the client when ``where()`` replaces
+      the ``begins_with`` condition and no entity type tells the models apart.
+    * Reads of an index that does not hold every field never decode its entries into instances
+      (``partial``; reads of such a local index ask for every attribute instead), and filters of
+      such a global index are checked against what it holds (``projected``).
 
     The filters are dynamoxy's own (``auto_filter``): they rarely remove items, so a limit still
     bounds each request.
     """
-    options: dict[str, Any] = {"key_names": index_key_attributes(schema, spec)}
-    if schema.type_attribute is not None and schema.entity is not None:
-        options["auto_filter"] = schema._path(schema.type_attribute) == schema.entity
+    names = index_key_attributes(schema, spec)
+    options: dict[str, Any] = {"key_names": names}
+    if spec is not None and not projects_every_field(schema, spec):
+        # Entries of such an index are not complete items: instances decoded from them would hold
+        # defaults instead of the stored values (and writing them would store the defaults).
+        options["partial" if spec.kind == "global" else "select_all"] = True
+    type_attribute, entity = schema.type_attribute, schema.entity
+    if type_attribute is not None and entity is not None:
+        path = schema._path(type_attribute)
+        if spec is None or projects_attribute(schema, spec, type_attribute):
+            options["auto_filter"] = path == entity
+        else:
+            options["auto_filter"] = path.not_exists() | (path == entity)
+            options["checks"] = (functools.partial(_has_entity, type_attribute, entity),)
     elif schema.unique_fields and schema.partition_key is not None:
-        options["auto_filter"] = ~schema._path(schema.partition_key.attribute).begins_with(GUARD_PREFIX)
+        partition = schema.partition_key.attribute
+        target_keys = (
+            {spec.partition_key.attribute, *([spec.sort_key.attribute] if spec.sort_key else ())}
+            if spec is not None
+            else set(schema._key_attributes)
+        )
+        if not query or partition not in target_keys:
+            options["auto_filter"] = ~schema._path(partition).begins_with(GUARD_PREFIX)
+    sort = (spec.sort_key if spec is not None else schema.sort_key) if query else None
+    template = sort.template if sort is not None else None
+    typed = type_attribute is not None and entity is not None
+    if template is not None and template.prefix and not typed:
+        if template.is_constant:
+            options["where_checks"] = (functools.partial(_has_value, sort.attribute, template.template),)  # type: ignore[union-attr]
+        else:
+            options["where_checks"] = (functools.partial(_has_prefix, sort.attribute, template.prefix),)  # type: ignore[union-attr]
+    if spec is not None and spec.kind == "global" and spec.projection.type != "ALL":
+        held = set(names)
+        held.update(
+            schema.fields[name].attribute if name in schema.fields else name for name in spec.projection.attributes
+        )
+        if type_attribute is not None:
+            held.add(type_attribute)
+        options["projected"] = frozenset(held)
     return options
+
+
+def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
+    """Whether ``value`` is a key attribute's stored form already (``S``, ``N`` or ``B``)."""
+    kind = spec.codec.key_type()
+    if kind == "S":
+        return isinstance(value, str)
+    if kind == "N":
+        return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+    return isinstance(value, bytes)
+
+
+def _has_entity(attribute: str, entity: str, item: dict[str, Any]) -> bool:
+    return item.get(attribute, entity) == entity
+
+
+def _has_prefix(attribute: str, prefix: str, item: dict[str, Any]) -> bool:
+    value = item.get(attribute)
+    return isinstance(value, str) and value.startswith(prefix)
+
+
+def _has_value(attribute: str, expected: str, item: dict[str, Any]) -> bool:
+    return item.get(attribute) == expected

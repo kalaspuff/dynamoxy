@@ -59,6 +59,11 @@ Ways to consume it:
 
 Queries are immutable: every builder method returns a new query.
 
+`where()` takes the one sort key condition DynamoDB allows per query: combine bounds with
+`between()` (two `where()` calls, or a sort key value given to `query()` and a `where()`, raise
+`ValueError`). For a templated sort key with a constant prefix (`"ORDER#{order_id}"`), the
+`where()` condition replaces the `begins_with` dynamoxy adds otherwise.
+
 ### Filters cost reads
 
 A filter is applied after DynamoDB reads items: filtered items still consume read capacity, and a
@@ -101,8 +106,22 @@ await orders.query(customer_id="c1").project(Order.order_id, Order.status).all()
 ```
 
 Global secondary indexes are eventually consistent and cannot be read with `consistent=True`
-(see [Consistency](#consistency)). Index entries with `KEYS_ONLY`/`INCLUDE` projections decode
-into instances with only those fields; `.hydrate()` reads the full items with `BatchGetItem`.
+(see [Consistency](#consistency)).
+
+Entries of an index with a `KEYS_ONLY` or `INCLUDE` projection hold only some attributes:
+
+- Model reads of such a *global* index raise `ValueError` before any request, unless they add
+  `.hydrate()` (the full items, with `BatchGetItem`) or `.project(...)` (dicts of the attributes
+  the index holds): an instance made from an entry would show defaults instead of the stored
+  values, and writing it would store them. `count()` and `exists()` need neither.
+- Model reads of such a *local* index ask DynamoDB for every attribute (`Select=ALL_ATTRIBUTES`:
+  it reads the rest from the table, at the cost of reading the items).
+- A filter on an attribute a global index does not hold raises `ValueError`: DynamoDB filters the
+  index entries, so it would never match. Filter the hydrated items in Python instead, or project
+  the attribute into the index.
+- For models with an entity type (single-table design), dynamoxy projects the type attribute
+  into such indexes when it creates them. Indexes created before (dynamoxy 0.2) do not hold it:
+  their entries pass the entity filter, and `.hydrate()` checks the entity of the full items.
 
 ## Scans
 

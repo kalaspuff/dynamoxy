@@ -2,12 +2,38 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
 import dynamoxy
+from dynamoxy import Attr, Model, field, partition_key, sort_key
 from tests.models import Account, User
+
+
+class Membership(Model, table="memberships"):
+    """Unique values in a table with a sort key, and no entity type."""
+
+    org_id: Attr[str] = partition_key()
+    user_id: Attr[str] = sort_key()
+    email: Attr[str] = field(unique=True)
+
+
+class Profile(Model, table="profiles"):
+    """Optional unique values, one of them a number."""
+
+    profile_id: Attr[str] = partition_key()
+    handle: Attr[str | None] = field(default=None, unique=True)
+    seat: Attr[Decimal | None] = field(default=None, unique=True)
+
+
+async def guards(repository: dynamoxy.Repository[Any]) -> list[str]:
+    """The partition keys of the guard items in the repository's table."""
+    partition = repository.schema.partition_key
+    assert partition is not None
+    items = await repository.table.scan(consistent=True).all()
+    return sorted(item[partition.attribute] for item in items if item[partition.attribute].startswith("_unique#"))
 
 
 def make_user(user_id: str, email: str, **changes: Any) -> User:
@@ -98,3 +124,88 @@ async def test_pydantic_unique_and_versions(client: dynamoxy.Client, users: dyna
     assert account.version == 2
     with pytest.raises(dynamoxy.VersionConflictError):
         await accounts.save(stale)
+
+
+async def test_partitions_of_unique_models_can_be_queried(client: dynamoxy.Client) -> None:
+    await client.create_tables(Membership)
+    memberships = client.repository(Membership)
+    for user_id in ("u1", "u2", "u3"):
+        await memberships.create(Membership(org_id="o1", user_id=user_id, email=f"{user_id}@example.com"))
+    # DynamoDB refuses filters on the key attributes a query reads: guard items need none here.
+    assert [member.user_id for member in await memberships.query(org_id="o1").all()] == ["u1", "u2", "u3"]
+    assert await memberships.count(org_id="o1") == 3
+    assert [
+        member.user_id for member in await memberships.query(org_id="o1").where(Membership.user_id > "u1").all()
+    ] == [
+        "u2",
+        "u3",
+    ]
+    assert (await memberships.query(org_id="o1").descending().first()).user_id == "u3"  # type: ignore[union-attr]
+    assert await memberships.count() == 3, "scans still leave guard items out"
+    assert sorted(member.user_id for member in await memberships.scan().all()) == ["u1", "u2", "u3"]
+
+
+async def test_optional_unique_values_can_be_removed_and_set_again(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    profile = await profiles.create(Profile(profile_id="p1", handle="ada"))
+    await profiles.update(profile, Profile.handle.set(None))
+    assert profile.handle is None
+    await profiles.create(Profile(profile_id="p2", handle="ada"))  # the old value is free
+    await profiles.update(profile, Profile.handle.set("lovelace"))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("countess"))
+    assert (await profiles.get_or_raise("p1")).handle == "countess"
+    assert await guards(profiles) == ["_unique#Profile#handle#ada", "_unique#Profile#handle#countess"]
+
+
+async def test_unique_values_stored_as_null_can_be_set(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    # A NULL stored by another writer (or by set(None) of older versions) reads as None.
+    await profiles.table.put({"profile_id": "p1", "handle": None, "seat": None})
+    profile = await profiles.get_or_raise("p1")
+    assert (profile.handle, profile.seat) == (None, None)
+    await profiles.update(profile, Profile.handle.set("ada"))
+    await profiles.table.put({"profile_id": "p2", "seat": None})
+    other = await profiles.get_or_raise("p2")
+    other.seat = Decimal(7)
+    await other.save()
+    await profiles.table.put({"profile_id": "p3", "handle": None})
+    third = await profiles.get_or_raise("p3")
+    third.handle = "grace"
+    await profiles.put(third)
+    assert await guards(profiles) == [
+        "_unique#Profile#handle#ada",
+        "_unique#Profile#handle#grace",
+        "_unique#Profile#seat#7",
+    ]
+
+
+async def test_unique_numbers_compare_as_numbers(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    await profiles.create(Profile(profile_id="p1", seat=Decimal("5.0")))
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await profiles.create(Profile(profile_id="p2", seat=Decimal(5)))
+    loaded = await profiles.get_or_raise("p1")
+    await profiles.update(loaded, Profile.seat.set(Decimal(6)))
+    await profiles.create(Profile(profile_id="p3", seat=Decimal("5.00")))  # the guard of 5 went with the change
+    assert await guards(profiles) == ["_unique#Profile#seat#5", "_unique#Profile#seat#6"]
+
+
+async def test_put_of_an_instance_whose_unique_values_changed_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.repository(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one"))
+    other = await profiles.get_or_raise("p1")
+    await profiles.update(other, Profile.handle.set("two"))
+    stale.seat = Decimal(1)
+    await profiles.put(stale)  # put() replaces what is stored: the guards follow the stored item
+    stored = await profiles.get_or_raise("p1")
+    assert (stored.handle, stored.seat) == ("one", Decimal(1))
+    await profiles.create(Profile(profile_id="p2", handle="two")), "the value of the other write is free again"
+    assert await guards(profiles) == [
+        "_unique#Profile#handle#one",
+        "_unique#Profile#handle#two",
+        "_unique#Profile#seat#1",
+    ]

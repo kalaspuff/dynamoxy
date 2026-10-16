@@ -20,7 +20,10 @@ await client.ensure_tables(User, Order)
   `exist_ok=True` skips existing tables.
 - `ensure_tables()` creates missing tables and adds missing global indexes (one at a time, as
   DynamoDB requires, waiting for each backfill) and TTL settings. It never deletes indexes or
-  tables and raises `TypeError` if a key schema differs.
+  tables, and raises `TypeError` when what exists differs from the models in a way it cannot
+  change: the key schema of the table or of an index with the same name, or the TTL attribute.
+- Indexes with a `KEYS_ONLY` or `INCLUDE` projection of models with an entity type also project
+  the type attribute (`_type`), which model queries filter on.
 
 In production, prefer infrastructure as code (CloudFormation, CDK, Terraform). The definitions
 dynamoxy would use are available for generating it:

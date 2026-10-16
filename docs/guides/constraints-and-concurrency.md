@@ -24,7 +24,13 @@ sort key). A write that sets or changes a unique value is a transaction:
 | `delete` | `Delete item` + `Delete guards` |
 
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
-nothing is written. `None` values have no guard (several items may have no handle).
+nothing is written. `None` values have no guard (several items may have no handle), and
+`update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
+DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value.
+
+A `put()` (or `save()` of an unversioned model) of an instance whose unique values another writer
+changed since it was loaded reads the stored item and writes again, so it replaces what is stored
+and moves the guards with it, as `put()` promises.
 
 **Costs and requirements.**
 
@@ -96,8 +102,9 @@ another read.
 
 ## Immutable fields
 
-`field(immutable=True)` fields cannot be updated once stored: `update()` actions on them raise
-`ValueError`. Keys are always immutable.
+`field(immutable=True)` fields cannot change once stored: `update()` actions on them raise
+`ValueError`, and so do `put()`, `save()` and batch puts of a loaded instance whose value changed.
+Keys are always immutable, and so are the fields a key template uses on a loaded instance.
 
 ## Idempotency
 

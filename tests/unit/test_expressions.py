@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -10,9 +11,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import dynamoxy
-from dynamoxy import F, _core
-from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition, describe
+from dynamoxy import Attr, F, Model, _core, field, partition_key
+from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition, attribute_roots, describe
 from tests.models import Event, Status, User
+
+
+class Timer(Model, table="timers"):
+    timer_id: Attr[str] = partition_key()
+    spent: Attr[timedelta] = field(default=timedelta(0))
 
 
 def compile_condition(condition: Condition) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -130,6 +136,60 @@ def test_increment_and_decrement_are_add_actions() -> None:
     builder = ExpressionBuilder()
     assert builder.update([F("n").decrement(3)]) == "ADD #a0 :v0"
     assert builder.values == {":v0": -3}
+
+
+def test_none_means_no_attribute_for_model_fields() -> None:
+    builder = ExpressionBuilder()
+    assert builder.update([User.age.set(None)]) == "REMOVE #a0", "None is not stored, as with put() and save()"
+    # A NULL that another writer stored reads as None too.
+    text, names, values = compile_condition(User.age == None)  # noqa: E711
+    assert (text, names, values) == (
+        "(attribute_not_exists(#a0)) OR (attribute_type(#a0, :v0))",
+        {"#a0": "age"},
+        {":v0": "NULL"},
+    )
+    text, names, values = compile_condition(User.age != None)  # noqa: E711
+    assert text == "(attribute_exists(#a0)) AND (NOT (attribute_type(#a0, :v0)))"
+    check(condition=text, names=names, values=values)
+    with pytest.raises(ValueError, match="would store nothing"):
+        User.age.set_if_not_exists(None)
+    # Untyped paths keep DynamoDB's NULL.
+    builder = ExpressionBuilder()
+    assert builder.update([F("x").set(None)]) == "SET #a0 = :v0"
+    assert builder.values == {":v0": None}
+    assert compile_condition(F("x") == None)[0] == "#a0 = :v0"  # noqa: E711
+
+
+def test_increments_of_model_fields_check_their_amount() -> None:
+    builder = ExpressionBuilder()
+    assert builder.update([User.visits.increment(2), Timer.spent.decrement(timedelta(seconds=1.5))]) == (
+        "ADD #a0 :v0, #a1 :v1"
+    )
+    assert builder.values == {":v0": 2, ":v1": Decimal("-1.5")}
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        User.visits.increment(1.5)
+    with pytest.raises(TypeError, match="need a number"):
+        User.name.increment()
+    with pytest.raises(TypeError, match="take a number"):
+        User.visits.increment(User.visits)  # type: ignore[arg-type]
+    builder = ExpressionBuilder()
+    assert builder.update([Timer.spent.set(Timer.spent + timedelta(seconds=2))]) == "SET #a0 = #a0 + :v0"
+    assert builder.values == {":v0": Decimal("2.000000")}, "arithmetic encodes with the field's codec"
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        User.visits + 0.5
+
+
+def test_attribute_roots_of_conditions() -> None:
+    condition = (
+        (F("a")["b"] == 1) & ~F("c").exists()
+        | F("d").size().between(1, 2)
+        | (F("e") == F("f"))
+        | F("g").is_in([F("h")])
+    )
+    assert attribute_roots(condition) == {"a", "c", "d", "e", "f", "g", "h"}
+    assert attribute_roots(User.tags.contains("x") & User.email.begins_with("a")) == {"tags", "email"}
+    raw = dynamoxy.condition("#x = :y", names={"#x": "x"}, values={":y": 1})
+    assert attribute_roots(raw & (F("z") == 1)) is None, "hand-written conditions hide their attributes"
 
 
 def test_projection_expressions() -> None:

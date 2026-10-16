@@ -66,7 +66,10 @@ A timeout or connection loss during a write leaves its outcome unknown. dynamoxy
 default), which is safe for:
 
 - conditional writes (`create`, `save`, unique guards, version checks): a duplicate fails its
-  condition, and dynamoxy reports what it found;
+  condition, and dynamoxy reports what it found. If the first attempt was applied, the retry
+  fails on the item it wrote itself: `create()` raises `ItemAlreadyExistsError` and `save()`
+  `VersionConflictError` for a write that happened. When `error.attempts > 1`, compare
+  `error.item` with what you wrote (its `updated_at`, or a request id stored with the item);
 - transactions: retries reuse the idempotency token;
 - `put` of a complete item and `SET` updates: applying them twice has the same result.
 

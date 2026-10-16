@@ -60,8 +60,10 @@ instances" below); `add`/`increment`/`decrement` only build the update action.
 1. **Python, `repository.py`**: validate the instance (`ModelSchema.validate`: codecs,
    constraints, validators), run `before_*` hooks (model methods, then client hooks), compute
    automatic fields (`created_at`, `updated_at`, `version`) and derived (templated) attributes.
-   Updates render derived attributes from the values they set, or, for arithmetic and
-   functions, from the update evaluated on the item as last read (`_core._apply_update`).
+   A write of a loaded instance refuses a changed key or immutable value, and keeps the
+   attributes of the stored item that no field declares. Updates render derived attributes from
+   the values they set (`updated_at` included), or, for arithmetic, functions and the version,
+   from the update evaluated on the item as last read (`_core._apply_update`).
 2. **Python, `_plan_*`**: build a `_WritePlan`: one operation (put, update or delete with its
    condition: key existence for `create`, version for `save`, the caller's condition) or, for
    models with unique attributes, a transaction with guard puts and deletes
@@ -107,15 +109,18 @@ are refreshed by evaluating the update on the item as loaded with the core's eva
 ### A query (`repository.query(...)`)
 
 1. **Python**: resolve the index and render key values through templates
-   (`ModelSchema.index_key`); add `begins_with` for templated sort keys with a constant prefix,
-   and an entity filter (`_type`) or guard-item filter where needed (`repository._reader_options`).
+   (`ModelSchema.index_key`); add `begins_with` for templated sort keys with a constant prefix
+   (replaced by a `where()` condition, since DynamoDB takes one sort key condition), and an
+   entity filter (`_type`) or guard-item filter where needed (`repository._reader_options`).
    Such filters are kept apart from the caller's filters: they rarely remove items, so a limit
-   still bounds each request.
+   still bounds each request. A guard-item filter is left out where DynamoDB refuses one, on the
+   key attributes of what a query reads.
 2. Each page is one `Query` call (`Limit` = `page_size`, or what a `limit` still needs);
    `LastEvaluatedKey` becomes an opaque cursor (`query.encode_cursor`: base64url JSON of typed
    values), and a page cut at the limit gets the key of its last item. Items are decoded into
-   model instances (`after_load` hooks run), or hydrated with `BatchGetItem` for partial
-   projections.
+   model instances (`after_load` hooks run), or hydrated with `BatchGetItem`: entries of a
+   global index that does not hold every field are never decoded into instances, and reads of
+   such a local index ask for every attribute (`Select=ALL_ATTRIBUTES`).
 
 ### Events
 

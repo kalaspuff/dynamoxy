@@ -2,14 +2,50 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 import dynamoxy
+from dynamoxy import Attr, GlobalIndex, IndexDefinition, Model, Projection, field, partition_key, sort_key
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, LineItem, Order, OrderStatus
+
+
+class Payment(Model, table="ledger", entity="Payment"):
+    """Two entities sharing an index that holds only some attributes."""
+
+    pk: Attr[str] = partition_key(template="ACCOUNT#{account_id}")
+    sk: Attr[str] = sort_key(template="PAYMENT#{payment_id}")
+    account_id: Attr[str]
+    payment_id: Attr[str]
+    state: Attr[str] = field(default="open")
+    amount: Attr[int] = field(default=0)
+    gsi1pk: Attr[str] = field(template="STATE#{state}")
+
+    by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.keys_only())
+
+
+class Price(Model, table="catalog", entity="Price"):
+    """Key templates with a Decimal and a formatted datetime."""
+
+    pk: Attr[str] = partition_key(template="SKU#{sku}")
+    sk: Attr[str] = sort_key(template="PRICE#{amount}#{valid_from:%Y-%m-%d}")
+    sku: Attr[str]
+    amount: Attr[Decimal]
+    valid_from: Attr[datetime]
+
+
+class Refund(Model, table="ledger", entity="Refund"):
+    pk: Attr[str] = partition_key(template="ACCOUNT#{account_id}")
+    sk: Attr[str] = sort_key(template="REFUND#{refund_id}")
+    account_id: Attr[str]
+    refund_id: Attr[str]
+    state: Attr[str] = field(default="open")
+    gsi1pk: Attr[str] = field(template="STATE#{state}")
+
+    by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.include("state"))
 
 
 @pytest.fixture
@@ -108,6 +144,22 @@ async def test_entity_types_keep_models_apart(app: dynamoxy.Client) -> None:
     assert sorted(item["_type"] for item in raw) == ["Customer", "Order"]
 
 
+async def test_where_replaces_the_prefix_of_templated_sort_keys(app: dynamoxy.Client) -> None:
+    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
+    orders = app.repository(Order)
+    for order_id, day in (("2025-01", 1), ("2025-02", 2), ("2026-01", 3)):
+        await orders.create(order(order_id, day))
+    query = orders.query(customer_id="c1")
+    in_2025 = await query.where(Order.sk.begins_with("ORDER#2025")).all()
+    assert [item.order_id for item in in_2025] == ["2025-01", "2025-02"]
+    # "PROFILE" sorts after every "ORDER#...": the entity type keeps the customer out.
+    later = await query.where(Order.sk >= "ORDER#2025-02").descending().all()
+    assert [item.order_id for item in later] == ["2026-01", "2025-02"]
+    window = await query.where(Order.sk.between("ORDER#2025-02", "ORDER#2026-12")).all()
+    assert [item.order_id for item in window] == ["2025-02", "2026-01"]
+    assert await query.where(Order.sk < "ORDER#2025-02").count() == 1
+
+
 async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> None:
     orders = app.repository(Order)
     await orders.batch_put([order(f"o{index:02}", 1 + index % 27) for index in range(30)])
@@ -124,3 +176,71 @@ async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> N
     assert newest.order_id == "o29"
     assert [item.order_id for item in await orders.query(customer_id="c1").limit(3).all()] == ["o00", "o01", "o02"]
     assert limits == [1, 3], "the entity filter dynamoxy adds does not make limits read whole pages"
+
+
+async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> None:
+    await client.create_tables(Payment, Refund)
+    gsi1 = (await client.table("ledger").describe()).indexes["gsi1"]
+    assert gsi1.projection == "INCLUDE"
+    assert set(gsi1.projected_attributes) == {"_type", "state"}, "the entity type is projected for its filter"
+    payments, refunds = client.repository(Payment), client.repository(Refund)
+
+    async def write_items() -> None:
+        await payments.create(Payment(account_id="a1", payment_id="p1", amount=5))
+        await refunds.create(Refund(account_id="a1", refund_id="r1"))
+
+    await write_items()
+    open_payments = payments.query(index=Payment.by_state, state="open")
+    assert [item.payment_id for item in await open_payments.hydrate().all()] == ["p1"]
+    assert [row["sk"] for row in await open_payments.project("sk").all()] == ["PAYMENT#p1"]
+    assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
+        "r1"
+    ]
+    with pytest.raises(ValueError, match=r"add \.hydrate\(\)"):
+        await open_payments.all()
+    with pytest.raises(ValueError, match="does not hold 'amount'"):
+        open_payments.filter(Payment.amount > 1)
+    # A table whose index does not hold the entity type (created before dynamoxy projected it):
+    # the entries pass the filter, and hydrated items are checked on the client.
+    await client.delete_tables(Payment)
+    await client.table("ledger").create(
+        partition_key=("pk", "S"),
+        sort_key=("sk", "S"),
+        indexes=[IndexDefinition("gsi1", "global", ("gsi1pk", "S"), projection=Projection.keys_only())],
+    )
+    await write_items()
+    assert [item.payment_id for item in await open_payments.hydrate().all()] == ["p1"]
+    assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
+        "r1"
+    ]
+
+
+async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> None:
+    orders = app.repository(Order)
+    placed = await orders.create(order("o1", 1))
+    placed.customer_id = "c2"
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await placed.save()
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await orders.put(placed)
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await orders.batch_put([placed])
+    assert [(item.customer_id, item.order_id) for item in await orders.scan().all()] == [("c1", "o1")]
+    await orders.create(placed.copy())  # a copy is a new item
+    await orders.delete(Order.key(customer_id="c1", order_id="o1"))
+    assert [item.customer_id for item in await orders.scan().all()] == ["c2"]
+
+
+async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None:
+    await client.create_tables(Price)
+    prices = client.repository(Price)
+    local = timezone(timedelta(hours=2))
+    price = await prices.create(
+        Price(sku="a", amount=Decimal("1.50"), valid_from=datetime(2026, 1, 1, 0, 30, tzinfo=local))
+    )
+    assert price.sk == "PRICE#1.5#2025-12-31"
+    loaded = await prices.get_or_raise(
+        sku="a", amount=Decimal("1.5"), valid_from=datetime(2025, 12, 31, 22, 30, tzinfo=UTC)
+    )
+    await loaded.save()
+    assert [item.sk for item in await prices.query(sku="a").all()] == ["PRICE#1.5#2025-12-31"], "the same item"

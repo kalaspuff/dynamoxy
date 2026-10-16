@@ -21,6 +21,79 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   limit kept the cursor of the whole page, so an API continuing with it skipped the items after
   the limit. `page()` now evaluates at most `limit` items, and a cut page gets a cursor right
   after its last item.
+- Queries of the table (and of local indexes) of a model with unique attributes and no entity
+  type failed in DynamoDB with `ValidationException: Filter Expression can only contain
+  non-primary key attributes`: the guard-item filter read the partition key. Such queries need
+  no filter and no longer send one.
+- `where()` on a templated sort key (`orders.query(customer_id="c1").where(Order.sk.begins_with(
+  "ORDER#2026"))`) failed in DynamoDB with `Conditions can be of length 1 or 2 only`, because
+  dynamoxy had already added `begins_with(sk, "ORDER#")`. A `where()` condition now replaces it.
+  `where()` takes one condition, as DynamoDB does: a second one raises `ValueError`.
+- Queries of a model with an entity type through a `KEYS_ONLY` or `INCLUDE` global index
+  returned nothing in DynamoDB, also with `.hydrate()`: the entity filter read `_type`, which
+  the index did not hold. dynamoxy now projects the type attribute into such indexes when it
+  creates them, keeps the entries of older indexes without it, and checks the entity of hydrated
+  items.
+- Model reads of an index that does not hold every field returned instances with defaults
+  instead of the stored values (`Counter(count=0)` for a stored 42), and `save()` of one stored
+  those defaults. Reads of such a global index now raise `ValueError` before any request unless
+  they `.hydrate()` or `.project(...)`; reads of such a local index ask DynamoDB for every
+  attribute; `exists()` reads keys only. Filters on attributes a global index does not hold
+  raise `ValueError` (they could never match).
+- `Model.field.set(None)` stored DynamoDB's `NULL` instead of removing the attribute: on a
+  unique field, every later value failed with `ConditionalCheckFailedError`; on an index key,
+  DynamoDB refused the update; and `not_exists()` did not match. It now removes the attribute,
+  and `Model.field == None` matches a missing attribute or a `NULL` (`!= None`: the others).
+  Unique fields that hold a `NULL` (from that bug, or another writer) take new values again.
+- `update()` did not render templated attributes that use `updated_at` or `version` again, so
+  an index sort key such as `"{status}#{updated_at}"` kept the time of an older write.
+- Unique guards of numbers depended on how the number was written (`5.0` and `5` were
+  different values), and changing or deleting a `Decimal("5.0")` deleted the wrong guard, so the
+  value stayed taken forever. Guards now use DynamoDB's canonical numbers (ADR 0013).
+- Key templates rendered `Decimal` values with their exponent and formatted datetimes in their
+  own time zone, so an item read back rendered another key and `save()` wrote a duplicate. They
+  now render what DynamoDB stores (ADR 0013).
+- `datetime_format="epoch_ms"` stored about one timestamp in 160 a millisecond early, and every
+  load and save moved it again; `"epoch"` rounded toward zero before 1970. Both are exact now.
+- `save()` and `put()` of a loaded instance stored a changed `immutable=True` value, and a
+  changed key (or a field a key template uses) wrote a second item next to the first. Both now
+  raise `ValueError` before any I/O, also in batch puts.
+- `put()` (and `save()` of unversioned models) of a model with unique attributes failed with an
+  unexplained `ConditionalCheckFailedError` when another writer had changed the unique values
+  since the instance was loaded. It now reads the stored item and writes again.
+- Keys given as field values whose names are the key attributes (`devices.update({"device_id":
+  uuid}, ...)`) were sent unencoded and failed; batch reads and `hydrate()` dropped items with
+  float keys such as `0.1`.
+- A `BatchWriter` flush ran `after_save` hooks and marked instances as stored for writes that
+  stayed unprocessed, and a flush that failed before its request (a `before_save` hook raised)
+  dropped every queued write. Only written instances are finalized now, and what a failed flush
+  did not write stays queued. `batch_put()` and `batch_delete()` write a repeated key once (the
+  last one wins) instead of failing in DynamoDB, and finalize only what was written.
+- A failing `after_*` hook after a committed transaction (or batch) left the other written
+  instances unfinalized: a later `save()` of one failed with `VersionConflictError`.
+- Smaller ones: `copy()` silently ignored misspelled field names (now `TypeError`);
+  `Model.field.increment(0.5)` stored a fraction in an `int` field, and `increment()` of a
+  `timedelta` field failed in the core (amounts and arithmetic now use the field's codec);
+  subclasses of repository subclasses did not find their model.
+- `ensure_tables()` reported nothing to change when an index of the same name had another key,
+  or when TTL was enabled on another attribute; it now raises `TypeError`, like for the table's
+  key.
+
+### Changed
+
+- [**breaking**] Model reads of global indexes that do not hold every field raise `ValueError`
+  unless they `.hydrate()` or `.project(...)` (see above, and
+  [ADR 0012](docs/adr/0012-reads-of-partial-indexes.md)). `KEYS_ONLY` and `INCLUDE` indexes that
+  dynamoxy creates for models with an entity type now also hold `_type`.
+- Stored forms that change for new writes, with migration notes in
+  [ADR 0013](docs/adr/0013-stored-forms-read-back-as-written.md): guard keys of non-canonical
+  numbers, template keys of non-canonical `Decimal`s and non-UTC formatted datetimes, and epoch
+  milliseconds that were a millisecond early.
+- [**breaking**] Writes of loaded instances (`save()`, `put()`, batch puts) keep the attributes
+  of the stored item that their model does not declare, so an older version of an application
+  no longer erases fields a newer one wrote during a rolling deploy
+  ([ADR 0014](docs/adr/0014-writes-keep-undeclared-attributes.md)). Remove a retired attribute
+  with `update(item, F("name").remove())`.
 
 ## [0.2.0] - 2026-10-15
 

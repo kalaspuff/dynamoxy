@@ -1,6 +1,6 @@
 # 0008: Stored formats: codecs, sortable timestamps, entity types, cursors
 
-Status: Accepted
+Status: Accepted, amended by [0013](0013-stored-forms-read-back-as-written.md)
 
 ## Context
 

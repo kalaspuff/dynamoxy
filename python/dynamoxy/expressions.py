@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, override
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+    from datetime import timedelta
     from decimal import Decimal
 
 __all__ = [
@@ -348,6 +349,20 @@ class Path[T](Operand):
     def _value(self, value: Any) -> Operand:
         return _operand(value, self._encoder)
 
+    def _none_is_missing(self) -> bool:
+        """Whether ``None`` means "no attribute" here (model fields), rather than DynamoDB's ``NULL``."""
+        return False
+
+    def _amount(self, amount: Any, *, negate: bool) -> Operand:
+        """The value ``increment()`` (``negate=False``) or ``decrement()`` adds."""
+        return Value(-amount if negate else amount)
+
+    def __add__(self, other: Any) -> Operand:
+        return Arithmetic(self, "+", self._value(other))
+
+    def __sub__(self, other: Any) -> Operand:
+        return Arithmetic(self, "-", self._value(other))
+
     # ---- conditions ---------------------------------------------------------------------
 
     # Decimal attributes also accept ints (``Account.balance >= 100``); the overloads say so.
@@ -359,6 +374,9 @@ class Path[T](Operand):
     @overload
     def __eq__(self, other: T | Operand) -> Condition: ...
     def __eq__(self, other: object) -> Condition:  # type: ignore[override]
+        if other is None and self._none_is_missing():
+            # A NULL that another writer stored reads as None too.
+            return Function("attribute_not_exists", self, None) | self.is_type("NULL")
         return Compare(self, "=", self._value(other))
 
     @overload
@@ -368,6 +386,8 @@ class Path[T](Operand):
     @overload
     def __ne__(self, other: T | Operand) -> Condition: ...
     def __ne__(self, other: object) -> Condition:  # type: ignore[override]
+        if other is None and self._none_is_missing():
+            return Function("attribute_exists", self, None) & ~self.is_type("NULL")
         return Compare(self, "<>", self._value(other))
 
     @overload
@@ -450,7 +470,13 @@ class Path[T](Operand):
     @overload
     def set(self, value: T | Operand) -> UpdateAction: ...
     def set(self, value: Any) -> UpdateAction:
-        """``SET path = value`` (a value, another path or arithmetic such as ``path + 1``)."""
+        """``SET path = value`` (a value, another path or arithmetic such as ``path + 1``).
+
+        For model fields, ``set(None)`` removes the attribute: a field that is ``None`` is not
+        stored (as ``put()`` and ``save()`` do), never stored as DynamoDB's ``NULL``.
+        """
+        if value is None and self._none_is_missing():
+            return UpdateAction("REMOVE", self, None)
         return UpdateAction("SET", self, self._value(value))
 
     @overload
@@ -459,6 +485,8 @@ class Path[T](Operand):
     def set_if_not_exists(self, value: T) -> UpdateAction: ...
     def set_if_not_exists(self, value: Any) -> UpdateAction:
         """``SET path = if_not_exists(path, value)``: set only when missing."""
+        if value is None and self._none_is_missing():
+            raise ValueError(f"{self}.set_if_not_exists(None) would store nothing: give a value")
         return UpdateAction("SET", self, IfNotExists(self, self._value(value)))
 
     @overload
@@ -477,13 +505,25 @@ class Path[T](Operand):
         """``ADD path value``: adds to a number (missing counts as 0) or a set."""
         return UpdateAction("ADD", self, self._value(value))
 
-    def increment(self, amount: float = 1) -> UpdateAction:
-        """Adds ``amount`` to a number attribute (missing counts as 0)."""
-        return UpdateAction("ADD", self, Value(amount))
+    @overload
+    def increment(self: Path[timedelta] | Path[timedelta | None], amount: timedelta) -> UpdateAction: ...
+    @overload
+    def increment(self, amount: float | Decimal = 1) -> UpdateAction: ...
+    def increment(self, amount: Any = 1) -> UpdateAction:
+        """Adds ``amount`` to a number attribute (missing counts as 0).
 
-    def decrement(self, amount: float = 1) -> UpdateAction:
+        Model fields check ``amount`` against their type (an ``int`` field takes integers, a
+        ``timedelta`` field durations).
+        """
+        return UpdateAction("ADD", self, self._amount(amount, negate=False))
+
+    @overload
+    def decrement(self: Path[timedelta] | Path[timedelta | None], amount: timedelta) -> UpdateAction: ...
+    @overload
+    def decrement(self, amount: float | Decimal = 1) -> UpdateAction: ...
+    def decrement(self, amount: Any = 1) -> UpdateAction:
         """Subtracts ``amount`` from a number attribute (missing counts as 0)."""
-        return UpdateAction("ADD", self, Value(-amount))
+        return UpdateAction("ADD", self, self._amount(amount, negate=True))
 
     def delete(self, values: T) -> UpdateAction:
         """``DELETE path values``: removes elements from a set."""
@@ -766,6 +806,52 @@ class UpdateAction:
 def path_of(value: Path[Any] | str) -> Path[Any]:
     """A path from a path or an attribute name."""
     return value if isinstance(value, Path) else F(value)
+
+
+def _operand_roots(operand: Operand | None, roots: set[str]) -> None:
+    if isinstance(operand, Path):
+        roots.add(str(operand.elements[0]))
+    elif isinstance(operand, Size):
+        roots.add(str(operand.path.elements[0]))
+    elif isinstance(operand, Arithmetic):
+        _operand_roots(operand.left, roots)
+        _operand_roots(operand.right, roots)
+    elif isinstance(operand, IfNotExists):
+        roots.add(str(operand.path.elements[0]))
+        _operand_roots(operand.default, roots)
+    elif isinstance(operand, ListAppend):
+        _operand_roots(operand.first, roots)
+        _operand_roots(operand.second, roots)
+
+
+def attribute_roots(condition: Condition) -> set[str] | None:
+    """The top-level attributes ``condition`` reads, or ``None`` when a hand-written part hides them."""
+    roots: set[str] = set()
+    pending: list[Condition] = [condition]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, RawCondition):
+            return None
+        if isinstance(current, Compare):
+            _operand_roots(current.left, roots)
+            _operand_roots(current.right, roots)
+        elif isinstance(current, Between):
+            for operand in (current.operand, current.low, current.high):
+                _operand_roots(operand, roots)
+        elif isinstance(current, In):
+            _operand_roots(current.operand, roots)
+            for candidate in current.candidates:
+                _operand_roots(candidate, roots)
+        elif isinstance(current, Function):
+            roots.add(str(current.path.elements[0]))
+            _operand_roots(current.argument, roots)
+        elif isinstance(current, (And, Or)):
+            pending.extend(current.parts)
+        elif isinstance(current, Not):
+            pending.append(current.inner)
+        else:
+            return None
+    return roots
 
 
 def attr[T](value: T) -> Path[T]:

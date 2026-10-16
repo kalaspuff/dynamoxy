@@ -35,11 +35,14 @@ renaming one needs a data migration.
 ## Key templates
 
 `template="ORDER#{order_id}"` renders the key from other fields with their stored form (enums as
-values, datetimes as ISO text, numbers as text). Templated fields:
+values, datetimes as ISO text, numbers as text). Numbers are rendered as DynamoDB stores them
+(`Decimal("1.50")` as `1.5`) and datetimes formatted with a spec (`{placed_at:%Y-%m}`) are
+formatted in UTC, so an item read back renders the same key. Templated fields:
 
 - are never passed to the constructor and are recomputed on every write;
-- are recomputed by `update()` when a field they use changes (dynamoxy reads the item first if
-  the update does not set every field the template needs). Changes by arithmetic or functions
+- are recomputed by `update()` when a field they use changes, including `updated_at` and
+  `version` (dynamoxy reads the item first if the update does not set every field the template
+  needs). Changes by arithmetic or functions
   (`add`, `increment`, `set(path + 1)`, `set_if_not_exists`) are evaluated on the item as
   dynamoxy last read it. That is exact for versioned models (a stale instance fails the version
   check); for other models, a concurrent change between that read and the write can leave the
@@ -49,7 +52,10 @@ values, datetimes as ISO text, numbers as text). Templated fields:
 
 When a model's sort key template starts with a constant (`"ORDER#"`) and a query gives only the
 partition key, dynamoxy adds `begins_with(sk, "ORDER#")`, so `orders.query(customer_id="c1")`
-does not return the customer profile.
+does not return the customer profile. A `where()` condition replaces it, since DynamoDB takes one
+sort key condition per query:
+`orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2026-05"))`. The entity type
+still keeps other models out (`Order.sk >= "ORDER#2026"` would reach the profile otherwise).
 
 Template values must not contain the separators you rely on: validate them (`pattern=`) when
 they come from users.
@@ -64,6 +70,11 @@ paid = await orders.query(index=Order.by_status, status=OrderStatus.PAID).all()
 ```
 
 Models that should not appear in an index simply have no such fields (sparse index).
+
+An index with a `KEYS_ONLY` or `INCLUDE` projection of a model with an entity type also holds
+the type attribute when dynamoxy creates it, so that queries can filter on it. Read the full items
+with `.hydrate()`, or dicts with `.project(...)` (see
+[indexes and projections](reading-data.md#indexes-and-projections)).
 
 ## Collections
 

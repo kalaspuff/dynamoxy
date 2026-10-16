@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from dynamoxy import _core
 from dynamoxy.errors import DynamoxyError
-from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, and_, as_condition, path_of
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, and_, as_condition, attribute_roots, path_of
 from dynamoxy.results import ConsumedCapacity, Page
 
 if TYPE_CHECKING:
@@ -71,8 +71,11 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
 #: reads), or an async function that looks them up (dict-level reads of any table).
 type KeyNames = tuple[str, ...] | Callable[[], Awaitable[tuple[str, ...]]]
 
-#: How much larger the next request gets when filters dynamoxy adds itself removed items from a
-#: page: a few requests then find what a limit asks for.
+#: A check of a stored item on the client, for conditions a request cannot express.
+type ItemCheck = Callable[[dict[str, Any]], bool]
+
+#: How much larger the next request gets when filters dynamoxy adds itself (or checks on the
+#: client) removed items from a page: a few requests then find what a limit asks for.
 _GROWTH = 4
 
 
@@ -97,6 +100,13 @@ class _Reader[T]:
         decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
         key_names: KeyNames | None = None,
         auto_filter: Condition | None = None,
+        auto_sort: Condition | None = None,
+        explicit_sort: bool = False,
+        checks: tuple[ItemCheck, ...] = (),
+        where_checks: tuple[ItemCheck, ...] = (),
+        projected: frozenset[str] | None = None,
+        partial: bool = False,
+        select_all: bool = False,
     ) -> None:
         self._client = client
         self._table = table
@@ -122,6 +132,19 @@ class _Reader[T]:
         # Filters dynamoxy adds (the entity type, guard items of unique values): unlike the
         # caller's filters, they rarely remove items, so a limit still bounds each request.
         self._auto_filter = auto_filter
+        # The sort key condition dynamoxy adds (a template's constant prefix); where() replaces it,
+        # since DynamoDB takes one sort key condition per query.
+        self._auto_sort = auto_sort
+        self._explicit_sort = explicit_sort  # the key condition selects a sort key value already
+        self._where: Condition | None = None
+        self._checks = checks  # checks of every item on the client
+        self._where_checks = where_checks  # checks once where() replaced the automatic condition
+        self._projected = projected  # the attributes an index holds (None: every attribute)
+        # A global index that does not hold every attribute of the model: its entries cannot be
+        # decoded into complete instances (hydrate() or project() instead).
+        self._partial = partial
+        # A local index that does not hold every attribute: DynamoDB reads the rest from the table.
+        self._select_all = select_all
 
     def _replace(self, **changes: Any) -> Self:
         clone = copy.copy(self)
@@ -139,13 +162,33 @@ class _Reader[T]:
         """Adds a filter (AND-ed with earlier ones).
 
         Filters run after items are read: they reduce what is returned, not what is consumed.
+
+        Raises:
+            ValueError: The filter reads attributes that the global secondary index being read
+                does not hold (``KEYS_ONLY`` / ``INCLUDE`` projections), so it would never match.
         """
         combined = self._filter
         for condition in conditions:
             checked = as_condition(condition)
             assert checked is not None
+            self._check_projected(checked)
             combined = checked if combined is None else combined & checked
         return self._replace(filter=combined)
+
+    def _check_projected(self, condition: Condition) -> None:
+        projected = self._projected
+        if projected is None:
+            return
+        roots = attribute_roots(condition)
+        missing = sorted(roots - projected) if roots is not None else []
+        if missing:
+            owner = f"{self._model.__name__} index" if self._model is not None else "index"
+            names = ", ".join(repr(name) for name in missing)
+            raise ValueError(
+                f"{owner} {self._index!r} does not hold {names} (see its projection), and DynamoDB filters the "
+                "index entries before anything else, so this filter would never match: query the table, add the "
+                "attribute to the index with Projection.include(...), or check the items after .hydrate() in Python"
+            )
 
     def limit(self, count: int) -> Self:
         """Returns at most ``count`` items in total (iteration, ``all()``, ``count()``, ``page()``)."""
@@ -213,8 +256,12 @@ class _Reader[T]:
         params: dict[str, Any] = {"table_name": self._table, "consistent_read": self._consistent}
         if self._index is not None:
             params["index_name"] = self._index
-        if self._key_condition is not None:
-            params["key_condition_expression"] = builder.condition(self._key_condition)
+        key = self._key_condition
+        sort = self._where if self._where is not None else self._auto_sort
+        if sort is not None:
+            key = sort if key is None else key & sort
+        if key is not None:
+            params["key_condition_expression"] = builder.condition(key)
         filters = [condition for condition in (self._auto_filter, self._filter) if condition is not None]
         if filters:
             params["filter_expression"] = builder.condition(filters[0] if len(filters) == 1 else and_(*filters))
@@ -225,6 +272,8 @@ class _Reader[T]:
                 roots = {path.elements[0] for path in paths}
                 paths += tuple(F(name) for name in key_names if name not in roots)
             params["projection_expression"] = builder.projection(paths)
+        elif self._select_all and not self._hydrate:
+            params["select"] = "ALL_ATTRIBUTES"
         if limit is not None:
             params["limit"] = limit
         if start is not None:
@@ -257,6 +306,13 @@ class _Reader[T]:
         self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
     ) -> tuple[Page[T], list[dict[str, Any]]]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
+        if self._partial and not self._hydrate and not self._projection:
+            owner = self._model.__name__ if self._model is not None else "the models"
+            raise ValueError(
+                f"index {self._index!r} does not hold every attribute of {owner} (see its projection), so its entries "
+                "are not complete items: add .hydrate() to read the full items, or .project(...) to get dicts of the "
+                "attributes it holds"
+            )
         builder = ExpressionBuilder()
         names = await self._resolve_key_names() if self._projection and self._limit is not None else None
         params = self._params(builder, start, limit, names)
@@ -267,11 +323,16 @@ class _Reader[T]:
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
         entries: list[dict[str, Any]] = output["items"]
         items = entries
+        checks = self._checks + self._where_checks if self._where is not None else self._checks
         if self._hydrate and self._hydrator is not None and entries:
             full = await self._hydrator(entries, self._consistent)
             pairs = [(entry, item) for entry, item in zip(entries, full, strict=True) if item is not None]
+            if checks:
+                pairs = [(entry, item) for entry, item in pairs if all(check(item) for check in checks)]
             entries = [entry for entry, _ in pairs]
             items = [item for _, item in pairs]
+        elif checks:
+            entries = items = [item for item in entries if all(check(item) for check in checks)]
         capacity = output["consumed_capacity"]
         last = output["last_evaluated_key"]
         decode_page = self._decode_page
@@ -440,7 +501,11 @@ class _Reader[T]:
         return items
 
     async def count(self) -> int:
-        """The number of matching items (``Select=COUNT``; reads every page, returns no items)."""
+        """The number of matching items (``Select=COUNT``; reads every page, returns no items).
+
+        DynamoDB counts what matches the key condition and the filters; checks dynamoxy makes on
+        the client (see ``where()``) do not apply.
+        """
         if self._segments is not None:
             totals = await asyncio.gather(
                 *(
@@ -471,7 +536,10 @@ class _Reader[T]:
                 return total
 
     async def exists(self) -> bool:
-        """Whether at least one item matches."""
+        """Whether at least one item matches (model reads read the keys only: nothing is decoded)."""
+        names = self._key_names
+        if isinstance(names, tuple) and names:
+            return await self.limit(1)._with_projection(*names).first() is not None
         return await self.first() is not None
 
 
@@ -494,16 +562,27 @@ class Query[T](_Reader[T]):
         return self._replace(forward=not self._forward)
 
     def where(self, *conditions: Condition | bool) -> Self:
-        """Adds sort key conditions to the key condition.
+        """Adds the sort key condition to the key condition.
 
-        Allowed: ``=``, ``<``, ``<=``, ``>``, ``>=``, ``between`` or ``begins_with`` on the sort key.
+        Allowed: ``=``, ``<``, ``<=``, ``>``, ``>=``, ``between`` or ``begins_with`` on the sort key,
+        one per query (DynamoDB takes one sort key condition). It replaces the ``begins_with`` that
+        model queries add for templated sort keys with a constant prefix
+        (``orders.query(customer_id="c1").where(Order.sk.begins_with("ORDER#2026"))``).
+
+        Raises:
+            ValueError: The query has a sort key condition already (a ``where()`` before, or a sort
+                key value given to ``query()``), or several conditions are given: combine bounds
+                with ``between()``.
         """
-        combined = self._key_condition
-        for condition in conditions:
-            checked = as_condition(condition)
-            assert checked is not None
-            combined = checked if combined is None else combined & checked
-        return self._replace(key_condition=combined)
+        checked = [as_condition(condition) for condition in conditions]
+        if not checked:
+            return self
+        if len(checked) > 1 or self._where is not None or self._explicit_sort:
+            raise ValueError(
+                "a query takes one sort key condition (DynamoDB allows one): combine bounds with between(), "
+                "and give either a sort key value to query() or a where() condition"
+            )
+        return self._replace(where=checked[0])
 
     def project(self, *paths: Path[Any] | str) -> Query[dict[str, Any]]:
         """Returns only these attributes, as dicts (by field name for model queries)."""

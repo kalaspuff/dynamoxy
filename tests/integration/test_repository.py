@@ -3,16 +3,53 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 import dynamoxy
-from dynamoxy import F
+from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, sort_key, updated_at, version
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
+
+
+class Ticket(Model, table="tickets"):
+    """Templates that use automatic fields, an immutable field and a timedelta counter."""
+
+    ticket_id: Attr[str] = partition_key()
+    state: Attr[str] = field(default="open")
+    title: Attr[str] = field(default="")
+    country: Attr[str] = field(default="SE", immutable=True)
+    spent: Attr[timedelta] = field(default=timedelta(0))
+    updated_at: Attr[datetime] = updated_at()
+    version: Attr[int] = version()
+    recent: Attr[str] = field(template="{updated_at}")
+    state_recent: Attr[str] = field(template="{state}#{updated_at}")
+    revision: Attr[str] = field(template="v{version}")
+
+
+class Counter(Model, table="counters"):
+    """Every field has a default: entries of a KEYS_ONLY index would decode without an error."""
+
+    counter_id: Attr[str] = partition_key()
+    group: Attr[str] = field(default="a")
+    count: Attr[int] = field(default=0)
+    note: Attr[str | None] = field(default=None)
+
+    by_group = GlobalIndex(partition_key=group, projection=Projection.keys_only())
+
+
+class Device(Model, table="devices"):
+    device_id: Attr[uuid.UUID] = partition_key()
+    label: Attr[str] = field(default="")
+
+
+class Measurement(Model, table="measurements"):
+    sensor: Attr[str] = partition_key()
+    value: Attr[float] = sort_key()
 
 
 def make_user(user_id: str = "u1", **changes: Any) -> User:
@@ -338,6 +375,17 @@ async def test_limits_bound_requests_and_cursors_continue_after_the_last_item(
     assert rows == [{"kind": "even"}] * 3, "key attributes read for cursors stay out of projections"
 
 
+async def test_queries_take_one_sort_key_condition(events: dynamoxy.Repository[Event]) -> None:
+    query = events.query(stream="q")
+    with pytest.raises(ValueError, match="one sort key condition"):
+        query.where(Event.seq >= 1).where(Event.seq <= 5)
+    with pytest.raises(ValueError, match="one sort key condition"):
+        query.where(Event.seq >= 1, Event.seq <= 5)
+    with pytest.raises(ValueError, match="one sort key condition"):
+        events.query(stream="q", seq=1).where(Event.seq >= 1)
+    assert await query.where(Event.seq.between(1, 5)).all() == []
+
+
 async def test_parallel_scans_that_stop_early_finish(events: dynamoxy.Repository[Event]) -> None:
     await events.batch_put([Event(stream=f"s{index % 7}", seq=index, kind="k") for index in range(300)])
     scan = events.scan().segments(4)
@@ -382,8 +430,9 @@ async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -
     query = users.query(index=User.by_status, status=Status.ACTIVE)
     keys = await query.project(User.user_id).all()
     assert sorted(row["user_id"] for row in keys) == ["u0", "u1", "u2"]
-    with pytest.raises(dynamoxy.ItemDecodeError):
+    with pytest.raises(ValueError, match=r"add \.hydrate\(\)"):
         await query.all()
+    assert await query.exists(), "exists() decodes nothing"
     hydrated = await query.hydrate().all()
     assert sorted(user.name for user in hydrated) == ["U0", "U1", "U2"]
 
@@ -642,3 +691,127 @@ async def test_updates_validate_values_they_set(client: dynamoxy.Client) -> None
         user, User.age.remove(), User.visits.add(-5)
     )  # optional fields can go; arithmetic is not checked
     assert (user.age, user.visits) == (None, -5)
+
+
+async def test_set_none_removes_attributes(users: dynamoxy.Repository[User]) -> None:
+    user = await users.create(make_user(age=30))
+    await users.update(user, User.age.set(None))
+    assert user.age is None
+    stored = await users.table.get({"user_id": "u1"})
+    assert stored is not None
+    assert "age" not in stored, "None is not stored, as with put() and save()"
+    assert [found.user_id for found in await users.scan().filter(User.age == None).all()] == ["u1"]  # noqa: E711
+    # A NULL that another writer stored reads as None, and compares as None.
+    await users.table.put({**stored, "user_id": "u2", "email": "u2@example.com", "age": None})
+    assert (await users.get_or_raise("u2")).age is None
+    missing = await users.scan(consistent=True).filter(User.age == None).all()  # noqa: E711
+    assert sorted(found.user_id for found in missing) == ["u1", "u2"]
+    assert await users.scan(consistent=True).filter(User.age != None).count() == 0  # noqa: E711
+    with pytest.raises(dynamoxy.ValidationError, match="is required and cannot be removed"):
+        await users.update(user, User.name.set(None))  # type: ignore[call-overload]
+
+
+async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+
+    async def check() -> None:
+        stored = await tickets.table.get({"ticket_id": "t1"}, consistent=True)
+        assert stored is not None
+        assert stored["recent"] == stored["updated_at"]
+        assert stored["state_recent"] == f"{stored['state']}#{stored['updated_at']}"
+        assert stored["revision"] == f"v{stored['version']}"
+
+    await check()
+    await tickets.update(ticket, Ticket.title.set("hello"))
+    assert ticket.revision == "v2"
+    await check()
+    await ticket.update(Ticket.state.set("closed"))
+    await check()
+    await tickets.update(Ticket.key("t1"), Ticket.title.set("by key"))  # reads the version it cannot know
+    await check()
+    assert (await tickets.get_or_raise("t1")).revision == "v4"
+
+
+async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+    ticket.country = "NO"
+    with pytest.raises(ValueError, match=r"Ticket\.country is immutable"):
+        await ticket.save()
+    with pytest.raises(ValueError, match=r"Ticket\.country is immutable"):
+        await tickets.put(ticket)
+    assert (await tickets.get_or_raise("t1")).country == "SE"
+    ticket.country = "SE"
+    ticket.title = "fine"
+    await ticket.save()
+    assert ticket.version == 2
+    # An instance that was not loaded replaces the item, as put() does.
+    await tickets.put(Ticket(ticket_id="t1", country="DK"))
+    assert (await tickets.get_or_raise("t1")).country == "DK"
+
+
+async def test_numbers_of_other_types(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+    await tickets.update(ticket, Ticket.spent.increment(timedelta(seconds=90)))
+    assert ticket.spent == timedelta(seconds=90)
+    await ticket.update(Ticket.spent.set(Ticket.spent - timedelta(seconds=30)))
+    assert ticket.spent == timedelta(seconds=60)
+    with pytest.raises(dynamoxy.ValidationError, match="expected int"):
+        await tickets.update(ticket, User.visits.increment(0.5))
+
+
+async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Device)
+    devices = client.repository(Device)
+    device_id = uuid.uuid4()
+    await devices.create(Device(device_id=device_id))
+    updated = await devices.update({"device_id": device_id}, Device.label.set("x"))
+    assert updated.label == "x"
+    assert (await devices.get_or_raise(device_id)).label == "x"
+    assert await devices.update({"device_id": str(device_id)}, Device.label.set("y")) is not None, "or stored"
+    deleted = await devices.delete({"device_id": device_id})
+    assert deleted is not None
+    assert deleted.label == "y"
+
+
+async def test_float_keys_in_batch_reads(client: dynamoxy.Client) -> None:
+    await client.create_tables(Measurement)
+    measurements = client.repository(Measurement)
+    values = [0.1, 0.3, 2.5, 1e16]
+    await measurements.batch_put([Measurement(sensor="s", value=value) for value in values])
+    found = await measurements.batch_get([("s", value) for value in values])
+    assert [measurement.value for measurement in found] == values, "0.1 is read back as Decimal('0.1')"
+
+
+async def test_batches_write_repeated_keys_once(events: dynamoxy.Repository[Event]) -> None:
+    first, last = Event(stream="d", seq=1, kind="first"), Event(stream="d", seq=1, kind="last")
+    await events.batch_put([first, last])
+    assert [event.kind for event in await events.query(stream="d").all()] == ["last"], "the last one wins"
+    assert last.is_loaded
+    assert not first.is_loaded, "it was not written"
+    await events.batch_delete([("d", 1), Event.key("d", 1), last])
+    assert await events.query(stream="d").all() == []
+    assert not last.is_loaded
+
+
+async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
+    await client.create_tables(Counter, Event)
+    counters = client.repository(Counter)
+    await counters.create(Counter(counter_id="c1", count=42, note="important"))
+    by_group = counters.query(index=Counter.by_group, group="a")
+    with pytest.raises(ValueError, match="does not hold every attribute of Counter"):
+        await by_group.first()  # it would be Counter(count=0, note=None), and save() would store that
+    assert await by_group.exists()
+    assert [(item.count, item.note) for item in await by_group.hydrate().all()] == [(42, "important")]
+    assert await by_group.project("counter_id").all() == [{"counter_id": "c1"}]
+    events = client.repository(Event)
+    expires = datetime(2030, 1, 1, tzinfo=UTC)
+    await events.put(Event(stream="x", seq=1, kind="k", payload={"a": 1}, expires_at=expires))
+    local = await events.query(index="by_kind_local", stream="x").all()
+    if backend == "memory":  # MiniStack ignores Select=ALL_ATTRIBUTES on local indexes; DynamoDB reads the table
+        assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"

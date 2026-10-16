@@ -142,7 +142,7 @@ class Account(Model, table="accounts"):
     address: Attr[Address | None] = field(default=None)
     labels: Attr[dict[str, str]] = field(default_factory=dict)
     legacy_name: Attr[str | None] = field(default=None, attribute_name="name")  # stored as "name"
-    country: Attr[str] = field(default="SE", immutable=True)  # updates of it are rejected
+    country: Attr[str] = field(default="SE", immutable=True)  # changes of a stored value are rejected
 
 
 class Entry(Model, table="ledger"):
@@ -199,8 +199,12 @@ Rules that are easy to miss:
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
-  `updated_at`, `version`) start empty, so saving it writes a new item. `copy.copy(item)` and
-  pydantic's `model_copy()` duplicate the instance as it is, loaded state included.
+  `updated_at`, `version`) start empty, so saving it writes a new item. Unknown field names raise
+  `TypeError`. `copy.copy(item)` and pydantic's `model_copy()` duplicate the instance as it is,
+  loaded state included.
+- A loaded instance keeps its key and its `immutable=True` values: `save()`/`put()` of one whose
+  key (or a field its key template uses) or immutable value changed raises `ValueError`. Write a
+  copy instead (`create(item.copy(...))`) and delete the old item.
 - DynamoDB reserved words (`name`, `status`, `count`, ...) are fine as attribute names:
   dynamoxy always uses placeholders.
 
@@ -271,7 +275,8 @@ class Event(Model, table="events"):
 
 Index projections: `Projection.all()` (default), `Projection.keys_only()`,
 `Projection.include("a", "b")`. Index names default to the attribute name. Items without the
-index key attributes are not in the index (sparse indexes).
+index key attributes are not in the index (sparse indexes). For models with an entity type,
+dynamoxy also projects the type attribute (`_type`) into `KEYS_ONLY`/`INCLUDE` indexes it creates.
 
 Key templates build keys from other fields (`partition_key(template="CUSTOMER#{customer_id}")`,
 `field(template="STATUS#{status}")`). Templated fields are derived, never passed to the
@@ -347,9 +352,13 @@ latest = await entries.query(account_id="a1", consistent=True).all()  # strongly
 ```
 
 Query builders are immutable: every method returns a new query, so queries can be shared and
-reused. `where()` takes sort key conditions: comparisons, `between()` and `begins_with()`. Index entries
-with a `KEYS_ONLY` or `INCLUDE` projection hold only some attributes: add `.hydrate()` to fetch
-the full items, or `.project(...)` to get dicts with just the attributes you need.
+reused. `where()` takes the one sort key condition DynamoDB allows: a comparison, `between()` or
+`begins_with()` (combine bounds with `between()`); on a templated sort key it replaces the prefix
+condition dynamoxy adds. Entries of a `KEYS_ONLY` or `INCLUDE` global index hold only some
+attributes: model reads of one need `.hydrate()` (the full items) or `.project(...)` (dicts of the
+attributes it holds) and raise `ValueError` otherwise, before any request; `count()` and
+`exists()` need neither. Local indexes read the missing attributes from the table. A filter on an
+attribute a global index does not hold raises `ValueError` (it would never match).
 
 Reads are eventually consistent by default. `consistent=True` on `query`, `scan` and `count` (as
 on `get`) reflects every write that succeeded before the read, at twice the read cost: use it to
@@ -393,7 +402,9 @@ Model attributes are typed paths: `User.visits > 3`, `User.name.begins_with("A")
 `User.address["city"] == "Lund"`. Combine with `&`, `|` and `~` (or `dynamoxy.and_`, `or_`,
 `not_`). Like in DynamoDB, a comparison with a missing attribute is false (except `!=`): items
 whose `tags` set is empty store no `tags` attribute, so select them with `User.tags.not_exists()`,
-not `User.tags.size() == 0`. `dynamoxy.F("raw", "path")` builds untyped paths for dict-level code.
+not `User.tags.size() == 0`. `None` is no attribute for model fields: `User.age == None` matches
+items without `age`, or with a `NULL` (which reads as `None` too). `dynamoxy.F("raw", "path")`
+builds untyped paths for dict-level code.
 `dynamoxy.condition("#s = :s", names={"#s": "status"}, values={":s": "x"})` is the escape
 hatch for hand-written expressions.
 
@@ -417,8 +428,12 @@ await users.delete("u2", condition=User.visits == 0)
 Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, `add(n or set)`,
 `increment(n)`, `decrement(n)`, `remove()`, `delete(set)` (alias `discard`), `append(list)`,
 `append_or_create(list)`, `prepend(list)`. Nested paths work: `User.address["city"].set("Lund")`.
-Updates refresh the instance in place with the stored result. Key, derived (templated) and
-immutable attributes cannot be updated.
+`User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Numbers
+are checked against the field (`User.visits.increment(0.5)` raises `ValidationError`). Updates
+refresh the instance in place with the stored result, and re-render templated attributes whose
+fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
+attributes cannot be updated. Keys can be stored keys or field values
+(`devices.update({"device_id": uuid}, ...)`).
 
 Every write takes `condition=`; when it does not hold, `ConditionalCheckFailedError` is raised
 with `.item` set to the stored item.
@@ -468,9 +483,16 @@ async with client.batch_writer() as batch:  # buffers and flushes every 100 oper
 ```
 
 Batch writes are unconditional and not atomic, and DynamoDB allows no two writes to the same key
-in one request (the batch writer keeps the last one). They are refused for models with unique
-attributes (guard items need transactions). If items stay unprocessed after every retry round,
-`UnprocessedItemsError.unprocessed` lists them.
+in one request: `batch_put()`, `batch_delete()` and the batch writer keep the last one. They are
+refused for models with unique attributes (guard items need transactions). If items stay
+unprocessed after every retry round, `UnprocessedItemsError.unprocessed` lists them; only the
+writes that were made update their instances and run `after_*` hooks. A batch writer flush that
+fails before its request (a hook or validation raised), or whose request fails, keeps the other
+writes queued.
+
+A write of a loaded instance (`save()`, `put()`, batch puts) keeps the stored attributes that no
+field declares (written by a newer version of the application during a rolling deploy, or by
+another service); remove one with `update(item, F("old_name").remove())`.
 
 ## 6. Unique values
 
@@ -484,7 +506,8 @@ dynamoxy stores a guard item per unique value (`_unique#Member#email#<value>`) i
 and writes it in the same transaction as the item. Creates, saves, puts, updates and deletes
 keep the guards consistent; a taken value raises `UniqueConstraintError` (`.field`, `.value`).
 
-- Change unique values with `set(...)` or `remove()` (dynamoxy needs the new value).
+- Change unique values with `set(...)` or `remove()` (or `set(None)`; dynamoxy needs the new
+  value). Numbers are guarded as DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` collide.
 - Writes of unique models are transactions: twice the write capacity, plus one guard write per
   changed value. Batch writes are refused for them.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
@@ -583,7 +606,11 @@ class Order(Model, table="app", entity="Order"):
 ```
 
 - `orders.query(customer_id="c1")` queries `pk = "CUSTOMER#c1"` and adds
-  `begins_with(sk, "ORDER#")` automatically, so only orders come back.
+  `begins_with(sk, "ORDER#")` automatically, so only orders come back. A `where()` condition
+  replaces it (`.where(Order.sk.begins_with("ORDER#2026"))`); the entity type keeps other models
+  out.
+- Templates render numbers as stored (`Decimal("1.50")` → `1.5`) and format datetimes with a spec
+  (`{placed_at:%Y-%m}`) in UTC, so items read back render the same keys.
 - `orders.query(index=Order.by_status, status="paid")` renders the index key from the template.
 - Updating `status` recomputes `gsi1pk` (dynamoxy reads the item first when the template needs
   fields the update does not set).
@@ -610,10 +637,10 @@ await client.table("events-restored").restore_backup(backup.arn)
 await table.restore_to("events-yesterday", at=some_datetime)
 ```
 
-`ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key differs
-from the models (create a new table and migrate). Local indexes can only be created with the
-table. In production, prefer infrastructure as code for tables and call `ensure_tables()` only
-in development and tests.
+`ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key, the key
+of an index with the same name or the TTL attribute differs from the models (create a new table
+or index and migrate). Local indexes can only be created with the table. In production, prefer
+infrastructure as code for tables and call `ensure_tables()` only in development and tests.
 
 `Client(table_prefix="dev-")` separates environments sharing an account (`users` →
 `dev-users`, for every operation including `create_tables()`); read the prefix from settings
@@ -716,8 +743,10 @@ For queue consumers that may see a message twice, make the write conditional on 
 ### Migrations of stored data
 
 Add new fields with defaults (old items decode with the default). Upgrade old shapes in
-`@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. Changing a
-key or a key template is a new table.
+`@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. `save()`
+keeps attributes no field declares, so instances of an older version of the application do not
+erase what a newer one wrote; drop a retired attribute with `update(item, F("old").remove())`.
+Changing a key or a key template is a new table.
 
 ## 13. Configuration cheat sheet
 

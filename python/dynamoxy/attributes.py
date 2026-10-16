@@ -22,7 +22,8 @@ Pydantic models use the same options as ``Annotated`` markers (:class:`Partition
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Self, overload
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal, Self, overload, override
 
 from dynamoxy._utils import MISSING
 from dynamoxy.errors import FieldError, validation_error
@@ -117,6 +118,24 @@ class FieldPath[T](Path[T]):
                 f"{self.model.__name__}.{self._name}: {error}", [FieldError(self._name, str(error), value)]
             ) from None
         return Value(spec.codec.encode(checked))
+
+    @override
+    def _none_is_missing(self) -> bool:
+        return True
+
+    @override
+    def _amount(self, amount: Any, *, negate: bool) -> Operand:
+        where = f"{self.model.__name__}.{self._name}"
+        codec = self.spec.codec
+        if codec.dynamo_type not in (None, "N"):
+            raise TypeError(f"{where} holds {codec.describe()} values: increment() and decrement() need a number")
+        if isinstance(amount, Operand):
+            raise TypeError(f"{where}: increment() and decrement() take a number, not {amount!r}")
+        encoded = self._value(amount).value
+        if isinstance(encoded, bool) or not isinstance(encoded, (int, float, Decimal)):
+            problem = f"expected a number, got {type(amount).__name__} {amount!r:.60}"
+            raise validation_error(f"{where}: {problem}", [FieldError(self._name, problem, amount)])
+        return Value(-encoded if negate else encoded)
 
     def __getitem__(self, key: str | int) -> Path[Any]:
         codec = self.spec.codec
@@ -258,7 +277,8 @@ def field(
         le: Values must be less than or equal to this.
         lt: Values must be less than this.
         validators: Callables ``value -> value`` raising ``ValueError`` for invalid values.
-        immutable: The value cannot change once stored (updates of it are rejected).
+        immutable: The value cannot change once stored: updates of it, and writes of a loaded
+            instance whose value changed, raise ``ValueError``.
         description: Documentation of the field.
         repr: Show the field in ``repr()``.
     """

@@ -35,9 +35,13 @@ It is authoritative for the installed version; this skill only summarizes it.
 6. Every query needs a partition key value; add a `GlobalIndex` per access pattern. No `scan()` on
    request paths. Paginate with `page()` / `cursor` / `after(cursor)`; never trust cursors for
    authorization. Reads are eventually consistent: pass `consistent=True` (`get`, `query`,
-   `scan`; not on a `GlobalIndex`) to read your own writes.
+   `scan`; not on a `GlobalIndex`) to read your own writes. Reads of a `KEYS_ONLY`/`INCLUDE`
+   global index need `.hydrate()` (full items) or `.project(...)` (dicts). `where()` takes one
+   sort key condition (use `between()` for ranges).
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
-   business rules, and `client.transaction()` for multi-item changes.
+   business rules, and `client.transaction()` for multi-item changes. Keys and
+   `immutable=True` fields of loaded instances cannot change: write a copy as a new item.
+   `Model.field.set(None)` removes an attribute.
 8. Catch specific errors: `ItemNotFoundError`, `ItemAlreadyExistsError`, `UniqueConstraintError`,
    `VersionConflictError`, `ConditionalCheckFailedError`, `TransactionCanceledError`
    (`.cancellation_reasons`), `ValidationError` (`.errors`).

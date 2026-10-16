@@ -19,13 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 from dynamoxy.expressions import F
 from dynamoxy.query import Query, Scan
-from dynamoxy.repository import index_key_attributes
+from dynamoxy.repository import index_key_attributes, projects_attribute, projects_every_field
 from dynamoxy.schema import schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from dynamoxy.client import Client
+    from dynamoxy.expressions import Condition
     from dynamoxy.repository import Repository
     from dynamoxy.schema import IndexSpec, ModelSchema
 
@@ -60,13 +61,25 @@ class Collection[M]:
         self.table_name = self._first.table_name
 
     def _decode(self, item: dict[str, Any]) -> M:
-        repository = self._repositories.get(str(item.get(self.type_attribute)))
-        if repository is None:  # filtered out by the query; defensive
-            raise TypeError(f"item of unknown entity {item.get(self.type_attribute)!r} in a collection query")
+        entity = item.get(self.type_attribute)
+        repository = self._repositories.get(str(entity))
+        if repository is None:
+            if entity is None:
+                raise TypeError(
+                    f"an item read through this collection has no {self.type_attribute!r} attribute, so its entity "
+                    "is unknown: read the table or an index that holds the type attribute (Projection.all(), or "
+                    "an index created by dynamoxy 0.3 or later, which projects it)"
+                )
+            raise TypeError(f"item of unknown entity {entity!r} in a collection query")  # filtered out; defensive
         return repository._load(item)
 
-    def _type_filter(self) -> Any:
-        return F(self.type_attribute).is_in(list(self._repositories))
+    def _type_filter(self, schema: ModelSchema, spec: IndexSpec | None) -> Condition:
+        """The entities of the collection; an index that may not hold the type attribute keeps entries without one."""
+        path = F(self.type_attribute)
+        known = path.is_in(list(self._repositories))
+        if spec is None or projects_attribute(schema, spec, self.type_attribute):
+            return known
+        return path.not_exists() | known
 
     def query(self, *, index: str | None = None, consistent: bool = False, **key_values: Any) -> Query[M]:
         """Every item of the collection's models in one partition.
@@ -101,7 +114,8 @@ class Collection[M]:
                 key_condition=F(partition.attribute) == value,
                 consistent=consistent,
                 key_names=index_key_attributes(schema, spec),
-                auto_filter=self._type_filter(),
+                auto_filter=self._type_filter(schema, spec),
+                **self._completeness(spec),
             )
         raise ValueError(f"collection query: cannot build the partition key from {sorted(key_values)}: {last_error}")
 
@@ -119,8 +133,22 @@ class Collection[M]:
             global_index=spec is not None and spec.kind == "global",
             consistent=consistent,
             key_names=index_key_attributes(schema, spec),
-            auto_filter=self._type_filter(),
+            auto_filter=self._type_filter(schema, spec),
+            **self._completeness(spec),
         )
+
+    def _completeness(self, spec: IndexSpec | None) -> dict[str, Any]:
+        """How reads of an index get complete items of every model of the collection."""
+        if spec is None:
+            return {}
+        complete = all(
+            spec.name not in repository.schema.indexes
+            or projects_every_field(repository.schema, repository.schema.indexes[spec.name])
+            for repository in self._repositories.values()
+        )
+        if complete:
+            return {}
+        return {"partial": True} if spec.kind == "global" else {"select_all": True}
 
     def _index_spec(self, index: str | None) -> tuple[ModelSchema, IndexSpec | None]:
         """The declaration of ``index`` by one of the models, and that model's schema."""

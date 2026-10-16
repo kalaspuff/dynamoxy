@@ -13,6 +13,15 @@
 All writes validate first, run hooks, maintain automatic and derived fields and unique guards,
 and refresh the instance from DynamoDB's response.
 
+A write of an instance that was loaded (read or written by dynamoxy) keeps what it was loaded
+with:
+
+- Its key cannot change (nor a field that a key template uses): `put()`, `save()` and batch
+  puts raise `ValueError` before any I/O. Write a copy as a new item
+  (`await orders.create(order.copy(customer_id="c2"))`) and delete the old one.
+- `immutable=True` fields keep their stored value: a changed one raises `ValueError`. A field
+  that the stored item does not have yet can get its first value.
+
 ## Writing through an instance
 
 An instance that a repository read or wrote remembers that repository, so it can write itself:
@@ -91,13 +100,27 @@ Rules from DynamoDB: one action per path, no overlapping paths (`a` and `a.b`), 
 cannot change. dynamoxy also refuses updates of derived (templated) and `immutable` fields and of
 unique fields with anything but `set()`/`remove()`.
 
+`None` means "no attribute" for model fields, as in `put()` and `save()`: `User.nickname.set(None)`
+removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another writer stored
+reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
+`NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
+
+`increment()`, `decrement()` and arithmetic (`User.score + 5`) check their operand against the
+field: an `int` field takes integers (`User.visits.increment(0.5)` raises `ValidationError`), a
+`timedelta` field durations.
+
+Templated attributes are rendered again when an update changes a field they use, including the
+automatic ones: a template of `updated_at` or `version` (`"{status}#{updated_at}"`) follows every
+update.
+
 Values you `set()` are validated like constructor arguments (type, constraints such as `ge` or
 `pattern`, validators), and removing a required field is refused, all before any I/O. Arithmetic
 (`add`, `increment`, `set(path + n)`) happens in DynamoDB and cannot be checked locally: guard it
 with a condition (`condition=Account.balance >= amount`).
 
 `update()` of an instance checks its version (for versioned models) and refreshes it; `update()`
-of a key (`User.key("u1")`) only needs the key, so it suits hot counters.
+of a key (`User.key("u1")`) only needs the key, so it suits hot counters. Keys can also be given
+as field values: `devices.update({"device_id": device_uuid}, ...)`.
 
 ## Conditions
 
@@ -146,11 +169,22 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
 
 - Not atomic and unconditional: each item succeeds or is retried on its own.
 - Unprocessed items (throttling) are sent again with backoff for `batch_max_rounds` rounds; what
-  remains raises `UnprocessedItemsError` with `.unprocessed`.
-- Two writes of the same key in one request are invalid in DynamoDB; `client.batch_writer()`
-  de-duplicates (the last write wins) and flushes every `flush_size` operations.
+  remains raises `UnprocessedItemsError` with `.unprocessed`. Only the writes that were made
+  update their instances and run `after_save`/`after_delete` hooks.
+- Two writes of the same key in one request are invalid in DynamoDB: `batch_put()`,
+  `batch_delete()` and `client.batch_writer()` write each key once (the last write wins). The
+  batch writer flushes every `flush_size` operations; a flush that fails before its request (a
+  `before_save` hook or validation raised) or whose request fails keeps the other writes queued.
 - Refused for models with unique attributes (use transactions or single writes).
 - `before_save` hooks run for batch puts; conditions and versions do not apply.
+
+## Attributes the model does not declare
+
+A write of a loaded instance (`save()`, `put()`, batch puts) keeps the attributes of the stored
+item that no field declares: a newer version of the application (during a rolling deploy) or
+another service may have written them. Remove one with an update:
+`await users.update(user, F("legacy_name").remove())`. A write of an instance that was not loaded
+replaces the item, as before.
 
 ## Deleting
 
