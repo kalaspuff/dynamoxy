@@ -45,6 +45,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   DynamoDB refused the update; and `not_exists()` did not match. It now removes the attribute,
   and `Model.field == None` matches a missing attribute or a `NULL` (`!= None`: the others).
   Unique fields that hold a `NULL` (from that bug, or another writer) take new values again.
+- `update()` did not render templated attributes that use `updated_at` or `version` again, so
+  an index sort key such as `"{status}#{updated_at}"` kept the time of an older write.
 
 ### Changed
 

@@ -60,8 +60,9 @@ instances" below); `add`/`increment`/`decrement` only build the update action.
 1. **Python, `repository.py`**: validate the instance (`ModelSchema.validate`: codecs,
    constraints, validators), run `before_*` hooks (model methods, then client hooks), compute
    automatic fields (`created_at`, `updated_at`, `version`) and derived (templated) attributes.
-   Updates render derived attributes from the values they set, or, for arithmetic and
-   functions, from the update evaluated on the item as last read (`_core._apply_update`).
+   Updates render derived attributes from the values they set (`updated_at` included), or, for
+   arithmetic, functions and the version, from the update evaluated on the item as last read
+   (`_core._apply_update`).
 2. **Python, `_plan_*`**: build a `_WritePlan`: one operation (put, update or delete with its
    condition: key existence for `create`, version for `save`, the caller's condition) or, for
    models with unique attributes, a transaction with guard puts and deletes

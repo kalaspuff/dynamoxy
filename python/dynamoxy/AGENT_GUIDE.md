@@ -425,7 +425,8 @@ Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, 
 `increment(n)`, `decrement(n)`, `remove()`, `delete(set)` (alias `discard`), `append(list)`,
 `append_or_create(list)`, `prepend(list)`. Nested paths work: `User.address["city"].set("Lund")`.
 `User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Updates
-refresh the instance in place with the stored result. Key, derived (templated) and immutable
+refresh the instance in place with the stored result, and re-render templated attributes whose
+fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
 attributes cannot be updated.
 
 Every write takes `condition=`; when it does not hold, `ConditionalCheckFailedError` is raised

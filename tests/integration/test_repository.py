@@ -9,10 +9,25 @@ from typing import Any
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key
+from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, updated_at, version
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
+
+
+class Ticket(Model, table="tickets"):
+    """Templates that use automatic fields, an immutable field and a timedelta counter."""
+
+    ticket_id: Attr[str] = partition_key()
+    state: Attr[str] = field(default="open")
+    title: Attr[str] = field(default="")
+    country: Attr[str] = field(default="SE", immutable=True)
+    spent: Attr[timedelta] = field(default=timedelta(0))
+    updated_at: Attr[datetime] = updated_at()
+    version: Attr[int] = version()
+    recent: Attr[str] = field(template="{updated_at}")
+    state_recent: Attr[str] = field(template="{state}#{updated_at}")
+    revision: Attr[str] = field(template="v{version}")
 
 
 class Counter(Model, table="counters"):
@@ -683,6 +698,29 @@ async def test_set_none_removes_attributes(users: dynamoxy.Repository[User]) -> 
     assert await users.scan(consistent=True).filter(User.age != None).count() == 0  # noqa: E711
     with pytest.raises(dynamoxy.ValidationError, match="is required and cannot be removed"):
         await users.update(user, User.name.set(None))  # type: ignore[call-overload]
+
+
+async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> None:
+    await client.create_tables(Ticket)
+    tickets = client.repository(Ticket)
+    ticket = await tickets.create(Ticket(ticket_id="t1"))
+
+    async def check() -> None:
+        stored = await tickets.table.get({"ticket_id": "t1"}, consistent=True)
+        assert stored is not None
+        assert stored["recent"] == stored["updated_at"]
+        assert stored["state_recent"] == f"{stored['state']}#{stored['updated_at']}"
+        assert stored["revision"] == f"v{stored['version']}"
+
+    await check()
+    await tickets.update(ticket, Ticket.title.set("hello"))
+    assert ticket.revision == "v2"
+    await check()
+    await ticket.update(Ticket.state.set("closed"))
+    await check()
+    await tickets.update(Ticket.key("t1"), Ticket.title.set("by key"))  # reads the version it cannot know
+    await check()
+    assert (await tickets.get_or_raise("t1")).revision == "v4"
 
 
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:

@@ -735,8 +735,11 @@ class Repository[M]:
             parts.append(schema._path(schema.partition_key.attribute).exists())
         expected: Any = None
         now = utcnow() if schema._timestamps else None
+        # Automatic fields the update changes: their new value, or MISSING when DynamoDB computes it.
+        automatic: dict[str, Any] = {}
         if schema.version_field is not None:
             actions_list.append(UpdateAction("ADD", schema._path(schema.version_field.attribute), Value(1)))
+            automatic[schema.version_field.name] = MISSING
             if instance is not None:
                 expected = schema.adapter.get(instance, schema.version_field.name)
                 if expected is not None:
@@ -744,9 +747,11 @@ class Repository[M]:
         if schema.updated_at_field is not None and schema.updated_at_field.name not in touched:
             field = schema.updated_at_field
             actions_list.append(UpdateAction("SET", schema._path(field.attribute), Value(field.codec.encode(now))))
+            automatic[field.name] = now
         if upsert and schema.created_at_field is not None and schema.created_at_field.name not in touched:
             field = schema.created_at_field
             actions_list.append(schema._path(field.attribute).set_if_not_exists(field.codec.encode(now)))
+            automatic[field.name] = MISSING
         completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
         if upsert:
             provided = self._field_values_of(target) if instance is None else {}
@@ -760,11 +765,14 @@ class Repository[M]:
                     f"{self.model_class.__name__}.{spec.name} is unique: update it with .set(value) or .remove() so "
                     "dynamoxy can maintain its guard item"
                 )
+        # Values the update sets outright, automatic ones (updated_at) included.
+        assigned = {**literals, **{name: value for name, value in automatic.items() if value is not MISSING}}
+        changed = touched.keys() | automatic.keys()
         derived_specs = (
             [
                 spec
                 for spec in schema._derived
-                if spec.role is None and set(spec.template.fields) & touched.keys()  # type: ignore[union-attr]
+                if spec.role is None and set(spec.template.fields) & changed  # type: ignore[union-attr]
             ]
             if schema._derived
             else []
@@ -772,7 +780,7 @@ class Repository[M]:
         needs_read = bool(unique_touched) and stored_old is None
         if derived_specs and stored_old is None and instance is None:
             needs_read = needs_read or any(
-                name not in literals
+                name not in assigned
                 for spec in derived_specs
                 for name in spec.template.fields  # pyrefly: ignore[missing-attribute]
             )
@@ -784,7 +792,8 @@ class Repository[M]:
                 )
         if derived_specs:
             known: dict[str, Any] = {}
-            computed = touched.keys() - literals.keys()  # changed by arithmetic, functions or in nested paths
+            # Changed by arithmetic, functions or in nested paths (the version: ADD).
+            computed = changed - assigned.keys()
             if any(computed.intersection(spec.template.fields) for spec in derived_specs):  # type: ignore[union-attr]
                 # The new values of such fields are what the update makes of the item as last read,
                 # evaluated like DynamoDB does (exact for versioned models, whose version is checked).
@@ -801,7 +810,7 @@ class Repository[M]:
                 known.update(schema.values(instance))
             else:
                 known.update(completion)  # an upsert that creates the item writes these values
-            known.update(literals)
+            known.update(assigned)
             for spec in derived_specs:
                 assert spec.template is not None
                 rendered = spec.template.render(known, schema.codecs)

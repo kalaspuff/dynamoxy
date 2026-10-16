@@ -38,8 +38,9 @@ renaming one needs a data migration.
 values, datetimes as ISO text, numbers as text). Templated fields:
 
 - are never passed to the constructor and are recomputed on every write;
-- are recomputed by `update()` when a field they use changes (dynamoxy reads the item first if
-  the update does not set every field the template needs). Changes by arithmetic or functions
+- are recomputed by `update()` when a field they use changes, including `updated_at` and
+  `version` (dynamoxy reads the item first if the update does not set every field the template
+  needs). Changes by arithmetic or functions
   (`add`, `increment`, `set(path + 1)`, `set_if_not_exists`) are evaluated on the item as
   dynamoxy last read it. That is exact for versioned models (a stale instance fails the version
   check); for other models, a concurrent change between that read and the write can leave the
