@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from dynamoxy.expressions import F
 from dynamoxy.query import Query, Scan
+from dynamoxy.repository import index_key_attributes
 from dynamoxy.schema import schema_of
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
     from dynamoxy.client import Client
     from dynamoxy.repository import Repository
+    from dynamoxy.schema import IndexSpec, ModelSchema
 
 __all__ = ["Collection"]
 
@@ -90,7 +92,7 @@ class Collection[M]:
             leftover = set(remaining) - used
             if leftover:
                 raise ValueError(f"collection query: unexpected arguments {', '.join(sorted(leftover))}")
-            query: Query[M] = Query(
+            return Query(
                 self.client,
                 self.table_name,
                 decode=self._decode,
@@ -98,8 +100,9 @@ class Collection[M]:
                 global_index=spec is not None and spec.kind == "global",
                 key_condition=F(partition.attribute) == value,
                 consistent=consistent,
+                key_names=index_key_attributes(schema, spec),
+                auto_filter=self._type_filter(),
             )
-            return query.filter(self._type_filter())
         raise ValueError(f"collection query: cannot build the partition key from {sorted(key_values)}: {last_error}")
 
     def scan(self, *, index: str | None = None, consistent: bool = False) -> Scan[M]:
@@ -107,21 +110,23 @@ class Collection[M]:
 
         ``consistent=True`` reads with strong consistency (not on global secondary indexes).
         """
-        scan: Scan[M] = Scan(
+        schema, spec = self._index_spec(index)
+        return Scan(
             self.client,
             self.table_name,
             decode=self._decode,
             index=index,
-            global_index=self._is_global(index),
+            global_index=spec is not None and spec.kind == "global",
             consistent=consistent,
+            key_names=index_key_attributes(schema, spec),
+            auto_filter=self._type_filter(),
         )
-        return scan.filter(self._type_filter())
 
-    def _is_global(self, index: str | None) -> bool:
-        """Whether the models declare ``index`` as a global secondary index."""
+    def _index_spec(self, index: str | None) -> tuple[ModelSchema, IndexSpec | None]:
+        """The declaration of ``index`` by one of the models, and that model's schema."""
         if index is not None:
             for repository in self._repositories.values():
                 spec = repository.schema.indexes.get(index)
                 if spec is not None:
-                    return spec.kind == "global"
-        return False
+                    return repository.schema, spec
+        return self._first.schema, None

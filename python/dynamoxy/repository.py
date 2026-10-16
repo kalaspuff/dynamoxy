@@ -240,23 +240,15 @@ class Repository[M]:
             return self.schema.key_from(target, {})
         return self.schema.key_from((target,), {})
 
-    def _type_filter(self) -> Condition | None:
-        # Conditions are immutable: one per schema.
-        schema = self.schema
-        cached = schema.__dict__.get("_type_filter_condition", MISSING)
-        if cached is not MISSING:
-            return cached
-        schema._type_filter_condition = condition = self._build_type_filter()  # type: ignore[attr-defined]
-        return condition
-
-    def _build_type_filter(self) -> Condition | None:
-        schema = self.schema
-        parts: list[Condition] = []
-        if schema.type_attribute is not None and schema.entity is not None:
-            parts.append(schema._path(schema.type_attribute) == schema.entity)
-        elif schema.unique_fields and schema.partition_key is not None:
-            parts.append(~schema._path(schema.partition_key.attribute).begins_with(GUARD_PREFIX))
-        return and_(*parts) if parts else None
+    def _reader_options(self, spec: IndexSpec | None) -> dict[str, Any]:
+        """What reads of the table or of an index need to return this model's items only."""
+        # Options depend on the schema alone (conditions are immutable): built once per target.
+        cache: dict[str | None, dict[str, Any]] = self.schema.__dict__.setdefault("_reader_options_cache", {})
+        key = spec.name if spec is not None else None
+        options = cache.get(key)
+        if options is None:
+            options = cache[key] = _reader_options(self.schema, spec)
+        return options
 
     async def _get_raw(self, key: dict[str, Any], *, consistent: bool = True) -> dict[str, Any] | None:
         output = await self.client.call(
@@ -371,7 +363,7 @@ class Repository[M]:
             raise ValueError(
                 f"{self.model_class.__name__}.query(): unexpected arguments {', '.join(sorted(remaining))}"
             )
-        query: Query[M] = Query(
+        return Query(
             self.client,
             self.table_name,
             decode=self._load,
@@ -382,9 +374,8 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
+            **self._reader_options(spec),
         )
-        type_filter = self._type_filter()
-        return query.filter(type_filter) if type_filter is not None else query
 
     def _index(self, index: str | GlobalIndex | LocalIndex | None) -> IndexSpec | None:
         if index is None:
@@ -418,17 +409,13 @@ class Repository[M]:
             return F(spec.attribute) == template.template, remaining
         return None, remaining
 
-    async def _hydrate(self, items: list[dict[str, Any]], consistent: bool) -> list[dict[str, Any]]:
+    async def _hydrate(self, items: list[dict[str, Any]], consistent: bool) -> list[dict[str, Any] | None]:
+        """The full items of index entries, in order (``None`` for items deleted meanwhile)."""
         keys = [self.schema.key_values(item) for item in items]
         full = await self.table.batch_get(keys, consistent=consistent)
         identity = self.schema._key_identity
         by_key = {identity(item): item for item in full}
-        result = []
-        for key in keys:
-            found = by_key.get(identity(key))
-            if found is not None:
-                result.append(found)
-        return result
+        return [by_key.get(identity(key)) for key in keys]
 
     def scan(self, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False) -> Scan[M]:
         """Every item of this model, in the table or an index.
@@ -441,7 +428,7 @@ class Repository[M]:
                 index.
         """
         spec = self._index(index)
-        scan: Scan[M] = Scan(
+        return Scan(
             self.client,
             self.table_name,
             decode=self._load,
@@ -451,9 +438,8 @@ class Repository[M]:
             consistent=consistent,
             hydrate=self._hydrate,
             decode_page=self._load_page,
+            **self._reader_options(spec),
         )
-        type_filter = self._type_filter()
-        return scan.filter(type_filter) if type_filter is not None else scan
 
     async def count(
         self, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False, **key_values: Any
@@ -1179,3 +1165,31 @@ class Repository[M]:
     async def create_table(self, **options: Any) -> None:
         """Creates this model's table (see ``Client.create_tables`` for options)."""
         await self.client.create_tables(self.model_class, **options)
+
+
+def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[str, ...]:
+    """The key attributes of an index entry (table key, then index key), or of a table item."""
+    names = list(schema._key_attributes)
+    if spec is not None:
+        for field in (spec.partition_key, spec.sort_key):
+            if field is not None and field.attribute not in names:
+                names.append(field.attribute)
+    return tuple(names)
+
+
+def _reader_options(schema: ModelSchema, spec: IndexSpec | None) -> dict[str, Any]:
+    """Keyword arguments of ``Query``/``Scan`` that keep a read to the items of one model.
+
+    * Models with an entity type are filtered on it.
+    * Models with unique attributes and no entity type skip guard items, by their partition key
+      prefix.
+
+    The filters are dynamoxy's own (``auto_filter``): they rarely remove items, so a limit still
+    bounds each request.
+    """
+    options: dict[str, Any] = {"key_names": index_key_attributes(schema, spec)}
+    if schema.type_attribute is not None and schema.entity is not None:
+        options["auto_filter"] = schema._path(schema.type_attribute) == schema.entity
+    elif schema.unique_fields and schema.partition_key is not None:
+        options["auto_filter"] = ~schema._path(schema.partition_key.attribute).begins_with(GUARD_PREFIX)
+    return options

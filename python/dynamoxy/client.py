@@ -250,6 +250,7 @@ class Client:
         self._recorder = TelemetryRecorder(telemetry, region=region, endpoint=endpoint_url)
         self._core_client: CoreClient | None = None
         self._connect_lock = LoopLocal(asyncio.Lock)
+        self._key_attribute_cache: dict[tuple[str, str | None], tuple[str, ...]] = {}
         self._pump_task: asyncio.Task[None] | None = None
         self._entered = 0
         self._closed = False
@@ -605,6 +606,29 @@ class Client:
             f"{entry.operation} {entry.table or ''}".rstrip() + f" failed: {entry.error}",
             fields,
         )
+
+    async def _key_attributes(self, table: str, index: str | None) -> tuple[str, ...]:
+        """The key attributes of an index entry (table key, then index key) of a physical table.
+
+        Dict-level reads use them to continue right after the last item of a page cut short by
+        ``limit()``. Looked up once per table and index (``DescribeTable``).
+        """
+        cached = self._key_attribute_cache.get((table, index))
+        if cached is not None:
+            return cached
+        from dynamoxy.results import TableDescription
+
+        description = TableDescription.from_core(
+            await self.call("describe_table", "DescribeTable", table=table, table_name=table)
+        )
+        names = [description.partition_key, *([description.sort_key] if description.sort_key else [])]
+        if index is not None:
+            found = description.indexes.get(index)
+            if found is None:
+                raise ValueError(f"table {table} has no index {index!r}")
+            names += [name for name in (found.partition_key, found.sort_key) if name and name not in names]
+        resolved = self._key_attribute_cache[(table, index)] = tuple(names)
+        return resolved
 
     # ---- factories ------------------------------------------------------------------------
 
