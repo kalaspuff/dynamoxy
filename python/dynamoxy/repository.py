@@ -42,6 +42,7 @@ import functools
 import types
 import typing
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from dynamoxy import _core
@@ -123,6 +124,8 @@ class _WritePlan:
         upsert: bool = False,
         instance: Any = None,
         old: dict[str, Any] | None = None,
+        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+        stale: bool = False,
     ) -> None:
         self.repository = repository
         self.plan = plan
@@ -133,6 +136,10 @@ class _WritePlan:
         self.upsert = upsert
         self.instance = instance
         self.old = old
+        self.prepared = prepared
+        # The guard conditions use the unique values the instance was loaded with: a failure may
+        # only mean that another writer changed them since (no version, no caller's condition).
+        self.stale = stale
 
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
@@ -234,9 +241,13 @@ class Repository[M]:
         if isinstance(target, self.model_class):
             return self.schema.key_of(target)
         if isinstance(target, dict):
-            if target.keys() == self.schema._key_attribute_set:
+            schema = self.schema
+            if target.keys() == schema._key_attribute_set and all(
+                _is_stored_key_value(spec, target[spec.attribute]) for spec in schema._key_specs
+            ):
                 return dict(target)
-            return self.schema.key_from((), target)
+            # Field values (a UUID, a datetime, ... where the attribute has the field's name).
+            return schema.key_from((), target)
         if isinstance(target, tuple):
             return self.schema.key_from(target, {})
         return self.schema.key_from((target,), {})
@@ -616,13 +627,26 @@ class Repository[M]:
             if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
                 raise ValueError(f"{name}.{spec.name} is immutable: it cannot change once stored")
 
-    async def _plan_put(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> _WritePlan:
+    async def _plan_put(
+        self,
+        instance: M,
+        mode: WriteMode,
+        condition: Condition | bool | None,
+        *,
+        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+    ) -> _WritePlan:
+        """Plans a put; ``prepared`` (a plan's) plans it again with the item as stored now."""
         schema = self.schema
         hooks = self.client.hooks
-        if hooks.has("before_save", type(instance)):
-            await hooks.run("before_save", instance, self._context(mode))
-        item, changes, expected = self._prepare(instance, mode)
+        fresh = prepared is not None
+        if prepared is None:
+            if hooks.has("before_save", type(instance)):
+                await hooks.run("before_save", instance, self._context(mode))
+            prepared = self._prepare(instance, mode)
+        item, changes, expected = prepared
         key = schema.key_values(item)
+        state = schema.state(instance)
+        loaded = state.stored if state is not None and state.loaded else None
         assert schema.partition_key is not None
         partition = schema._path(schema.partition_key.attribute)
         parts: list[Condition] = []
@@ -636,10 +660,12 @@ class Repository[M]:
         if user_condition is not None:
             parts.append(user_condition)
         old: dict[str, Any] | None = None
+        stale = False
         if schema.unique_fields and mode != "create":
-            state = schema.state(instance)
-            if state is not None and state.loaded and schema.key_values(state.stored or {}) == key:
-                old = state.stored
+            if loaded is not None and not fresh:
+                old = loaded
+                versioned = mode == "save" and schema.version_field is not None
+                stale = user_condition is None and not versioned
             else:
                 old = await self._get_raw(key)
             if old is None:
@@ -667,7 +693,19 @@ class Repository[M]:
             if hooks.has("after_save", type(instance)):
                 await hooks.run("after_save", instance, self._context(mode))
 
-        return _WritePlan(self, plan, mode, key, expected, finalize)
+        return _WritePlan(self, plan, mode, key, expected, finalize, prepared=prepared, stale=stale)
+
+    async def _write(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> M:
+        write = await self._plan_put(instance, mode, condition)
+        try:
+            await write.execute()
+        except ConditionalCheckFailedError as error:
+            if not write.stale or type(error) is not ConditionalCheckFailedError:
+                raise
+            # Another writer changed the unique values since the instance was loaded: plan the
+            # guards again from the item as stored now (the write itself is unchanged).
+            await (await self._plan_put(instance, mode, condition, prepared=write.prepared)).execute()
+        return instance
 
     async def create(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes a new item.
@@ -677,8 +715,7 @@ class Repository[M]:
             UniqueConstraintError: A unique value is taken.
             ValidationError: The instance is invalid.
         """
-        await (await self._plan_put(item, "create", condition)).execute()
-        return item
+        return await self._write(item, "create", condition)
 
     async def put(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes an item, replacing any stored item with the same key.
@@ -688,8 +725,7 @@ class Repository[M]:
             UniqueConstraintError: A unique value is taken.
             ValueError: The instance was loaded and its key or an immutable field changed since.
         """
-        await (await self._plan_put(item, "put", condition)).execute()
-        return item
+        return await self._write(item, "put", condition)
 
     async def save(self, item: M, *, condition: Condition | bool | None = None) -> M:
         """Writes an item with optimistic locking (models with a ``version()`` field).
@@ -700,8 +736,7 @@ class Repository[M]:
             ConditionalCheckFailedError: ``condition`` did not hold.
             ValueError: The instance was loaded and its key or an immutable field changed since.
         """
-        await (await self._plan_put(item, "save", condition)).execute()
-        return item
+        return await self._write(item, "save", condition)
 
     async def _plan_update(
         self,
@@ -1162,9 +1197,12 @@ class Repository[M]:
                 value=decoded,
                 cause=cause,
             )
-        failed = ConditionalCheckFailedError(
-            f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
-        )
+        message = f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
+        if write.stale:
+            message += (
+                " (the unique values stored may have changed since the instance was loaded: refresh() it and retry)"
+            )
+        failed = ConditionalCheckFailedError(message)
         failed.item = item
         for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
             value = getattr(cause, name, None)
@@ -1311,6 +1349,16 @@ def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool)
             held.add(type_attribute)
         options["projected"] = frozenset(held)
     return options
+
+
+def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
+    """Whether ``value`` is a key attribute's stored form already (``S``, ``N`` or ``B``)."""
+    kind = spec.codec.key_type()
+    if kind == "S":
+        return isinstance(value, str)
+    if kind == "N":
+        return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+    return isinstance(value, bytes)
 
 
 def _has_entity(attribute: str, entity: str, item: dict[str, Any]) -> bool:

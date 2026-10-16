@@ -28,6 +28,10 @@ nothing is written. `None` values have no guard (several items may have no handl
 `update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
 DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value.
 
+A `put()` (or `save()` of an unversioned model) of an instance whose unique values another writer
+changed since it was loaded reads the stored item and writes again, so it replaces what is stored
+and moves the guards with it, as `put()` promises.
+
 **Costs and requirements.**
 
 - Writes of unique models are transactional: 2x write capacity, plus a guard write per changed
