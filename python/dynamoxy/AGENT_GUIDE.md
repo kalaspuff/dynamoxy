@@ -633,10 +633,10 @@ await client.table("events-restored").restore_backup(backup.arn)
 await table.restore_to("events-yesterday", at=some_datetime)
 ```
 
-`ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key differs
-from the models (create a new table and migrate). Local indexes can only be created with the
-table. In production, prefer infrastructure as code for tables and call `ensure_tables()` only
-in development and tests.
+`ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key, the key
+of an index with the same name or the TTL attribute differs from the models (create a new table
+or index and migrate). Local indexes can only be created with the table. In production, prefer
+infrastructure as code for tables and call `ensure_tables()` only in development and tests.
 
 `Client(table_prefix="dev-")` separates environments sharing an account (`users` →
 `dev-users`, for every operation including `create_tables()`); read the prefix from settings
