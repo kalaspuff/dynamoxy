@@ -96,6 +96,10 @@ removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another
 reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
 `NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
 
+Templated attributes are rendered again when an update changes a field they use, including the
+automatic ones: a template of `updated_at` or `version` (`"{status}#{updated_at}"`) follows every
+update.
+
 Values you `set()` are validated like constructor arguments (type, constraints such as `ge` or
 `pattern`, validators), and removing a required field is refused, all before any I/O. Arithmetic
 (`add`, `increment`, `set(path + n)`) happens in DynamoDB and cannot be checked locally: guard it
