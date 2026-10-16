@@ -311,6 +311,33 @@ async def test_query_order_paging_and_cursors(events: dynamoxy.Repository[Event]
         await query.after("not-a-cursor").page()
 
 
+async def test_limits_bound_requests_and_cursors_continue_after_the_last_item(
+    events: dynamoxy.Repository[Event],
+) -> None:
+    await events.batch_put(
+        [Event(stream="c", seq=index, kind="even" if index % 2 == 0 else "odd") for index in range(40)]
+    )
+    even = events.query(stream="c").filter(Event.kind == "even")
+    page = await even.limit(5).page()
+    assert page.scanned_count == 5, "page() evaluates at most `limit` items, like page_size"
+    assert [event.seq for event in page] == [0, 2, 4]
+    assert page.cursor is not None
+    # An API handing out five items and the cursor of their page at a time sees every item once:
+    # the page cut at the limit continues right after its last item.
+    seen: list[int] = []
+    cursor: str | None = None
+    for _ in range(20):
+        query = even.limit(5).after(cursor) if cursor else even.limit(5)
+        pages = [page async for page in query.pages()]
+        seen += [event.seq for page in pages for event in page.items]
+        cursor = pages[-1].cursor
+        if cursor is None:
+            break
+    assert seen == list(range(0, 40, 2))
+    rows = await even.limit(3).project(Event.kind).all()
+    assert rows == [{"kind": "even"}] * 3, "key attributes read for cursors stay out of projections"
+
+
 async def test_parallel_scans_that_stop_early_finish(events: dynamoxy.Repository[Event]) -> None:
     await events.batch_put([Event(stream=f"s{index % 7}", seq=index, kind="k") for index in range(300)])
     scan = events.scan().segments(4)

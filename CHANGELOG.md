@@ -13,6 +13,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - A parallel scan that stopped early (`scan().segments(n).limit(k)`, `first()`, or a `break`
   out of its iteration) could hang forever, and keep the interpreter from exiting: its segment
   tasks blocked on a full queue while they were cancelled. They now stop at once.
+- `limit()` and `first()` read whole pages (up to 1 MB) for models with an entity type or
+  unique attributes, since the filter dynamoxy adds for them counted as the caller's filter:
+  `orders.query(customer_id="c1").descending().first()` cost 112 read units instead of 0.5.
+  Requests now ask for what the limit still needs.
+- `page()` ignored `limit()` when the query had a filter, and the page `pages()` cut at the
+  limit kept the cursor of the whole page, so an API continuing with it skipped the items after
+  the limit. `page()` now evaluates at most `limit` items, and a cut page gets a cursor right
+  after its last item.
 
 ## [0.2.0] - 2026-10-15
 

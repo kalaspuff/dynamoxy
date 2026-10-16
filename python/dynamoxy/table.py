@@ -9,6 +9,7 @@ the table itself (create, indexes, TTL, tags, backups). Model tables are usually
 from __future__ import annotations
 
 import dataclasses
+import functools
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -372,6 +373,7 @@ class Table:
             key_condition=combined,
             index=index,
             consistent=consistent,
+            key_names=functools.partial(self.client._key_attributes, self.physical_name, index),
         )
 
     def scan(self, *, index: str | None = None, consistent: bool = False) -> Scan[dict[str, Any]]:
@@ -380,7 +382,14 @@ class Table:
         ``consistent=True`` reads with strong consistency; DynamoDB refuses it on global
         secondary indexes (``ValidationError``).
         """
-        return Scan(self.client, self.physical_name, decode=_identity, index=index, consistent=consistent)
+        return Scan(
+            self.client,
+            self.physical_name,
+            decode=_identity,
+            index=index,
+            consistent=consistent,
+            key_names=functools.partial(self.client._key_attributes, self.physical_name, index),
+        )
 
     async def batch_get(
         self, keys: Iterable[Mapping[str, Any]], *, consistent: bool = False, projection: Sequence[str] | None = None

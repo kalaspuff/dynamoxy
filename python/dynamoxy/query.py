@@ -10,7 +10,8 @@ Every builder method returns a new query, so queries can be shared and extended:
 
 ``limit`` caps the number of items returned overall; ``page_size`` sets DynamoDB's ``Limit``
 (items *evaluated* per request, before filters). Iteration follows ``LastEvaluatedKey`` until
-done. Cursors are opaque URL-safe strings.
+done. Cursors are opaque URL-safe strings; a page cut short by ``limit`` continues right after
+its last item.
 """
 
 from __future__ import annotations
@@ -24,11 +25,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from dynamoxy import _core
 from dynamoxy.errors import DynamoxyError
-from dynamoxy.expressions import Condition, ExpressionBuilder, Path, as_condition, path_of
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, Path, and_, as_condition, path_of
 from dynamoxy.results import ConsumedCapacity, Page
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from dynamoxy.client import Client
 
@@ -66,6 +67,15 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
         raise ValueError(f"invalid cursor: {error}") from None
 
 
+#: The key attribute names of what a read targets (the table's key, plus the index key for index
+#: reads), or an async function that looks them up (dict-level reads of any table).
+type KeyNames = tuple[str, ...] | Callable[[], Awaitable[tuple[str, ...]]]
+
+#: How much larger the next request gets when filters dynamoxy adds itself removed items from a
+#: page: a few requests then find what a limit asks for.
+_GROWTH = 4
+
+
 class _Reader[T]:
     """Shared behaviour of :class:`Query` and :class:`Scan`."""
 
@@ -83,8 +93,10 @@ class _Reader[T]:
         global_index: bool = False,
         key_condition: Condition | None = None,
         consistent: bool = False,
-        hydrate: Callable[[list[dict[str, Any]], bool], Awaitable[list[dict[str, Any]]]] | None = None,
+        hydrate: Callable[[list[dict[str, Any]], bool], Awaitable[Sequence[dict[str, Any] | None]]] | None = None,
         decode_page: Callable[[list[dict[str, Any]]], list[T]] | None = None,
+        key_names: KeyNames | None = None,
+        auto_filter: Condition | None = None,
     ) -> None:
         self._client = client
         self._table = table
@@ -106,6 +118,10 @@ class _Reader[T]:
         self._segments: int | None = None
         self._hydrator = hydrate
         self._hydrate = False
+        self._key_names = key_names
+        # Filters dynamoxy adds (the entity type, guard items of unique values): unlike the
+        # caller's filters, they rarely remove items, so a limit still bounds each request.
+        self._auto_filter = auto_filter
 
     def _replace(self, **changes: Any) -> Self:
         clone = copy.copy(self)
@@ -132,7 +148,7 @@ class _Reader[T]:
         return self._replace(filter=combined)
 
     def limit(self, count: int) -> Self:
-        """Returns at most ``count`` items in total (iteration, ``all()``, ``count()``)."""
+        """Returns at most ``count`` items in total (iteration, ``all()``, ``count()``, ``page()``)."""
         if count < 1:
             raise ValueError(f"limit must be at least 1, got {count}")
         return self._replace(limit=count)
@@ -171,7 +187,8 @@ class _Reader[T]:
             raise ValueError("project() needs at least one attribute")
         projected = tuple(path_of(path) for path in paths)
         reader = self._replace(projection=projected, hydrate=False, decode_page=None)
-        reader._decode = _projection_decoder(self._model)  # type: ignore[assignment]
+        requested = frozenset(str(path.elements[0]) for path in projected)
+        reader._decode = _projection_decoder(self._model, requested)  # type: ignore[assignment]
         return reader  # type: ignore[return-value]
 
     def hydrate(self) -> Self:
@@ -186,50 +203,106 @@ class _Reader[T]:
 
     # ---- execution ------------------------------------------------------------------------
 
-    def _params(self, builder: ExpressionBuilder, start: dict[str, Any] | None, limit: int | None) -> dict[str, Any]:
+    def _params(
+        self,
+        builder: ExpressionBuilder,
+        start: dict[str, Any] | None,
+        limit: int | None,
+        key_names: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"table_name": self._table, "consistent_read": self._consistent}
         if self._index is not None:
             params["index_name"] = self._index
         if self._key_condition is not None:
             params["key_condition_expression"] = builder.condition(self._key_condition)
-        if self._filter is not None:
-            params["filter_expression"] = builder.condition(self._filter)
+        filters = [condition for condition in (self._auto_filter, self._filter) if condition is not None]
+        if filters:
+            params["filter_expression"] = builder.condition(filters[0] if len(filters) == 1 else and_(*filters))
         if self._projection:
-            params["projection_expression"] = builder.projection(self._projection)
+            paths = self._projection
+            if key_names:
+                # Key attributes too, so that a page cut short by a limit gets an exact cursor.
+                roots = {path.elements[0] for path in paths}
+                paths += tuple(F(name) for name in key_names if name not in roots)
+            params["projection_expression"] = builder.projection(paths)
         if limit is not None:
             params["limit"] = limit
         if start is not None:
             params["exclusive_start_key"] = start
         return params
 
-    def _request_limit(self, remaining: int | None) -> int | None:
-        if remaining is not None and self._filter is None:
-            return min(self._page_size or remaining, remaining)
-        return self._page_size
+    def _request_limit(self, remaining: int | None, growth: int = 1) -> int | None:
+        """DynamoDB's ``Limit`` for a request that should return ``remaining`` more items."""
+        if remaining is None or self._filter is not None:
+            # The caller's filters may remove most items: read DynamoDB's pages and stop at the limit.
+            return self._page_size
+        wanted = remaining * growth
+        return wanted if self._page_size is None else min(self._page_size, wanted)
+
+    async def _resolve_key_names(self) -> tuple[str, ...] | None:
+        names = self._key_names
+        if names is None or isinstance(names, tuple):
+            return names
+        resolved = await names()
+        self._key_names = resolved
+        return resolved
 
     async def _fetch(
         self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
     ) -> Page[T]:
+        page, _ = await self._fetch_page(start, limit, segment=segment)
+        return page
+
+    async def _fetch_page(
+        self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
+    ) -> tuple[Page[T], list[dict[str, Any]]]:
+        """One request: the page, and the entries read for its items (index entries for index reads)."""
         builder = ExpressionBuilder()
-        params = self._params(builder, start, limit)
+        names = await self._resolve_key_names() if self._projection and self._limit is not None else None
+        params = self._params(builder, start, limit, names)
         segment = segment or self._segment
         if segment is not None:
             params["segment"], params["total_segments"] = segment
         params.update(builder.arguments())
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
-        raw_items = output["items"]
-        if self._hydrate and self._hydrator is not None and raw_items:
-            raw_items = await self._hydrator(raw_items, self._consistent)
+        entries: list[dict[str, Any]] = output["items"]
+        items = entries
+        if self._hydrate and self._hydrator is not None and entries:
+            full = await self._hydrator(entries, self._consistent)
+            pairs = [(entry, item) for entry, item in zip(entries, full, strict=True) if item is not None]
+            entries = [entry for entry, _ in pairs]
+            items = [item for _, item in pairs]
         capacity = output["consumed_capacity"]
         last = output["last_evaluated_key"]
         decode_page = self._decode_page
-        return Page(
-            items=decode_page(raw_items) if decode_page is not None else [self._decode(item) for item in raw_items],
+        page = Page(
+            items=decode_page(items) if decode_page is not None else [self._decode(item) for item in items],
             cursor=encode_cursor(last),
             count=output["count"],
             scanned_count=output["scanned_count"],
             consumed_capacity=ConsumedCapacity.from_core(capacity) if capacity else None,
             last_evaluated_key=last,
+        )
+        return page, entries
+
+    async def _truncate(self, page: Page[T], entries: list[dict[str, Any]], count: int) -> Page[T]:
+        """The first ``count`` items of ``page``, with a cursor right after the last of them."""
+        names = await self._resolve_key_names()
+        if not names and page.last_evaluated_key is not None:
+            names = tuple(page.last_evaluated_key)
+        last = entries[count - 1]
+        key = {name: last[name] for name in names or () if name in last}
+        if not names or len(key) != len(names):
+            raise TypeError(
+                "cannot tell where a page cut short by limit() ends: the key attributes of the items are unknown"
+            )
+        return Page(
+            items=page.items[:count],
+            cursor=encode_cursor(key),
+            count=page.count,
+            scanned_count=page.scanned_count,
+            consumed_capacity=page.consumed_capacity,
+            last_evaluated_key=key,
         )
 
     async def page(self) -> Page[T]:
@@ -239,31 +312,33 @@ class _Reader[T]:
         """
         if self._segments is not None:
             raise TypeError("page() reads one segment: use .segment(index, total) instead of .segments(n)")
-        return await self._fetch(self._start, self._request_limit(self._limit))
+        limit = self._limit
+        request = self._page_size if limit is None else min(self._page_size or limit, limit)
+        return await self._fetch(self._start, request)
 
     async def pages(self) -> AsyncGenerator[Page[T]]:
-        """Every page, in order (stops early when ``limit`` items were returned)."""
+        """Every page, in order (stops early when ``limit`` items were returned).
+
+        The last page is cut at the limit; its cursor continues right after its last item.
+        """
         if self._segments is not None:
             raise TypeError("pages() reads one segment: use .segment(index, total) instead of .segments(n)")
         remaining = self._limit
         start = self._start
+        growth = 1
         while True:
-            page = await self._fetch(start, self._request_limit(remaining))
+            request = self._request_limit(remaining, growth)
+            page, entries = await self._fetch_page(start, request)
             if remaining is not None and len(page.items) >= remaining:
-                yield Page(
-                    items=page.items[:remaining],
-                    cursor=page.cursor,
-                    count=page.count,
-                    scanned_count=page.scanned_count,
-                    consumed_capacity=page.consumed_capacity,
-                    last_evaluated_key=page.last_evaluated_key,
-                )
+                yield await self._truncate(page, entries, remaining) if len(page.items) > remaining else page
                 return
             yield page
             if remaining is not None:
                 remaining -= len(page.items)
             if page.last_evaluated_key is None:
                 return
+            if len(page.items) < page.scanned_count:
+                growth *= _GROWTH
             start = page.last_evaluated_key
 
     async def __aiter__(self) -> AsyncGenerator[T]:
@@ -434,8 +509,14 @@ class Query[T](_Reader[T]):
         """Returns only these attributes, as dicts (by field name for model queries)."""
         return self._with_projection(*paths)  # type: ignore[return-value]
 
-    def _params(self, builder: ExpressionBuilder, start: dict[str, Any] | None, limit: int | None) -> dict[str, Any]:
-        params = super()._params(builder, start, limit)
+    def _params(
+        self,
+        builder: ExpressionBuilder,
+        start: dict[str, Any] | None,
+        limit: int | None,
+        key_names: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        params = super()._params(builder, start, limit, key_names)
         params["scan_index_forward"] = self._forward
         return params
 
@@ -463,9 +544,10 @@ class Scan[T](_Reader[T]):
         return self._with_projection(*paths)  # type: ignore[return-value]
 
 
-def _projection_decoder(model: type | None) -> Callable[[dict[str, Any]], dict[str, Any]]:
+def _projection_decoder(model: type | None, requested: frozenset[str]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Decodes projected items, leaving out the key attributes dynamoxy added for cursors."""
     if model is None:
-        return dict
+        return lambda item: {attribute: value for attribute, value in item.items() if attribute in requested}
 
     from dynamoxy.schema import schema_of
 
@@ -474,6 +556,8 @@ def _projection_decoder(model: type | None) -> Callable[[dict[str, Any]], dict[s
     def decode(item: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for attribute, raw in item.items():
+            if attribute not in requested:
+                continue
             spec = schema.attributes.get(attribute)
             if spec is None:
                 result[attribute] = raw

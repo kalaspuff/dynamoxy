@@ -106,3 +106,21 @@ async def test_entity_types_keep_models_apart(app: dynamoxy.Client) -> None:
     assert await app.repository(Customer).count() == 1
     raw = await app.table("app").scan().all()
     assert sorted(item["_type"] for item in raw) == ["Customer", "Order"]
+
+
+async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> None:
+    orders = app.repository(Order)
+    await orders.batch_put([order(f"o{index:02}", 1 + index % 27) for index in range(30)])
+    limits: list[int | None] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        if request.operation == "Query":
+            limits.append(request.params.get("limit"))
+        return await call_next(request)
+
+    app.use(record)
+    newest = await orders.query(customer_id="c1").descending().first()
+    assert newest is not None
+    assert newest.order_id == "o29"
+    assert [item.order_id for item in await orders.query(customer_id="c1").limit(3).all()] == ["o00", "o01", "o02"]
+    assert limits == [1, 3], "the entity filter dynamoxy adds does not make limits read whole pages"

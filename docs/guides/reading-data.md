@@ -81,6 +81,11 @@ next_page = await query.page_size(25).after(cursor_from_client).page()
 
 - `page_size(n)` is DynamoDB's `Limit`: the number of items *evaluated* per request (before
   filters). A request also stops after reading 1 MB.
+- `limit(n)` caps the items returned in total. `page()` evaluates at most `n` items (like
+  `page_size(n)`), so a page never holds more than the limit. Iteration, `all()`, `first()` and
+  `pages()` request what the limit still needs; with your own filters, which may remove most items,
+  they read DynamoDB's pages instead. The page `pages()` cuts at the limit gets a cursor right
+  after its last item, so continuing with it skips nothing.
 - `cursor` is `None` when DynamoDB says there is nothing more. A cursor can be set even when the
   next page turns out empty.
 - Cursors are base64url JSON of the last evaluated key: opaque and URL-safe, but not encrypted or

@@ -371,7 +371,10 @@ from untrusted clients for authorization decisions; re-check access on every pag
 partition key must come from your own logic, not from the cursor).
 
 `page_size(n)` is DynamoDB's `Limit` (items *evaluated* per request, before filters); `limit(n)`
-caps the items returned in total. A filtered page can be empty while `cursor` is set.
+caps the items returned in total, and `page()` evaluates at most `limit` items too. A filtered page
+can be empty while `cursor` is set. `pages()` cuts its last page at the limit, with a cursor right
+after the page's last item. `first()` and `limit()` read only what they need, also for models with
+an entity type or unique attributes (whose reads carry a filter dynamoxy adds).
 
 ### Scans
 
