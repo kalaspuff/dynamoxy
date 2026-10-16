@@ -739,6 +739,10 @@ class Client:
 
         Returns:
             The physical names of the tables that were created or changed.
+
+        Raises:
+            TypeError: A table's key, the key of an index with the same name or the TTL
+                attribute differs from the models (none of them can change in place).
         """
         from dynamoxy.table import definitions_for
 
