@@ -1,4 +1,10 @@
-# dynamoxy
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kalaspuff/dynamoxy/main/docs/assets/logo/dynamoxy-dark.svg">
+    <img src="https://raw.githubusercontent.com/kalaspuff/dynamoxy/main/docs/assets/logo/dynamoxy.svg" alt="" width="44" height="44" align="absmiddle">
+  </picture>
+  dynamoxy
+</h1>
 
 **A typed, async DynamoDB ORM for Python, with a Rust core.** Declare models with type hints (or
 pydantic) and get validated, atomic DynamoDB access, plus an in-memory DynamoDB for your tests.
