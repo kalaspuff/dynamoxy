@@ -13,7 +13,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from dynamoxy import codecs
-from dynamoxy.codecs import resolve_codec
+from dynamoxy.codecs import DateTimeCodec, resolve_codec
 
 
 class Color(enum.StrEnum):
@@ -203,6 +203,91 @@ def test_numbers_are_normalized() -> None:
     assert resolve_codec(Decimal).validate(1.1) == Decimal("1.1")
     assert resolve_codec(Decimal).validate("2.50") == Decimal("2.50")
     assert resolve_codec(float).decode(Decimal("0.5")) == 0.5
+
+
+# Stored values of another type, or that the declared type cannot hold, are refused: converting
+# them would change them silently on the next write (or read another item's key).
+@pytest.mark.parametrize(
+    ("annotation", "stored"),
+    [
+        (int, Decimal("2.5")),
+        (int, 2.5),
+        (int, True),
+        (int, "5"),
+        (bool, "false"),
+        (bool, 0),
+        (str, 5),
+        (str, True),
+        (str, b"x"),
+        (float, "1.5"),
+        (float, True),
+        (Decimal, "1.5"),
+        (Decimal, False),
+        (bytes, "eA=="),
+        (datetime, 1_700_000_000),
+        (DateTimeCodec("epoch"), True),
+        (date, 20260101),
+        (timedelta, "60"),
+        (timedelta, True),
+        (uuid.UUID, 5),
+        (Color, 5),
+        (Level, Decimal("2.9")),
+        (Level, True),
+        (Literal[1, 2], Decimal("1.5")),
+        (Literal[1, 2], 3),
+        (Literal["a", "b"], "c"),
+        (list[int], "abc"),
+        (list[int], {1, 2}),
+        (list[int], [1, Decimal("2.5")]),
+        (set[str], "abc"),
+        (set[str], ["a"]),
+        (dict[str, int], [("a", 1)]),
+        (dict[str, int], {"a": Decimal("1.5")}),
+        (int | str, Decimal("2.5")),
+        (int | str, True),
+        (str | bytes, 5),
+        (codecs.JsonCodec(), b"{}"),
+    ],
+)
+def test_decoding_refuses_what_the_type_cannot_hold(annotation: Any, stored: Any) -> None:
+    codec = annotation if isinstance(annotation, codecs.Codec) else resolve_codec(annotation)
+    with pytest.raises(ValueError, match=r"expected|got"):
+        codec.decode(stored)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "stored", "decoded"),
+    [
+        (int, 5, 5),
+        (int, Decimal("5.0"), 5),  # items built in Python (boto3 reads every number as Decimal)
+        (int, 5.0, 5),
+        (int, Level.HIGH, 2),
+        (float, 5, 5.0),
+        (Decimal, 5, Decimal(5)),
+        (Decimal, 0.1, Decimal("0.1")),
+        (str, Color.RED, "red"),
+        (bytes, bytearray(b"x"), b"x"),
+        (Level, Decimal(2), Level.HIGH),
+        (Literal[1, 2], Decimal(2), 2),
+        (timedelta, Decimal("86400000.000001"), timedelta(days=1000, microseconds=1)),
+        (DateTimeCodec("epoch"), "2026-01-02T03:04:05Z", datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)),
+        (set[str], None, set()),
+        (int | str, 5, 5),
+        (int | float, Decimal("2.5"), 2.5),
+        (Decimal | str, 5, Decimal(5)),
+    ],
+)
+def test_decoding_keeps_what_the_type_holds(annotation: Any, stored: Any, decoded: Any) -> None:
+    codec = annotation if isinstance(annotation, codecs.Codec) else resolve_codec(annotation)
+    result = codec.decode(stored)
+    assert result == decoded
+    assert type(result) is type(decoded)
+
+
+def test_unions_refuse_booleans_unless_they_name_bool() -> None:
+    with pytest.raises(ValueError, match=r"expected int \| str, got bool"):
+        resolve_codec(int | str).validate(True)
+    assert resolve_codec(int | bool).validate(True) is True
 
 
 def test_empty_sets_are_not_stored() -> None:

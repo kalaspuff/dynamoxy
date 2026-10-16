@@ -115,6 +115,9 @@ values are stored (see `dynamoxy.codecs`):
 | `X \| None` | `X`, or nothing when `None` |
 | `Any` | as given |
 
+Reading is exact: a stored value of another type, or one the field's type cannot hold (`2.5` in an
+`int` field, `"false"` in a `bool` field), raises `ItemDecodeError` instead of being converted.
+
 Field specifiers configure fields. Fields without a default are required by the constructor
 (type checkers know this too). Give defaults with `field(default=...)`, not a bare value
 (`visits: Attr[int] = 0` works at runtime, but type checkers reject it):
@@ -748,7 +751,9 @@ Add new fields with defaults (old items decode with the default). Upgrade old sh
 `@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. `save()`
 keeps attributes no field declares, so instances of an older version of the application do not
 erase what a newer one wrote; drop a retired attribute with `update(item, F("old").remove())`.
-Changing a key or a key template is a new table.
+Changing a field's type: items stored with the old type raise `ItemDecodeError`, so rewrite them
+first (`repository.table.scan()` returns dicts), or declare both types (`Attr[int | str]`) until
+every item is rewritten. Changing a key or a key template is a new table.
 
 ## 13. Configuration cheat sheet
 
@@ -811,7 +816,7 @@ Every error derives from `dynamoxy.DynamoxyError` and has `.retryable`. Service 
 | `ResourceNotFoundError` | The table or index does not exist | Create it (`ensure_tables`) |
 | `ResourceInUseError` | The table exists or is being changed | Wait or skip |
 | `UnprocessedItemsError` | A batch still had unprocessed items after every round | Retry `.unprocessed` later |
-| `ItemDecodeError` | A stored item does not match its model | Fix data or the model (`after_load`) |
+| `ItemDecodeError` | A stored item does not match its model (another type, a fraction in an `int`) | Fix the data, or declare the stored types (`int \| str`) |
 | `TransportError` | Network failure or timeout (retried first) | Retry later |
 | `CredentialsError`, `AccessDeniedError` | Missing credentials or IAM permissions | Fix configuration |
 | `ShutdownError` | The client was closed, or the interpreter is exiting | Create a new client |

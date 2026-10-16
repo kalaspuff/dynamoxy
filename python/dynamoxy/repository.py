@@ -53,6 +53,7 @@ from dynamoxy.errors import (
     DynamoxyError,
     FieldError,
     ItemAlreadyExistsError,
+    ItemDecodeError,
     ItemNotFoundError,
     TransactionCanceledError,
     UniqueConstraintError,
@@ -233,6 +234,21 @@ class Repository[M]:
         if hooks.has("after_load", self.model_class):
             hooks.run_sync("after_load", instance, self._context("load"))
         return instance
+
+    def _load_written(self, item: dict[str, Any], operation: str) -> M:
+        """:meth:`_load` of the item a write returned: a decode error says that the write was made."""
+        try:
+            return self._load(item)
+        except ItemDecodeError as error:
+            problems = "; ".join(str(problem) for problem in error.errors) or str(error)
+            written = ItemDecodeError(
+                f"{self.model_class.__name__}: the {operation} was applied, but the item it returned does not "
+                f"decode{' (see .key)' if error.key else ''}: {problems}",
+                model=error.model,
+                key=error.key,
+            )
+            written.errors = error.errors
+            raise written from None
 
     def _load_page(self, items: list[dict[str, Any]]) -> list[M]:
         if self.client.hooks.has("after_load", self.model_class):
@@ -946,7 +962,7 @@ class Repository[M]:
                 return
             if attributes is None:  # in a transaction, which returns nothing
                 attributes = self._updated_locally(stored_old, instance, actions_list)
-            self._assign(instance, self._load(attributes), attributes)
+            self._assign(instance, self._load_written(attributes, "update"), attributes)
             if hooks.has("after_update", type(instance)):
                 await hooks.run("after_update", instance, self._context("update"))
 
@@ -1091,7 +1107,7 @@ class Repository[M]:
             await write.finalize(attributes)
         if isinstance(target, self.model_class):
             return target
-        return self._load(attributes)
+        return self._load_written(attributes, "update")
 
     async def _plan_delete(self, target: Any, condition: Condition | bool | None) -> _WritePlan | None:
         schema = self.schema
@@ -1161,7 +1177,7 @@ class Repository[M]:
         deleted = await write.execute()
         if deleted is None:
             deleted = write.old
-        return self._load(deleted) if deleted is not None else None
+        return self._load_written(deleted, "delete") if deleted is not None else None
 
     def _conflict(self, write: _WritePlan, error: DynamoxyError, stored: dict[str, Any] | None) -> DynamoxyError:
         """The specific error for a failed condition of a planned write."""
