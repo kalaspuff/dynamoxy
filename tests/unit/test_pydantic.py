@@ -83,8 +83,25 @@ def test_pydantic_validates_and_class_attributes_are_paths() -> None:
 
 
 def test_decode_errors_are_item_decode_errors() -> None:
-    with pytest.raises(dynamoxy.ItemDecodeError, match="cannot decode Profile"):
-        Profile.from_item({"pk": "USER#u1", "sk": "PROFILE", "user_id": "u1", "e": "x" * 60})
+    stored = "ada@example.com" + "x" * 50
+    with pytest.raises(dynamoxy.ItemDecodeError, match="cannot decode Profile") as caught:
+        Profile.from_item({"pk": "USER#u1", "sk": "PROFILE", "user_id": "u1", "e": stored})
+    # Pydantic quotes inputs in its messages; dynamoxy's leave them out (they may be personal data).
+    assert "ada@example.com" not in str(caught.value)
+    assert "email: String should have at most 50 characters" in str(caught.value)
+
+
+class Shipment(dynamoxy.Model, table="shipments"):
+    shipment_id: dynamoxy.Attr[str] = dynamoxy.partition_key()
+    address: dynamoxy.Attr[Address]
+
+
+def test_nested_pydantic_errors_leave_inputs_out() -> None:
+    with pytest.raises(dynamoxy.ValidationError) as caught:
+        Shipment(shipment_id="s1", address={"street": 4155550123})  # type: ignore[arg-type]
+    shown = f"{caught.value} {caught.value.errors!r}"
+    assert "4155550123" not in shown
+    assert "address: Address: street: Input should be a valid string" in shown
 
 
 def test_account_model_from_the_shared_models() -> None:

@@ -261,6 +261,31 @@ def test_item_decode_errors_name_the_attribute() -> None:
         User.from_item({"user_id": "u1", "email": "a@b.c", "name": "x", "status": "deleted"})
 
 
+def test_messages_leave_values_and_keys_out() -> None:
+    # Values and keys may be personal data, and messages end up in logs: the errors hold them.
+    with pytest.raises(dynamoxy.ValidationError) as caught:
+        User(user_id="u1", email=4155550123, name="Ada", status="on-leave")  # type: ignore[arg-type]
+    shown = f"{caught.value} {caught.value.errors!r}"
+    assert "4155550123" not in shown
+    assert "on-leave" not in shown
+    assert "email: expected str, got int" in shown
+    assert "status: expected a Status: one of 'active', 'suspended' (got str)" in shown
+    assert {error.path: error.value for error in caught.value.errors} == {"email": 4155550123, "status": "on-leave"}
+
+    with pytest.raises(dynamoxy.ItemDecodeError) as decode:
+        User.from_item({"user_id": "ada@example.com", "email": "a@b.c", "name": "x", "status": "on-leave"})
+    shown = f"{decode.value} {decode.value.errors!r}"
+    assert "ada@example.com" not in shown
+    assert "on-leave" not in shown
+    assert "status: cannot decode a stored str as Status" in shown
+    assert decode.value.key == {"user_id": "ada@example.com"}
+    assert decode.value.errors[0].value == "on-leave"
+
+    with pytest.raises(ValueError, match="unexpected key arguments 1 more positional value") as extra:
+        User.key("u1", "ada@example.com")
+    assert "ada@example.com" not in str(extra.value)
+
+
 def test_validators_and_hooks_are_collected() -> None:
     class Checked(Model, table="checked"):
         pk: Attr[str] = partition_key()

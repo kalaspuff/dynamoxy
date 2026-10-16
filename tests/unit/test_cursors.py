@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -42,3 +44,11 @@ def test_no_key_means_no_cursor() -> None:
 def test_invalid_cursors(cursor: str) -> None:
     with pytest.raises(ValueError, match="invalid cursor"):
         decode_cursor(cursor)
+
+
+def test_invalid_cursors_do_not_quote_their_contents() -> None:
+    # A cursor holds key values, which may be personal data.
+    cursor = base64.urlsafe_b64encode(json.dumps({"pk": {"N": "ada@example.com"}}).encode()).decode()
+    with pytest.raises(ValueError, match="invalid cursor") as caught:
+        decode_cursor(cursor)
+    assert "ada@example.com" not in str(caught.value)

@@ -123,7 +123,8 @@ class Codec[T]:
 
 
 def _type_error(expected: str, value: Any) -> ValueError:
-    return ValueError(f"expected {expected}, got {type(value).__name__} {value!r:.60}")
+    # Messages name the type, never the value: values may be personal data, and messages end up in logs.
+    return ValueError(f"expected {expected}, got {type(value).__name__}")
 
 
 class StrCodec(Codec[str]):
@@ -458,7 +459,9 @@ class EnumCodec[E: enum.Enum](Codec[E]):
             return self.enum_type(value)
         except ValueError:
             allowed = ", ".join(repr(member.value) for member in self.enum_type)
-            raise ValueError(f"expected a {self.enum_type.__name__} (one of {allowed}), got {value!r}") from None
+            raise ValueError(
+                f"expected a {self.enum_type.__name__}: one of {allowed} (got {type(value).__name__})"
+            ) from None
 
     @override
     def encode(self, value: E) -> Any:
@@ -501,7 +504,7 @@ class LiteralCodec(Codec[Any]):
         # `True == 1`: a bool only matches a bool literal, an int only a non-bool literal.
         same_kind = (isinstance(value, bool) == isinstance(allowed, bool) for allowed in self.values)
         if not any(value == allowed and kind for allowed, kind in zip(self.values, same_kind, strict=True)):
-            raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)}, got {value!r}")
+            raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)} (got {type(value).__name__})")
         return value
 
     @override
@@ -707,7 +710,7 @@ class DictCodec[T](Codec[dict[str, T]]):
         result: dict[str, T] = {}
         for key, element in value.items():
             if not isinstance(key, str):
-                raise ValueError(f"map keys must be str, got {type(key).__name__} {key!r}")
+                raise ValueError(f"map keys must be str, got {type(key).__name__}")
             try:
                 result[key] = self.inner.validate(element)
             except ValueError as error:

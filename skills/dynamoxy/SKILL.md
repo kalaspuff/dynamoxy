@@ -45,7 +45,9 @@ It is authoritative for the installed version; this skill only summarizes it.
 8. Catch specific errors: `ItemNotFoundError`, `ItemAlreadyExistsError`, `UniqueConstraintError`,
    `VersionConflictError`, `ConditionalCheckFailedError`, `TransactionCanceledError`
    (`.cancellation_reasons`), `ValidationError` (`.errors`).
-9. Never log item contents; use `dynamoxy.collect()` and events for observability.
+9. Never log item contents; use `dynamoxy.collect()` and events for observability. Error
+   messages leave out keys and values (they are in `error.key`, `error.value`,
+   `FieldError.value`), so logging `str(error)` is safe.
 
 ## Skeleton
 

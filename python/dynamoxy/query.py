@@ -63,8 +63,9 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
         raise ValueError("invalid cursor: not an object")
     try:
         return _core.from_wire(wire)
-    except (ValueError, TypeError, DynamoxyError) as error:
-        raise ValueError(f"invalid cursor: {error}") from None
+    except (ValueError, TypeError, DynamoxyError):
+        # Not the detail: a cursor holds key values, which stay out of messages.
+        raise ValueError("invalid cursor: it does not hold a key that dynamoxy encoded") from None
 
 
 #: The key attribute names of what a read targets (the table's key, plus the index key for index

@@ -28,7 +28,7 @@ DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.m
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from dynamoxy._core import (
@@ -90,8 +90,10 @@ __all__ = [
     "VersionConflictError",
 ]
 
-# Class-level default: ValidationError carries field errors when raised by model validation.
+# Class-level defaults: ValidationError carries field errors when raised by model validation, and
+# ConditionalCheckFailedError the key of the item when raised by a model write.
 ValidationError.errors = ()
+ConditionalCheckFailedError.key = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +103,13 @@ class FieldError:
     Attributes:
         path: Where the problem is (``"email"``, ``"address.zip"``, ``"tags[2]"``).
         message: What is wrong and what is allowed.
-        value: The offending value (omitted from ``str()`` to keep secrets out of logs).
+        value: The offending value (left out of ``str()`` and ``repr()``: values may be personal
+            data, and messages end up in logs).
     """
 
     path: str
     message: str
-    value: Any = None
+    value: Any = field(default=None, repr=False)
 
     def __str__(self) -> str:
         return f"{self.path}: {self.message}"
@@ -274,7 +277,8 @@ class CancellationReason:
         code: ``"None"`` (did not fail), ``"ConditionalCheckFailed"``, ``"TransactionConflict"``,
             ``"ValidationError"``, ``"ThrottlingError"``, ``"DuplicateItem"``, ...
         message: Details from DynamoDB.
-        item: The item as it was, when the operation asked for it on condition failure.
+        item: The item as it was, when the operation asked for it on condition failure (left out
+            of ``repr()``).
         error: A specific error for this operation when dynamoxy knows what the condition meant
             (``ItemAlreadyExistsError``, ``VersionConflictError``, ``UniqueConstraintError``),
             else ``None``.
@@ -284,7 +288,7 @@ class CancellationReason:
     index: int
     code: str
     message: str | None = None
-    item: dict[str, Any] | None = None
+    item: dict[str, Any] | None = field(default=None, repr=False)
     error: DynamoxyError | None = None
     operation: str | None = None
 

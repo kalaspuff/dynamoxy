@@ -31,6 +31,7 @@ import copy
 from typing import TYPE_CHECKING, Any, ClassVar, Self, override
 
 from pydantic import BaseModel, ConfigDict
+from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import PydanticUndefined
 
 from dynamoxy._utils import MISSING
@@ -84,10 +85,16 @@ class PydanticAdapter:
         instance.__pydantic_fields_set__.add(name)
 
     def create(self, values: dict[str, Any]) -> Any:
-        return self.model.model_validate(values)
+        try:
+            return self.model.model_validate(values)
+        except PydanticValidationError as error:
+            raise _without_inputs(error) from None
 
     def load(self, values: dict[str, Any]) -> Any:
-        return self.model.model_validate(values)
+        try:
+            return self.model.model_validate(values)
+        except PydanticValidationError as error:
+            raise _without_inputs(error) from None
 
     def state(self, instance: Any) -> ModelState | None:
         if not isinstance(instance, PydanticModel):
@@ -100,6 +107,19 @@ class PydanticAdapter:
             state = ModelState()
             instance.__dict__[_STATE] = state
         return state
+
+
+def _without_inputs(error: PydanticValidationError) -> ValueError:
+    """``error`` as a ``ValueError`` whose message leaves out the input values.
+
+    Pydantic quotes the input in its messages; dynamoxy's messages never include values, which
+    may be personal data and end up in logs.
+    """
+    problems = "; ".join(
+        f"{'.'.join(str(part) for part in problem['loc']) or '__model__'}: {problem['msg']}"
+        for problem in error.errors(include_url=False)
+    )
+    return ValueError(f"{error.title}: {problems}")
 
 
 def _field_options(info: FieldInfo) -> dict[str, Any]:
