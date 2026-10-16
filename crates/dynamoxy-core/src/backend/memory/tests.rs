@@ -873,6 +873,115 @@ async fn partiql_statements() {
     assert_eq!(reasons, ["None", "DuplicateItem"]);
 }
 
+#[tokio::test]
+async fn partiql_order_by_runs_one_query_per_partition_key_value() {
+    // The rules and messages of DynamoDB (and DynamoDB Local): the WHERE clause names the
+    // partition key values, ORDER BY names key attributes of the table or index.
+    let backend = backend_with_table().await;
+    for pk in ["a", "b", "c"] {
+        for sk in 1..=3 {
+            let x = n(sk % 2);
+            put(&backend, item([("pk", s(pk)), ("sk", n(sk)), ("status", s("open")), ("rank", n(10 - sk)), ("x", x)]))
+                .await;
+        }
+    }
+    let input = |text: &str, limit: Option<u32>, next_token: Option<String>| ExecuteStatementInput {
+        statement: text.into(),
+        limit,
+        next_token,
+        ..Default::default()
+    };
+    let rows = |output: &ExecuteStatementOutput| -> Vec<String> {
+        output
+            .items
+            .iter()
+            .map(|item| match (&item["pk"], &item["sk"]) {
+                (AttributeValue::S(pk), AttributeValue::N(sk)) => format!("{pk}{}", sk.as_str()),
+                other => panic!("unexpected key {other:?}"),
+            })
+            .collect()
+    };
+    for (statement, expected) in [
+        ("SELECT * FROM items WHERE pk = 'a' ORDER BY sk DESC", vec!["a3", "a2", "a1"]),
+        ("SELECT * FROM items WHERE pk = 'a' order by sk asc", vec!["a1", "a2", "a3"]),
+        ("SELECT * FROM items WHERE pk = 'a' AND x = 1 ORDER BY sk DESC", vec!["a3", "a1"]),
+        ("SELECT * FROM items WHERE pk IN ['c', 'a'] ORDER BY pk DESC, sk", vec!["c1", "c2", "c3", "a1", "a2", "a3"]),
+        (
+            "SELECT * FROM items WHERE pk = 'b' OR pk = 'a' ORDER BY pk, sk DESC",
+            vec!["a3", "a2", "a1", "b3", "b2", "b1"],
+        ),
+        ("SELECT * FROM items WHERE pk IN ['a'] ORDER BY sk DESC", vec!["a3", "a2", "a1"]),
+        ("SELECT * FROM items.\"by_rank\" WHERE pk = 'a' ORDER BY rank", vec!["a3", "a2", "a1"]),
+    ] {
+        let output = backend.execute_statement(input(statement, None, None)).await.unwrap();
+        assert_eq!(rows(&output), expected, "{statement}");
+    }
+    let by_status = backend
+        .execute_statement(input(
+            "SELECT * FROM items.\"by_status\" WHERE status = 'open' ORDER BY sk DESC",
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    let sort_keys: Vec<String> = rows(&by_status).iter().map(|row| row[1..].to_owned()).collect();
+    assert_eq!(sort_keys, ["3", "3", "3", "2", "2", "2", "1", "1", "1"], "the index's own sort key");
+
+    // Without ORDER BY too, only the named partitions are read: `Limit` counts their items.
+    let named =
+        backend.execute_statement(input("SELECT * FROM items WHERE pk IN ['a', 'b']", Some(4), None)).await.unwrap();
+    assert_eq!(named.items.len(), 4);
+    assert!(rows(&named).iter().all(|row| !row.starts_with('c')));
+
+    // Pages continue in the order.
+    let ordered = "SELECT * FROM items WHERE pk IN ['a', 'b'] ORDER BY pk DESC, sk DESC";
+    let first = backend.execute_statement(input(ordered, Some(4), None)).await.unwrap();
+    assert_eq!(rows(&first), ["b3", "b2", "b1", "a3"]);
+    let second = backend.execute_statement(input(ordered, Some(4), first.next_token.clone())).await.unwrap();
+    assert_eq!(rows(&second), ["a2", "a1"]);
+    assert!(second.next_token.is_none());
+
+    for (statement, expected) in [
+        ("SELECT * FROM items ORDER BY sk", "Must have WHERE clause in the statement when using ORDER BY clause."),
+        (
+            "SELECT * FROM items WHERE x = 1 ORDER BY x",
+            "Must have at least one non-optional hash key condition in WHERE clause when using ORDER BY clause.",
+        ),
+        (
+            "SELECT * FROM items WHERE pk = 'a' OR x = 1 ORDER BY sk",
+            "Must have at least one non-optional hash key condition in WHERE clause when using ORDER BY clause.",
+        ),
+        (
+            "SELECT * FROM items WHERE pk BETWEEN 'a' AND 'b' ORDER BY pk",
+            "Must have at least one non-optional hash key condition in WHERE clause when using ORDER BY clause.",
+        ),
+        (
+            "SELECT * FROM items WHERE pk = 'a' ORDER BY x",
+            "Variable reference x in ORDER BY clause must be part of the primary key",
+        ),
+        (
+            "SELECT * FROM items.\"by_rank\" WHERE pk = 'a' ORDER BY sk",
+            "Variable reference sk in ORDER BY clause must be part of the primary key",
+        ),
+        (
+            "SELECT * FROM items WHERE pk = 'a' OR pk = 'b' ORDER BY sk",
+            "Must have hash key in ORDER BY clause when more than one hash key condition specified in WHERE clause.",
+        ),
+        (
+            "SELECT * FROM items WHERE pk = 'a' ORDER BY a.b",
+            "Argument to ORDER BY must be of type VariableReference. Type: PATH",
+        ),
+    ] {
+        let error = backend.execute_statement(input(statement, None, None)).await.unwrap_err();
+        assert_eq!((code(&error), message(&error)), ("ValidationException", expected.to_owned()), "{statement}");
+    }
+    let error = backend
+        .execute_statement(input("SELECT * FROM items WHERE pk = 'a' ORDER BY sk DESC ASC", None, None))
+        .await
+        .unwrap_err();
+    assert!(message(&error).starts_with("Statement wasn't well formed"), "{}", message(&error));
+}
+
 #[tokio::test(start_paused = true)]
 async fn faults_inject_errors_unprocessed_batches_and_latency() {
     let backend = backend_with_table().await;

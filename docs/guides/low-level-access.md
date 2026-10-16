@@ -41,6 +41,12 @@ results = await client.batch_execute([(statement, [param, ...]), ...])
 
 Statements use physical table names (`client.table_name("users")`) and `?` parameters (never
 format values into statements). `execute()` follows `NextToken` and returns every row.
+
+`ORDER BY` takes the partition and sort key of the table or index (`ASC` or `DESC`). DynamoDB
+then runs one query per partition key value, so the `WHERE` clause must name them
+(`pk = ?`, `pk IN [?, ?]`), and with several the partition key must be ordered too:
+`... WHERE pk IN [?, ?] ORDER BY pk, sk DESC`. The in-memory backend applies the same rules
+(MiniStack does not support `ORDER BY`).
 `execute_transaction()` is all-or-nothing; `batch_execute()` reports an error per statement.
 
 ## DynamoDB's typed JSON

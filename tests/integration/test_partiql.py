@@ -27,6 +27,18 @@ async def test_insert_select_update_delete(client: dynamoxy.Client, table: str) 
         await client.execute(f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}", "a", 1)
 
 
+async def test_order_by(client: dynamoxy.Client, table: str, backend: str) -> None:
+    if backend != "memory":
+        pytest.skip("MiniStack does not parse ORDER BY, which DynamoDB supports on key attributes")
+    for pk in ("a", "b"):
+        for sk in range(3):
+            await client.execute(f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}", pk, sk)
+    rows = await client.execute(f'SELECT * FROM "{table}" WHERE pk IN [?, ?] ORDER BY pk DESC, sk DESC', "a", "b")
+    assert [(row["pk"], row["sk"]) for row in rows] == [("b", 2), ("b", 1), ("b", 0), ("a", 2), ("a", 1), ("a", 0)]
+    with pytest.raises(dynamoxy.ValidationError, match="must be part of the primary key"):
+        await client.execute(f'SELECT * FROM "{table}" WHERE pk = ? ORDER BY n', "a")
+
+
 async def test_transactions_and_batches(client: dynamoxy.Client, table: str) -> None:
     insert = f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}"
     await client.execute_transaction([(insert, ["t", 1]), (insert, ["t", 2])])
