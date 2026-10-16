@@ -169,7 +169,7 @@ These are relied upon across layers; tests cover each of them.
     records the stored item and the repository on the instance; instance methods, transactions
     and batch writers write through that repository. Model classes never hold a client.
 13. **Stored formats are API.** Codecs (`codecs.py`), guard item keys (`constraints.py`), the
-    entity type attribute (`_type`) and cursors are formats: changing one is a breaking change
+    entity type attribute (`_type`), write ids (`_wid`) and cursors are formats: changing one is a breaking change
     that needs an ADR, a migration path and a changelog entry.
 14. **Secrets and payloads are never logged.** Events carry operation names, table names,
     counts, codes and durations; `Credentials` hide secrets in `repr`; spans record expressions

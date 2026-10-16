@@ -6,6 +6,7 @@ emulator.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -146,11 +147,69 @@ async def test_conditions_that_fail_after_a_lost_response_have_an_unknown_outcom
     assert [entry.kind for entry in events] == [dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN]
     assert await table.get({"stream": "s", "seq": 1}) == item
 
-    # Not a false ItemAlreadyExistsError for an item that this create() wrote.
+
+class Plain(Model, table="plain", write_ids=False):
+    """A model whose items store no write id."""
+
+    plain_id: Attr[str] = partition_key()
+    n: Attr[int] = field(default=0)
+
+
+async def test_model_writes_recognise_their_own_earlier_attempt(client: dynamoxy.Client) -> None:
+    await client.create_tables(Note)
+    events, notes, users = client.repository(Event), client.repository(Note), client.repository(User)
+    # The stored item holds this write's id: the lost attempt was applied, and create() succeeds
+    # (instead of a false ItemAlreadyExistsError).
     testing.inject_fault(client, operation="PutItem", lose_response=True)
-    with pytest.raises(dynamoxy.WriteOutcomeUnknownError):
-        await client.repository(Event).create(event(2))
-    assert await client.repository(Event).get("s", 2) is not None
+    with testing.capture_events(client, "request.outcome_*") as outcomes:
+        created = await events.create(event(2))
+    assert created.is_loaded
+    kinds = [entry.kind for entry in outcomes]
+    assert kinds == [dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN, dynamoxy.EventKind.REQUEST_OUTCOME_SETTLED]
+
+    # save() of a versioned model: applied once, not a VersionConflictError.
+    note = await notes.create(Note(note_id="n1", text="a"))
+    note.text = "b"
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    await notes.save(note)
+    assert (note.version, (await notes.get_or_raise("n1")).version) == (2, 2)
+
+    # An increment is not sent again: a consistent read finds its id.
+    await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+    testing.inject_fault(client, operation="UpdateItem", lose_response=True)
+    updated = await users.update({"user_id": "u1"}, User.visits.increment(1))
+    assert updated.visits == 1
+    assert (await users.get_or_raise("u1")).visits == 1, "applied once"
+    assert client.metrics().operations["UpdateItem"].attempts == 1
+
+
+async def test_writes_overwritten_since_their_lost_attempt_stay_unknown(client: dynamoxy.Client) -> None:
+    events = client.repository(Event)
+    await events.create(event(1))
+    table = events.table
+    # The first attempt is applied and lost; before the second one, another writer writes.
+    testing.inject_fault(client, operation="UpdateItem", lose_response=True)
+    testing.inject_fault(client, operation="UpdateItem", latency=0.2)
+
+    async def other_writer() -> None:
+        await asyncio.sleep(0.05)
+        await table.put({"stream": "s", "seq": 1, "kind": "other", "_wid": "0000000000000000"})
+
+    writer = asyncio.create_task(other_writer())
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError) as caught:
+        await events.update({"stream": "s", "seq": 1}, Event.kind.set("mine"), condition=Event.kind == "k")
+    await writer
+    assert caught.value.item is not None
+    assert caught.value.item["kind"] == "other", "the item as stored now"
+
+
+async def test_models_without_write_ids_report_the_unknown_outcome(client: dynamoxy.Client) -> None:
+    await client.create_tables(Plain)
+    plains = client.repository(Plain)
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError) as caught:
+        await plains.create(Plain(plain_id="p1"))
+    assert caught.value.item == {"plain_id": "p1", "n": 0}
 
 
 async def test_updates_that_would_apply_twice_are_not_sent_again(client: dynamoxy.Client) -> None:

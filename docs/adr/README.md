@@ -25,3 +25,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0013](0013-stored-forms-read-back-as-written.md) | Stored numbers and timestamps read back as written: canonical numbers in guards and templates, UTC for formatted datetimes, exact epochs | Accepted |
 | [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |
 | [0015](0015-stored-values-decode-exactly.md) | Stored values decode exactly to their declared type, or raise `ItemDecodeError` | Accepted |
+| [0016](0016-writes-store-a-write-id.md) | Model writes store a random write id (`_wid`), so a retry recognises its own earlier attempt | Accepted |

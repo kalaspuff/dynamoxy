@@ -39,6 +39,7 @@ subclasses included.
 from __future__ import annotations
 
 import functools
+import os
 import types
 import typing
 from datetime import UTC, datetime
@@ -59,12 +60,14 @@ from dynamoxy.errors import (
     UniqueConstraintError,
     UnprocessedItemsError,
     VersionConflictError,
+    WriteOutcomeUnknownError,
     cancellation_reasons,
     validation_error,
 )
+from dynamoxy.events import EventKind
 from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition
 from dynamoxy.query import Query, Scan
-from dynamoxy.schema import FieldSpec, IndexSpec, ModelSchema, schema_of
+from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -87,6 +90,15 @@ _SINGLE_OPERATIONS = {
 def utcnow() -> datetime:
     """The current time in UTC (what ``created_at``/``updated_at`` fields receive)."""
     return datetime.now(UTC)
+
+
+def new_write_id() -> str:
+    """A random id for one write (64 bits as hex text), stored in the item's ``_wid``.
+
+    From the operating system's random source: ids of different processes never follow one
+    seeded sequence (an application may seed ``random``).
+    """
+    return os.urandom(8).hex()
 
 
 def _model_of_class(cls: type) -> type | None:
@@ -137,6 +149,7 @@ class _WritePlan:
         old: dict[str, Any] | None = None,
         prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
         stale: bool = False,
+        write_id: str | None = None,
     ) -> None:
         self.repository = repository
         self.plan = plan
@@ -151,6 +164,8 @@ class _WritePlan:
         # The guard conditions use the unique values the instance was loaded with: a failure may
         # only mean that another writer changed them since (no version, no caller's condition).
         self.stale = stale
+        # The id this write stores in the item (None: the model stores none, or a delete).
+        self.write_id = write_id
 
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
@@ -175,7 +190,10 @@ class _WritePlan:
                 )
             except ConditionalCheckFailedError as error:
                 raise repository._conflict(self, error, error.item) from error
-            attributes = output["attributes"]
+            except WriteOutcomeUnknownError as error:
+                attributes = await self._settle(error, name)
+            else:
+                attributes = output["attributes"]
             await self.finalize(attributes)
             return attributes
         try:
@@ -191,6 +209,35 @@ class _WritePlan:
         if self.mode != "update":
             await self.finalize(None)
         return None
+
+    async def _settle(self, error: WriteOutcomeUnknownError, operation: str) -> dict[str, Any] | None:
+        """What the write returned, when the item as stored now shows that it was applied.
+
+        An attempt that may have been applied was followed by no answer that settled it (see
+        ``WriteOutcomeUnknownError``). The item DynamoDB returned to the next attempt, or a
+        consistent read when it returned none, holds this write's id only if the write was applied
+        (ids are random): then the write succeeded, and an update returns that item. Otherwise
+        ``error`` is raised with the item as stored now (another writer may have written after
+        this write, or the write may still be in flight).
+        """
+        repository = self.repository
+        if self.write_id is None:
+            raise error
+        item = error.item
+        if item is None:
+            try:
+                item = await repository._get_raw(self.key, consistent=True)
+            except DynamoxyError:
+                raise error from None  # the write's outcome is what matters; the read changes nothing
+        if item is None or item.get(WRITE_ID_ATTRIBUTE) != self.write_id:
+            error.item = item
+            raise error
+        repository.client.events.emit(
+            EventKind.REQUEST_OUTCOME_SETTLED,
+            f"{operation} of {repository.model_class.__name__} was applied by an earlier attempt",
+            {"operation": operation, "table": repository.table_name, "model": repository.model_class.__name__},
+        )
+        return item if self.mode == "update" else None
 
 
 class Repository[M]:
@@ -545,10 +592,13 @@ class Repository[M]:
     # then executed: one native call when the plan has one operation, a transaction otherwise.
     # Transactions (`client.transaction()`) execute the plans of several writes together.
 
-    def _prepare(self, instance: M, mode: str) -> tuple[dict[str, Any], dict[str, Any], int | None]:
+    def _prepare(
+        self, instance: M, mode: str, *, standalone: bool = False
+    ) -> tuple[dict[str, Any], dict[str, Any], int | None]:
         """Validates and computes the stored item. Returns (item, changes to apply, expected version).
 
         Except for creates, the item keeps the attributes of the loaded item that no field declares.
+        A ``standalone`` write (not part of a transaction or batch) stores a new write id.
         """
         schema = self.schema
         if not isinstance(instance, self.model_class):
@@ -579,6 +629,8 @@ class Repository[M]:
             if stored is not None:
                 self._check_unchanged(stored, item)
                 item = self._with_undeclared(stored, item)
+        if standalone and schema.write_ids:  # replaces the id of the write that stored the loaded item
+            item[WRITE_ID_ATTRIBUTE] = new_write_id()
         return item, changes, expected
 
     def _with_undeclared(self, stored: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
@@ -675,15 +727,21 @@ class Repository[M]:
         condition: Condition | bool | None,
         *,
         prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+        standalone: bool = False,
     ) -> _WritePlan:
-        """Plans a put; ``prepared`` (a plan's) plans it again with the item as stored now."""
+        """Plans a put; ``prepared`` (a plan's) plans it again with the item as stored now.
+
+        A ``standalone`` put (not part of a transaction) stores a write id: transactions need none
+        (their token makes their retries exact), and the same transaction sent again with the same
+        token must be identical.
+        """
         schema = self.schema
         hooks = self.client.hooks
         fresh = prepared is not None
         if prepared is None:
             if hooks.has("before_save", type(instance)):
                 await hooks.run("before_save", instance, self._context(mode))
-            prepared = self._prepare(instance, mode)
+            prepared = self._prepare(instance, mode, standalone=standalone)
         item, changes, expected = prepared
         key = schema.key_values(item)
         state = schema.state(instance)
@@ -734,10 +792,11 @@ class Repository[M]:
             if hooks.has("after_save", type(instance)):
                 await hooks.run("after_save", instance, self._context(mode))
 
-        return _WritePlan(self, plan, mode, key, expected, finalize, prepared=prepared, stale=stale)
+        write_id = item.get(WRITE_ID_ATTRIBUTE) if standalone and schema.write_ids else None
+        return _WritePlan(self, plan, mode, key, expected, finalize, prepared=prepared, stale=stale, write_id=write_id)
 
     async def _write(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> M:
-        write = await self._plan_put(instance, mode, condition)
+        write = await self._plan_put(instance, mode, condition, standalone=True)
         try:
             await write.execute()
         except ConditionalCheckFailedError as error:
@@ -745,7 +804,7 @@ class Repository[M]:
                 raise
             # Another writer changed the unique values since the instance was loaded: plan the
             # guards again from the item as stored now (the write itself is unchanged).
-            await (await self._plan_put(instance, mode, condition, prepared=write.prepared)).execute()
+            await (await self._plan_put(instance, mode, condition, prepared=write.prepared, standalone=True)).execute()
         return instance
 
     async def create(self, item: M, *, condition: Condition | bool | None = None) -> M:
@@ -785,7 +844,10 @@ class Repository[M]:
         actions: Sequence[UpdateAction],
         condition: Condition | bool | None,
         upsert: bool,
+        *,
+        standalone: bool = False,
     ) -> _WritePlan:
+        """Plans an update; a ``standalone`` one (not part of a transaction) stores a write id."""
         schema = self.schema
         instance = target if isinstance(target, self.model_class) else None
         actions_list = list(actions)
@@ -936,6 +998,9 @@ class Repository[M]:
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
+        write_id = new_write_id() if standalone and schema.write_ids else None
+        if write_id is not None:
+            actions_list.append(F(WRITE_ID_ATTRIBUTE).set(write_id))
         plan = _Plan()
         builder = ExpressionBuilder()
         plan.add(
@@ -966,7 +1031,9 @@ class Repository[M]:
             if hooks.has("after_update", type(instance)):
                 await hooks.run("after_update", instance, self._context("update"))
 
-        return _WritePlan(self, plan, "update", key, expected, finalize, upsert=upsert, instance=instance)
+        return _WritePlan(
+            self, plan, "update", key, expected, finalize, upsert=upsert, instance=instance, write_id=write_id
+        )
 
     def _field_values_of(self, target: Any) -> dict[str, Any]:
         """Field values given as an update target (``{"customer_id": "c1", "order_id": "o1"}``)."""
@@ -1096,7 +1163,7 @@ class Repository[M]:
                 attribute is set with something other than a plain value, or an upsert leaves a
                 required field without a value.
         """
-        write = await self._plan_update(target, actions, condition, upsert)
+        write = await self._plan_update(target, actions, condition, upsert, standalone=True)
         attributes = await write.execute()
         if attributes is None:  # executed as a transaction (unique attributes): read the result
             attributes = await self._get_raw(write.key)

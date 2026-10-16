@@ -26,3 +26,4 @@ Log records carry the event as `record.dynamoxy`. Change levels or disable kinds
 | `operation.failed` | `dynamoxy.operation` | info | Python | An operation failed (operation, table, error code, attempts). |
 | `hook.failed` | `dynamoxy.hook` | error | Python | An event hook raised an exception (the operation was not affected). |
 | `events.dropped` | `dynamoxy.events` | warning | Python | Core events were dropped because the event buffer was full. |
+| `request.outcome_settled` | `dynamoxy.request` | info | Python | A repository found that a write with an unknown outcome was applied by an earlier attempt (its write id is stored), and completed the call. |

@@ -811,6 +811,9 @@ class Model(Document, _Persistence):
             timestamps) are stored unless they choose a codec: ``"iso"``
             (``2026-10-13T08:48:47.966937+00:00``, the default), ``"iso_z"``
             (``2026-10-13T08:48:47.966937Z``), ``"epoch"`` or ``"epoch_ms"``. Inherited.
+        write_ids: Store the id of each write in ``_wid`` (the default), so that a write whose
+            attempt may have been applied (a timeout) recognises it instead of raising
+            ``WriteOutcomeUnknownError``. Inherited.
 
     Example::
 
@@ -831,6 +834,7 @@ class Model(Document, _Persistence):
         type_attribute: str | None = MISSING,
         abstract: bool = False,
         datetime_format: DateTimeFormat | None = None,
+        write_ids: bool | None = None,
         **kwargs: Any,
     ) -> None:
         inherited = cls.__dynamoxy_options__
@@ -844,6 +848,7 @@ class Model(Document, _Persistence):
             type_attribute=resolved_type_attribute,
             abstract=abstract or resolved_table is None,
             datetime_format=inherited.datetime_format if datetime_format is None else datetime_format,
+            write_ids=inherited.write_ids if write_ids is None else write_ids,
         )
         super().__init_subclass__(**kwargs)
         options = cls.__dynamoxy_options__

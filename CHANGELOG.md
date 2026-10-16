@@ -127,6 +127,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   are not sent again and raise it too; before, they were applied twice. Transactions, and writes
   that apply once even when sent twice, are still sent again. Each such call emits
   `request.outcome_unknown`, and `testing.inject_fault(..., lose_response=True)` reproduces it.
+- Model writes recognise their own earlier attempt: each write that runs alone (not in a
+  transaction or batch) stores a random id in the item's `_wid` attribute
+  ([ADR 0016](docs/adr/0016-writes-store-a-write-id.md)). When the outcome is unknown and the
+  stored item holds the write's id, `create()`, `save()`, `update()` and `increment()` succeed,
+  applied once, and emit `request.outcome_settled`. Items gain the `_wid` attribute;
+  `write_ids=False` (a class keyword) stores none.
 
 ## [0.2.0] - 2026-10-15
 

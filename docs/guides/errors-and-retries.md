@@ -86,6 +86,14 @@ may have caused itself, and never applies a write twice:
   (`return_old=True`) may be the earlier attempt's own write, or the absence of the item it
   deleted, and raise it too.
 
+Model writes settle most of these themselves. Each write that runs alone stores a random id in
+the item (`_wid`, [ADR 0016](../adr/0016-writes-store-a-write-id.md)); when the outcome is
+unknown, the repository looks at the item DynamoDB returned with the failed condition, or reads
+it when an update was not sent again. If the item holds this write's id, the write was applied:
+`create()`, `save()`, `update()` and `increment()` succeed, run their hooks once and emit
+`request.outcome_settled`. The outcome stays unknown when another writer wrote in between, for
+deletes, for the dict-level API, and for models declared with `write_ids=False`.
+
 `WriteOutcomeUnknownError` is a `TransportError`, like the timeout without retries, and never a
 `ConditionalCheckFailedError`, so code that handles lost races does not mistake a write that
 happened for one. It is not `.retryable`: read the item to find out what happened, and repeat

@@ -411,10 +411,10 @@ async def test_atomic_changes_send_documented_update_actions() -> None:
         await event.add(Event.payload["tags"], {"a"})
         with pytest.raises(TypeError, match=r"Event\.payload\.note has no known type"):
             await event.add(Event.payload["note"], "text")
-        assert updates == [
-            "ADD total :v0",
-            "SET payload.n = if_not_exists(payload.n, :v0) + :v1",
-            "ADD payload.tags :v0",
+        assert updates == [  # each write also stores its id (_wid)
+            "SET _wid = :v1 ADD total :v0",
+            "SET payload.n = if_not_exists(payload.n, :v0) + :v1, _wid = :v2",
+            "SET _wid = :v1 ADD payload.tags :v0",
         ]
         assert event.payload == {"n": 2, "tags": {"a"}}
 
@@ -436,8 +436,7 @@ async def test_writes_of_loaded_instances_keep_attributes_their_model_does_not_d
     await older.repository(ProfileV1).update(loaded, F("nickname").remove())  # how to remove one
     assert (await newer.repository(ProfileV2).get_or_raise("p1")).nickname is None
     await older.repository(ProfileV1).put(ProfileV1(profile_id="p1", name="New"))  # not loaded: replaced
-    assert await newer.table("profiles_v").get({"profile_id": "p1"}) == {
-        "profile_id": "p1",
-        "name": "New",
-        "version": 1,
-    }
+    replaced = await newer.table("profiles_v").get({"profile_id": "p1"})
+    assert replaced is not None
+    assert re.fullmatch(r"[0-9a-f]{16}", replaced.pop("_wid")), "the id of the write"
+    assert replaced == {"profile_id": "p1", "name": "New", "version": 1}
