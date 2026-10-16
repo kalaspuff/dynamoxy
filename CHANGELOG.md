@@ -89,6 +89,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   [ADR 0013](docs/adr/0013-stored-forms-read-back-as-written.md): guard keys of non-canonical
   numbers, template keys of non-canonical `Decimal`s and non-UTC formatted datetimes, and epoch
   milliseconds that were a millisecond early.
+- [**breaking**] Writes of loaded instances (`save()`, `put()`, batch puts) keep the attributes
+  of the stored item that their model does not declare, so an older version of an application
+  no longer erases fields a newer one wrote during a rolling deploy
+  ([ADR 0014](docs/adr/0014-writes-keep-undeclared-attributes.md)). Remove a retired attribute
+  with `update(item, F("name").remove())`.
 
 ## [0.2.0] - 2026-10-15
 

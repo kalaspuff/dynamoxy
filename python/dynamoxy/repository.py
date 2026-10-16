@@ -530,7 +530,10 @@ class Repository[M]:
     # Transactions (`client.transaction()`) execute the plans of several writes together.
 
     def _prepare(self, instance: M, mode: str) -> tuple[dict[str, Any], dict[str, Any], int | None]:
-        """Validates and computes the stored item. Returns (item, changes to apply, expected version)."""
+        """Validates and computes the stored item. Returns (item, changes to apply, expected version).
+
+        Except for creates, the item keeps the attributes of the loaded item that no field declares.
+        """
         schema = self.schema
         if not isinstance(instance, self.model_class):
             raise TypeError(f"expected a {self.model_class.__name__}, got {type(instance).__name__}")
@@ -559,7 +562,19 @@ class Repository[M]:
             stored = state.stored if state is not None and state.loaded else None
             if stored is not None:
                 self._check_unchanged(stored, item)
+                item = self._with_undeclared(stored, item)
         return item, changes, expected
+
+    def _with_undeclared(self, stored: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        """``item`` with the attributes of the ``stored`` item (same key) that no field declares.
+
+        A newer version of the application (during a rolling deploy) or another service may have
+        written them: a write of the item as loaded keeps them, and ``update(F(name).remove())``
+        removes one.
+        """
+        declared = self.schema._stored_names
+        undeclared = {name: value for name, value in stored.items() if name not in declared}
+        return {**undeclared, **item} if undeclared else item
 
     def _apply(self, instance: M, changes: Mapping[str, Any], item: dict[str, Any] | None) -> None:
         adapter = self.schema.adapter

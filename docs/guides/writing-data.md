@@ -178,6 +178,14 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
 - Refused for models with unique attributes (use transactions or single writes).
 - `before_save` hooks run for batch puts; conditions and versions do not apply.
 
+## Attributes the model does not declare
+
+A write of a loaded instance (`save()`, `put()`, batch puts) keeps the attributes of the stored
+item that no field declares: a newer version of the application (during a rolling deploy) or
+another service may have written them. Remove one with an update:
+`await users.update(user, F("legacy_name").remove())`. A write of an instance that was not loaded
+replaces the item, as before.
+
 ## Deleting
 
 `delete()` (`await users.delete(user)` or `await user.delete()`) returns the deleted item (or

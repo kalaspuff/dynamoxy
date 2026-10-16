@@ -490,6 +490,10 @@ writes that were made update their instances and run `after_*` hooks. A batch wr
 fails before its request (a hook or validation raised), or whose request fails, keeps the other
 writes queued.
 
+A write of a loaded instance (`save()`, `put()`, batch puts) keeps the stored attributes that no
+field declares (written by a newer version of the application during a rolling deploy, or by
+another service); remove one with `update(item, F("old_name").remove())`.
+
 ## 6. Unique values
 
 ```python
@@ -739,8 +743,10 @@ For queue consumers that may see a message twice, make the write conditional on 
 ### Migrations of stored data
 
 Add new fields with defaults (old items decode with the default). Upgrade old shapes in
-`@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. Changing a
-key or a key template is a new table.
+`@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. `save()`
+keeps attributes no field declares, so instances of an older version of the application do not
+erase what a newer one wrote; drop a retired attribute with `update(item, F("old").remove())`.
+Changing a key or a key template is a new table.
 
 ## 13. Configuration cheat sheet
 
