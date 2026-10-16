@@ -1,9 +1,10 @@
-"""The repository scripts (consistency checks, release helpers, wheel smoke test) keep working."""
+"""The repository scripts (consistency checks, release helpers, wheel smoke test, benchmarks) keep working."""
 
 from __future__ import annotations
 
 import datetime
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -102,3 +103,27 @@ def test_smoke_test_passes() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "OK on" in result.stdout
+
+
+def benchmark(*arguments: str) -> str:
+    """Runs scripts/benchmark.py with tiny parameters and returns its output."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "benchmark.py"), *arguments, "--rounds", "1"],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_benchmark_on_the_memory_backend() -> None:
+    assert "In memory: a get() " in benchmark("memory", "--seconds", "0.001")
+
+
+@pytest.mark.e2e
+def test_benchmark_against_the_emulator(emulator_endpoint: str) -> None:
+    options = ("--endpoint", emulator_endpoint, "--calls", "2", "--query-calls", "1", "--runs", "1")
+    assert "| `GetItem`, one item | " in benchmark("emulator", *options)
+    assert "Cold start, from the first import to the first item: dynamoxy " in benchmark("cold-start", *options)

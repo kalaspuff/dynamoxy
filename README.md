@@ -265,7 +265,9 @@ Linux in a VM on an Apple Silicon Mac, against [MiniStack](https://pypi.org/proj
 over local HTTP, in October 2026. CPU figures are the CPU time of the client process (all
 threads) for sequential calls, medians of repeated runs of 3000 calls (400 for queries); cold
 starts are medians of 31 fresh processes, interpreter startup excluded; in-memory figures are
-wall-clock times. Numbers vary with hardware.
+wall-clock times. Numbers vary with hardware:
+[`scripts/benchmark.py`](https://github.com/kalaspuff/dynamoxy/blob/main/scripts/benchmark.py)
+measures them on yours (`uv run --with aiobotocore python scripts/benchmark.py` in a checkout).
 
 ## Contributing
 

@@ -30,7 +30,7 @@ examples/                        Runnable examples (executed by tests/integratio
 docs/                            Guides, reference (configuration/errors checked, events generated), ADRs
 skills/dynamoxy/SKILL.md         Skill for agents of applications using dynamoxy (copy into a project)
 .claude/skills/                  Skills for agents developing dynamoxy (this repository)
-scripts/                         check_consistency.py, generate_reference.py, release.py, release_notes.py, smoke_test.py
+scripts/                         check_consistency.py, generate_reference.py, release.py, release_notes.py, smoke_test.py, benchmark.py
 .github/workflows/               ci.yml, pr-title.yml, prepare-release.yml, tag-release.yml, release.yml
 ```
 
@@ -53,6 +53,7 @@ Requirements: Rust (stable, see `rust-toolchain.toml`) and [uv](https://docs.ast
 | Regenerate generated reference docs | `uv run python scripts/generate_reference.py` |
 | Release wheels for all Linux targets | `make wheels` |
 | Smoke-test an installed wheel | `python -I scripts/smoke_test.py` |
+| Measure the README's performance numbers | `uv run --with aiobotocore python scripts/benchmark.py` |
 | Lint GitHub workflows | `uvx --from actionlint-py actionlint` (part of `make lint`) |
 
 `uv run ...` rebuilds the native extension automatically when Rust sources change (`[tool.uv]
