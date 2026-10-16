@@ -78,6 +78,7 @@ subclasses take `datetime_format` too.
 | `type_attribute` | `"_type"` with `entity`, else `None` | Attribute that stores the entity name |
 | `abstract` | `False` | A base model that is not stored itself |
 | `datetime_format` | inherited, else `"iso"` | How `datetime` fields and automatic timestamps are stored unless a field chooses a codec: `"iso"` (`2026-10-13T08:48:47.966937+00:00`), `"iso_z"` (`2026-10-13T08:48:47.966937Z`), `"epoch"` or `"epoch_ms"` (numbers). Both ISO styles are always read |
+| `write_ids` | inherited, else `True` | Each write that runs alone (not in a transaction or a batch) stores a random id in `_wid`, so that a write whose attempt may have been applied recognises it instead of raising `WriteOutcomeUnknownError` ([ADR 0016](../adr/0016-writes-store-a-write-id.md)) |
 
 ## `field(...)`
 

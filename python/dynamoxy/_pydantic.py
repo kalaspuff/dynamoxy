@@ -223,6 +223,7 @@ class PydanticModel(BaseModel, _Persistence):
         type_attribute: str | None = MISSING,
         abstract: bool = False,
         datetime_format: DateTimeFormat | None = None,
+        write_ids: bool | None = None,
         **kwargs: Any,
     ) -> None:
         inherited = cls.__dynamoxy_options__
@@ -236,6 +237,7 @@ class PydanticModel(BaseModel, _Persistence):
             type_attribute=resolved_type_attribute,
             abstract=abstract or resolved_table is None,
             datetime_format=inherited.datetime_format if datetime_format is None else datetime_format,
+            write_ids=inherited.write_ids if write_ids is None else write_ids,
         )
         super().__init_subclass__(**kwargs)
 

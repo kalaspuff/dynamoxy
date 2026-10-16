@@ -544,9 +544,15 @@ class ModelOptions:
     type_attribute: str | None = None
     abstract: bool = False
     datetime_format: DateTimeFormat = "iso"
+    write_ids: bool = True
 
     def __post_init__(self) -> None:
         _check_datetime_format(self.datetime_format, "datetime_format")
+
+
+#: The attribute holding the id of the write that stored an item (see ``ModelOptions.write_ids``
+#: and ADR 0016): a retried write recognises its own earlier attempt by it.
+WRITE_ID_ATTRIBUTE = "_wid"
 
 
 _REGISTRY: dict[tuple[str, str], type] = {}
@@ -601,6 +607,13 @@ class ModelSchema:
         partitions = [spec for spec in fields if spec.role == "partition"]
         sorts = [spec for spec in fields if spec.role == "sort"]
         self.is_table = self.table is not None and not options.abstract
+        # Items of the table store the id of the write that stored them (documents are not items).
+        self.write_ids = options.write_ids and self.is_table
+        if self.write_ids and WRITE_ID_ATTRIBUTE in self.attributes:
+            raise TypeError(
+                f"{model.__name__}: a field is stored as {WRITE_ID_ATTRIBUTE!r}, the attribute of write ids; "
+                "store it under another attribute_name=, or pass write_ids=False"
+            )
         if self.is_table:
             if len(partitions) != 1:
                 raise TypeError(

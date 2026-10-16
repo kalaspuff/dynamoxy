@@ -60,6 +60,7 @@ class EventKind(StrEnum):
     OPERATION_FAILED = "operation.failed"
     HOOK_FAILED = "hook.failed"
     EVENTS_DROPPED = "events.dropped"
+    REQUEST_OUTCOME_SETTLED = "request.outcome_settled"
 
 
 #: Default level and description of the kinds the Python layer emits (the Rust kinds come from
@@ -74,6 +75,11 @@ PYTHON_EVENT_KINDS: dict[EventKind, tuple[str, str]] = {
     EventKind.OPERATION_FAILED: ("info", "An operation failed (operation, table, error code, attempts)."),
     EventKind.HOOK_FAILED: ("error", "An event hook raised an exception (the operation was not affected)."),
     EventKind.EVENTS_DROPPED: ("warning", "Core events were dropped because the event buffer was full."),
+    EventKind.REQUEST_OUTCOME_SETTLED: (
+        "info",
+        "A repository found that a write with an unknown outcome was applied by an earlier attempt (its write id "
+        "is stored), and completed the call.",
+    ),
 }
 
 _LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}

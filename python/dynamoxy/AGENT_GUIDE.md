@@ -776,9 +776,11 @@ every item is rewritten. Changing a key or a key template is a new table.
 Retries cover throttling, server errors, transaction conflicts and timeouts, with exponential
 backoff and full jitter. Conditional and validation failures are never retried. A write whose
 attempt timed out, lost its connection or got a 5xx may have been applied: it is sent again
-only when it applies once even when sent twice (transactions, puts, deletes, `SET` updates),
-and a condition that then fails raises `WriteOutcomeUnknownError` (not a conflict error);
-`increment()`, `add()` of numbers and `append()` raise it without being sent again.
+only when it applies once even when sent twice (transactions, puts, deletes, `SET` updates).
+Model writes store a random write id (`_wid`) and recognise their own earlier attempt by it, so
+a timed-out `create()`, `save()` or `increment()` that was applied succeeds, applied once.
+Otherwise (another writer wrote in between, deletes, the dict-level API, models declared with
+`write_ids=False`) the call raises `WriteOutcomeUnknownError`, never a conflict error.
 
 ### Credentials and region
 

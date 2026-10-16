@@ -77,6 +77,7 @@ async def test_boto3_reads_what_dynamoxy_writes(client: dynamoxy.Client, boto: A
     assert stored["total"] == {"N": "99.95"}
     assert stored["gsi1pk"] == {"S": "STATUS#paid"}
     assert stored["_type"] == {"S": "Order"}
+    assert set(stored.pop("_wid")) == {"S"}, "the id of the write (not a field)"
     assert stored == dynamoxy.to_wire(dynamoxy.schema_of(Order).encode(order))
 
 
