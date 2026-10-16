@@ -23,6 +23,7 @@ use dynamoxy_core::types::{
     IndexDescription, ItemCollectionMetrics, KeySchema, KeysAndAttributes, Projection, ProvisionedThroughput,
     TableDescription, TimeToLiveDescription, WriteRequest,
 };
+use dynamoxy_core::value::NumberError;
 use dynamoxy_core::{AttributeValue, Item, Number, OperationStats};
 use pyo3::exceptions::PyTypeError;
 use pyo3::intern;
@@ -77,7 +78,11 @@ impl std::fmt::Display for ValuePath<'_> {
 }
 
 fn number(text: &str, path: &ValuePath<'_>) -> PyResult<Number> {
-    Number::parse(text).map_err(|error| ValidationError::new_err(format!("{path}: {error}")))
+    Number::parse(text).map_err(|error| match error {
+        // DynamoDB's wording quotes the text; values stay out of messages (they may be personal data).
+        NumberError::Invalid(_) => ValidationError::new_err(format!("{path}: not a number")),
+        other => ValidationError::new_err(format!("{path}: {other}")),
+    })
 }
 
 fn type_name(value: &Bound<'_, PyAny>) -> String {

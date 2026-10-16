@@ -169,7 +169,8 @@ These are relied upon across layers; tests cover each of them.
     that needs an ADR, a migration path and a changelog entry.
 14. **Secrets and payloads are never logged.** Events carry operation names, table names,
     counts, codes and durations; `Credentials` hide secrets in `repr`; spans record expressions
-    only on request and never values.
+    only on request and never values. Error messages name models, fields and types, never keys
+    or values: errors carry those as attributes (`.key`, `.value`, `.item`, `FieldError.value`).
 
 ## Concurrency model
 

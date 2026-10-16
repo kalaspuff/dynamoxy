@@ -10,6 +10,13 @@ DynamoDB also carry `.code` (`"ConditionalCheckFailedException"`), `.message`, `
 (`"PutItem"`), `.request_id` and `.status_code`; errors of a call carry `.attempts` and
 `.duration` (seconds, retries included).
 
+Messages name models, fields, attributes and types, but never keys, unique values or stored
+values: those may be personal data, and messages end up in logs. The errors carry them as
+attributes (`.key`, `.item`, `.value`, `FieldError.value`), and the messages say where to look
+(`User does not exist (see .key)`). DynamoDB's own messages (`.message` of service errors) are
+passed on as DynamoDB words them; a few quote values of the request, such as a `BETWEEN` whose
+bounds are in the wrong order.
+
 ```text
 DynamoxyError
 ├── ConfigurationError
@@ -45,15 +52,15 @@ DynamoxyError
 | --- | --- | --- |
 | `ConfigurationError` | no | The client configuration is invalid (the native layer refused it) |
 | `ValidationError` | no | A value, key, expression or request is invalid: model validation (before any I/O; `.errors` lists every `FieldError`), local checks (limits, sizes, names) or DynamoDB's `ValidationException` |
-| `FieldError` | — | Not an exception: one problem of a `ValidationError` (`.path`, `.message`, `.value`; `str()` leaves the value out) |
-| `ItemDecodeError` | no | A stored item does not match its model (missing required attributes, wrong types); `.model`, `.key` |
+| `FieldError` | — | Not an exception: one problem of a `ValidationError` (`.path`, `.message`, `.value`; `str()` and `repr()` leave the value out) |
+| `ItemDecodeError` | no | A stored item does not match its model (missing required attributes, wrong types); `.model`, `.key`, and `.errors` with each stored value in `FieldError.value` |
 | `ItemNotFoundError` | no | `get_or_raise()`, `Query.one()`, or `update()` of an item that does not exist (without `upsert`); `.model`, `.key` |
 
 ## Conditions and concurrency
 
 | Error | Retryable | Raised when |
 | --- | --- | --- |
-| `ConditionalCheckFailedError` | no | A `condition=` did not hold; `.item` is the stored item when DynamoDB returned it |
+| `ConditionalCheckFailedError` | no | A `condition=` did not hold; `.item` is the stored item when DynamoDB returned it, `.key` the key of the item a model write targeted |
 | `ItemAlreadyExistsError` | no | `create()` found an item with the same key; `.model`, `.key`, `.item` |
 | `VersionConflictError` | no | Optimistic locking failed: the stored version is not the one the instance was loaded with, or the item was deleted; `.model`, `.key`, `.expected_version`, `.item`. Reload, re-apply, save again |
 | `UniqueConstraintError` | no | A value of a `unique=True` attribute is used by another item; `.model`, `.field`, `.value` |

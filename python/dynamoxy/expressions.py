@@ -275,7 +275,7 @@ def _operand(value: Any, encoder: ValueEncoder | None) -> Operand:
     if isinstance(value, Operand):
         return value
     if isinstance(value, Condition):
-        raise TypeError(f"a condition ({value!r}) cannot be used as a value")
+        raise TypeError("a condition cannot be used as a value")
     return Value(encoder.encode(value) if encoder is not None else value)
 
 
@@ -602,7 +602,7 @@ def _as_condition(value: object) -> Condition:
     if isinstance(value, Condition):
         return value
     raise TypeError(
-        f"expected a dynamoxy condition, got {type(value).__name__} ({value!r}); "
+        f"expected a dynamoxy condition, got {type(value).__name__}; "
         "did you compare two plain values instead of an attribute?"
     )
 

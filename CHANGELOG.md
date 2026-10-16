@@ -78,6 +78,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - `ensure_tables()` reported nothing to change when an index of the same name had another key,
   or when TTL was enabled on another attribute; it now raises `TypeError`, like for the table's
   key.
+- Error messages included keys, unique values and the values that failed validation or
+  decoding (`User {'user_id': 'ada@example.com'} does not exist`, pydantic's `input_value=...`),
+  which may be personal data and end up in logs. Messages now name models, fields and types
+  only, and point to the attributes that hold the values: `User does not exist (see .key)`. The
+  `ConditionalCheckFailedError` of a model write has `.key` too, and `repr()` of `FieldError`
+  and `CancellationReason` leaves out the value and the item.
 
 ### Changed
 

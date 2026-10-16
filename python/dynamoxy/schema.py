@@ -848,8 +848,11 @@ class ModelSchema:
                 continue
             try:
                 values[name] = decode(raw)
-            except (ValueError, TypeError, ArithmeticError) as error:
-                errors.append(FieldError(name, f"cannot decode {raw!r:.60}: {error}"))
+            except (ValueError, TypeError, ArithmeticError):
+                # Not the error's text, which may quote the value (int("x"), Enum("x")): values may be
+                # personal data, and messages end up in logs.
+                expected = self.fields[name].codec.describe()
+                errors.append(FieldError(name, f"cannot decode a stored {type(raw).__name__} as {expected}", raw))
         if len(values) < len(self._encoders):
             for name, _, _, spec in self._encoders:
                 if name in values:
@@ -866,7 +869,7 @@ class ModelSchema:
         if errors:
             key = self.key_values(item) if self.is_table else None
             error = ItemDecodeError(
-                f"cannot decode {self.model.__name__} from the stored item {key or ''}: "
+                f"cannot decode {self.model.__name__} from a stored item{' (see .key)' if key else ''}: "
                 + "; ".join(str(problem) for problem in errors),
                 model=self.model,
                 key=key,
@@ -1000,7 +1003,8 @@ class ModelSchema:
         key = {spec.attribute: self._key_value(spec, remaining, positional, used) for spec in self.key_fields()}
         unexpected = [name for name in remaining if name not in used]
         if positional or unexpected:
-            extra = [repr(value) for value in positional] + [f"{name}=" for name in unexpected]
+            extra = [f"{len(positional)} more positional value(s)"] if positional else []
+            extra += [f"{name}=" for name in unexpected]
             raise ValueError(f"{self.model.__name__}: unexpected key arguments {', '.join(extra)}")
         return key
 

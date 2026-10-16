@@ -312,7 +312,7 @@ class Repository[M]:
         item = await self._get_raw(stored, consistent=consistent)
         if item is None:
             raise ItemNotFoundError(
-                f"{self.model_class.__name__} {stored} does not exist", model=self.model_class, key=stored
+                f"{self.model_class.__name__} does not exist (see .key)", model=self.model_class, key=stored
             )
         return self._load(item)
 
@@ -330,7 +330,7 @@ class Repository[M]:
         item = await self._get_raw(key, consistent=consistent)
         if item is None:
             raise ItemNotFoundError(
-                f"{self.model_class.__name__} {key} no longer exists", model=self.model_class, key=key
+                f"{self.model_class.__name__} no longer exists (see .key)", model=self.model_class, key=key
             )
         self._assign(instance, self._load(item), item)
         return instance
@@ -644,7 +644,7 @@ class Repository[M]:
         before, key = schema.key_values(stored), schema.key_values(item)
         if stored_identity(before) != stored_identity(key):
             raise ValueError(
-                f"{name}: the key of this instance changed since it was loaded ({before} -> {key}), and DynamoDB "
+                f"{name}: the key of this instance changed since it was loaded, and DynamoDB "
                 "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
             )
         for spec in schema._immutable:
@@ -875,7 +875,7 @@ class Repository[M]:
             stored_old = await self._get_raw(key)
             if stored_old is None and not upsert:
                 raise ItemNotFoundError(
-                    f"{self.model_class.__name__} {key} does not exist", model=self.model_class, key=key
+                    f"{self.model_class.__name__} does not exist (see .key)", model=self.model_class, key=key
                 )
         if derived_specs:
             known: dict[str, Any] = {}
@@ -1086,7 +1086,7 @@ class Repository[M]:
             attributes = await self._get_raw(write.key)
             if attributes is None:
                 raise ItemNotFoundError(
-                    f"{self.model_class.__name__} {write.key} does not exist", model=self.model_class, key=write.key
+                    f"{self.model_class.__name__} does not exist (see .key)", model=self.model_class, key=write.key
                 )
             await write.finalize(attributes)
         if isinstance(target, self.model_class):
@@ -1171,14 +1171,14 @@ class Repository[M]:
         stored_version = stored.get(version.attribute) if stored is not None and version is not None else None
         if mode == "create" and stored is not None:
             return ItemAlreadyExistsError(
-                f"{name} {key} already exists", model=self.model_class, key=key, item=stored, cause=error
+                f"{name} already exists (see .key)", model=self.model_class, key=key, item=stored, cause=error
             )
         if mode == "update" and stored is None and not write.upsert:
-            return ItemNotFoundError(f"{name} {key} does not exist", model=self.model_class, key=key)
+            return ItemNotFoundError(f"{name} does not exist (see .key)", model=self.model_class, key=key)
         if version is not None and (mode in ("save", "update", "delete")) and (expected or mode == "save"):
             if stored is None and expected:
                 return VersionConflictError(
-                    f"{name} {key} was deleted after it was loaded (version {expected})",
+                    f"{name} was deleted after it was loaded (version {expected}; see .key)",
                     model=self.model_class,
                     key=key,
                     expected_version=expected,
@@ -1186,13 +1186,16 @@ class Repository[M]:
                 )
             if stored is not None and stored_version != (expected or None):
                 return VersionConflictError(
-                    f"{name} {key} changed since it was loaded: stored version {stored_version}, expected {expected}",
+                    f"{name} changed since it was loaded: stored version {stored_version}, expected {expected} "
+                    "(see .key)",
                     model=self.model_class,
                     key=key,
                     expected_version=expected,
                     item=stored,
                     cause=error,
                 )
+        if isinstance(error, ConditionalCheckFailedError):
+            error.key = key
         return error
 
     def _cancellation(self, write: _WritePlan, error: TransactionCanceledError) -> DynamoxyError:
@@ -1216,13 +1219,13 @@ class Repository[M]:
             _, spec, value = explain
             decoded = spec.codec.decode(value)
             return UniqueConstraintError(
-                f"{self.model_class.__name__}.{spec.name} {decoded!r} is already used by another item",
+                f"{self.model_class.__name__}.{spec.name}: the value is already used by another item (see .value)",
                 model=self.model_class,
                 field=spec.name,
                 value=decoded,
                 cause=cause,
             )
-        message = f"{self.model_class.__name__} {write.key}: the condition of {write.mode} failed"
+        message = f"{self.model_class.__name__}: the condition of {write.mode} failed (see .key)"
         if write.stale:
             message += (
                 " (the unique values stored may have changed since the instance was loaded: refresh() it and retry)"

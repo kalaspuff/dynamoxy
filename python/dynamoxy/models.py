@@ -688,7 +688,7 @@ def _target(instance: Any, path: Path[Any], method: str) -> tuple[str, Codec[Any
     if not isinstance(path, Path):
         raise TypeError(
             f"{model.__name__}.{method}() takes an attribute path such as {model.__name__}.<field>, "
-            f"got {type(path).__name__} {path!r:.40}"
+            f"got {type(path).__name__}"
         )
     if isinstance(path, FieldPath) and not issubclass(model, path.model):
         raise TypeError(f"{path.model.__name__}.{path.field_name} is not a field of {model.__name__}")
@@ -730,7 +730,7 @@ def _number(where: str, codec: Codec[Any] | None, amount: Any) -> float | Decima
     """
     encoded = _checked(where, codec, amount)
     if isinstance(encoded, bool) or not isinstance(encoded, (int, float, Decimal)):
-        raise _invalid(where, f"expected a number, got {type(amount).__name__} {amount!r:.60}", amount)
+        raise _invalid(where, f"expected a number, got {type(amount).__name__}", amount)
     return encoded
 
 
@@ -783,7 +783,7 @@ def _add_action(instance: Any, path: Path[Any], value: Any) -> UpdateAction:
         elif isinstance(value, Hashable):
             elements = {value}
         else:
-            message = f"add() takes one element or a set of elements, got {type(value).__name__} {value!r:.60}"
+            message = f"add() takes one element or a set of elements, got {type(value).__name__}"
             raise _invalid(where, message, value)
         if not elements:
             raise ValueError(f"{where}: add() needs at least one element to add to a set")

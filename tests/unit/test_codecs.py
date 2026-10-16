@@ -176,6 +176,28 @@ def test_invalid_values_are_rejected(annotation: Any, value: Any, message: str) 
         resolve_codec(annotation).validate(value)
 
 
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [
+        (str, 4155550123),
+        (int, "ada@example.com"),
+        (Decimal, "ada@example.com"),
+        (uuid.UUID, "ada@example.com"),
+        (Color, "ada@example.com"),
+        (Literal["a", "b"], "ada@example.com"),
+        (list[int], ["ada@example.com"]),
+        (dict[str, int], {"a": "ada@example.com"}),
+        (dict[str, int], {4155550123: 1}),
+    ],
+)
+def test_messages_name_types_not_values(annotation: Any, value: Any) -> None:
+    # Values may be personal data, and messages end up in logs.
+    with pytest.raises(ValueError, match=r"expected|map keys") as caught:
+        resolve_codec(annotation).validate(value)
+    assert "ada@example.com" not in str(caught.value)
+    assert "4155550123" not in str(caught.value)
+
+
 def test_numbers_are_normalized() -> None:
     assert resolve_codec(int).validate(Decimal(5)) == 5
     assert resolve_codec(Decimal).validate(1.1) == Decimal("1.1")

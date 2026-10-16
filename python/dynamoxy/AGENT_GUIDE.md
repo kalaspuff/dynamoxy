@@ -42,7 +42,9 @@ optimistic locking · transactions · single-table design · tables · the dict-
 8. **Paginate with cursors.** `await query.page()` returns `items` and an opaque `cursor`;
    `query.after(cursor)` continues. `all()` reads every page: use it only for bounded results.
 9. **Never put secrets or personal data in key names or events.** Keys appear in logs, metrics
-   and traces as table names and counts only; dynamoxy never logs item contents.
+   and traces as table names and counts only; dynamoxy never logs item contents, and its error
+   messages leave out keys and values (`error.key`, `error.value` and `FieldError.value` hold
+   them: log them only when they are not personal data).
 10. **Test with `dynamoxy.testing.memory_client()`.** It is an in-memory DynamoDB with the same
     semantics (expressions, conditions, indexes, transactions, limits), so tests need no AWS
     account, Docker or emulator.

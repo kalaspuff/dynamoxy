@@ -31,6 +31,8 @@ class ServiceError(DynamoxyError): ...
 
 class ConditionalCheckFailedError(ServiceError):
     item: dict[str, Any] | None
+    # Added by dynamoxy.errors: the primary key of the item a model write targeted (None otherwise).
+    key: dict[str, Any] | None
 
 class TransactionCanceledError(ServiceError):
     reasons: list[tuple[str, str | None, dict[str, Any] | None]]

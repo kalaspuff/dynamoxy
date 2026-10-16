@@ -130,10 +130,10 @@ class FieldPath[T](Path[T]):
         if codec.dynamo_type not in (None, "N"):
             raise TypeError(f"{where} holds {codec.describe()} values: increment() and decrement() need a number")
         if isinstance(amount, Operand):
-            raise TypeError(f"{where}: increment() and decrement() take a number, not {amount!r}")
+            raise TypeError(f"{where}: increment() and decrement() take a number, not {type(amount).__name__}")
         encoded = self._value(amount).value
         if isinstance(encoded, bool) or not isinstance(encoded, (int, float, Decimal)):
-            problem = f"expected a number, got {type(amount).__name__} {amount!r:.60}"
+            problem = f"expected a number, got {type(amount).__name__}"
             raise validation_error(f"{where}: {problem}", [FieldError(self._name, problem, amount)])
         return Value(-encoded if negate else encoded)
 

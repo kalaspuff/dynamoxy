@@ -223,6 +223,16 @@ def test_update_action_repr_and_literal() -> None:
     assert isinstance(action, UpdateAction)
 
 
+def test_messages_leave_values_out() -> None:
+    # Values may be personal data, and messages end up in logs.
+    with pytest.raises(TypeError, match="a condition cannot be used as a value") as caught:
+        F("a") == (F("b") == "ada@example.com")  # noqa: B015
+    assert "ada@example.com" not in str(caught.value)
+    with pytest.raises(TypeError, match="expected a dynamoxy condition, got str") as caught:
+        as_condition("ada@example.com")  # type: ignore[arg-type]
+    assert "ada@example.com" not in str(caught.value)
+
+
 # ---- property: every expression the builder produces is valid DynamoDB grammar ---------------
 
 attribute_names = st.sampled_from(["a", "b", "status", "name", "with-dash", "1st", "select", "x.y"])

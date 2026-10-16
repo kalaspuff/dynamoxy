@@ -32,6 +32,12 @@ All dynamoxy errors derive from `DynamoxyError` and say whether retrying may hel
 (`.retryable`). Service errors keep DynamoDB's `.code`, `.message` and `.request_id` (quote it in
 support cases).
 
+Messages are safe to log: they name models, fields and types, never keys or values, which may be
+personal data. The errors carry those as attributes, and the messages say where: `User does not
+exist (see .key)`, `User.email: the value is already used by another item (see .value)`. Log
+`error.key` yourself only when your keys are not personal data. `FieldError.value` holds the value
+that failed validation or decoding (`str()` and `repr()` leave it out).
+
 ## Automatic retries
 
 The core retries retryable failures with exponential backoff and full jitter:
