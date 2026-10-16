@@ -28,7 +28,7 @@ from dynamoxy.expressions import Condition, ExpressionBuilder, Path, as_conditio
 from dynamoxy.results import ConsumedCapacity, Page
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from dynamoxy.client import Client
 
@@ -266,22 +266,29 @@ class _Reader[T]:
                 return
             start = page.last_evaluated_key
 
-    async def __aiter__(self) -> AsyncIterator[T]:
+    async def __aiter__(self) -> AsyncGenerator[T]:
         if self._segments is not None:
-            async for item in self._parallel():
-                yield item
+            async with contextlib.aclosing(self._parallel()) as parallel:
+                async for item in parallel:
+                    yield item
             return
-        async for page in self.pages():
-            for item in page.items:
-                yield item
+        async with contextlib.aclosing(self.pages()) as pages:
+            async for page in pages:
+                for item in page.items:
+                    yield item
 
-    async def _parallel(self) -> AsyncIterator[T]:
+    async def _parallel(self) -> AsyncGenerator[T]:
         total = self._segments
         assert total is not None
+        if self._start is not None:
+            raise TypeError(
+                "a parallel scan reads every segment from its start: continue one segment with "
+                ".segment(index, total).after(cursor) instead of .segments(n)"
+            )
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=max(total * 4, 16))
 
         async def worker(segment: int) -> None:
-            start: dict[str, Any] | None = self._start
+            start: dict[str, Any] | None = None
             try:
                 while True:
                     page = await self._fetch(start, self._page_size, segment=(segment, total))
@@ -290,6 +297,8 @@ class _Reader[T]:
                     if page.last_evaluated_key is None:
                         break
                     start = page.last_evaluated_key
+            except asyncio.CancelledError:
+                raise  # the consumer stopped: nobody reads the queue any more
             except BaseException as error:  # noqa: BLE001 - forwarded to the consumer
                 await queue.put(("error", error))
                 return
@@ -318,11 +327,13 @@ class _Reader[T]:
 
     async def first(self) -> T | None:
         """The first item, or ``None``."""
+        reader = self.limit(1)
         if self._segments is not None:
-            async for item in self.limit(1):
-                return item
+            async with contextlib.aclosing(reader.__aiter__()) as items:
+                async for item in items:
+                    return item
             return None
-        async with contextlib.aclosing(self.limit(1).pages()) as pages:
+        async with contextlib.aclosing(reader.pages()) as pages:
             async for page in pages:
                 if page.items:
                     return page.items[0]
