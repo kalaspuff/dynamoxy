@@ -4,7 +4,7 @@ members = ["crates/dynamoxy-core", "crates/dynamoxy-py"]
 
 # The single version of the project: the Python package takes it from the binding crate.
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"
@@ -13,7 +13,7 @@ homepage = "https://github.com/kalaspuff/dynamoxy"
 authors = ["Carl Oscar Aaro <hello@carloscar.com>"]
 
 [workspace.dependencies]
-dynamoxy-core = { path = "crates/dynamoxy-core", version = "0.2.0" }
+dynamoxy-core = { path = "crates/dynamoxy-core", version = "0.3.0" }
 async-trait = "0.1"
 aws-config = { version = "1.12", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.3", features = ["hardcoded-credentials"] }
