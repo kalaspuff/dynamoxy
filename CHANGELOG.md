@@ -8,6 +8,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-17
+
 ### Features
 
 - The in-memory DynamoDB runs PartiQL `SELECT ... ORDER BY` with DynamoDB's rules and
@@ -133,6 +135,27 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   stored item holds the write's id, `create()`, `save()`, `update()` and `increment()` succeed,
   applied once, and emit `request.outcome_settled`. Items gain the `_wid` attribute;
   `write_ids=False` (a class keyword) stores none.
+
+### Features
+
+- **memory:** PartiQL SELECT with ORDER BY, by DynamoDB's rules (#42) (#42)
+- **repository:** Model writes recognise their own earlier attempt by a write id (#44) (#44)
+
+### Bug fixes
+
+- **query:** Parallel scans that stop early no longer hang (#21) (#21)
+- **query:** Limit() reads only what it needs and cursors of cut pages skip nothing (#22) (#22)
+- **repository:** Table queries of unique models and where() on templated sort keys (#23) (#23)
+- **errors:** Error messages leave out keys and stored values (#40) (#40)
+- **models:** [**breaking**] Stored values decode exactly, or raise ItemDecodeError (#41) (#41)
+- **client:** [**breaking**] Retried writes never apply twice or fail on their own earlier attempt (#43) (#43)
+
+### Documentation
+
+- Highlights, design and performance sections in the README (#37) (#37)
+- A benchmark script reproduces the README's performance numbers (#38) (#38)
+- A shorter README that is easier to read (#46) (#46)
+- Show the dynamoxy logo in the README heading (#47) (#47)
 
 ## [0.2.0] - 2026-10-15
 
