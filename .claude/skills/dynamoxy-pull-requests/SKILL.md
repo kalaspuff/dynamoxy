@@ -94,9 +94,12 @@ nothing.
 - Each pull request contains only its own change: read `git diff <branch N-1> <branch N>` for every
   stage.
 
-**Open them** in order: push each branch, open its pull request with `gh pr create --base <branch
-N-1> --head <branch N> ...` (the first one with `--base main`), then comment the order on each one
-(`gh pr comment <n> --body-file <file>`):
+**Open them** in order: push each branch with `git push -u origin <branch N>` and open its pull
+request with `gh pr create --base <branch N-1> --head <branch N> ...` (the first one with
+`--base main`). The `-u` makes each branch track its own remote branch, which the plain `git push`
+and `git pull --ff-only` of section 4 rely on: otherwise the first branch tracks `origin/main`,
+where `git switch -c` started it, and the others track nothing. Then comment the order on each
+pull request (`gh pr comment <n> --body-file <file>`):
 
 ```markdown
 **Stack** of 3 pull requests, merged in this order with "Squash and merge":
