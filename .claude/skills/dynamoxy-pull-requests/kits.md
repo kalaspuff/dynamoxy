@@ -2,8 +2,114 @@
 
 A publish kit hands pull requests over from an agent that cannot push to a user who can. The
 agent builds and tests everything; the user runs one script, which can only publish exactly what
-was tested. The tools are in `scripts/` next to this file (`$SKILL` in SKILL.md); `selftest.sh`
-tests them.
+was tested. Build one only when you cannot push to GitHub, or when the workspace is the user's own
+checkout (mounted into your machine) and you must not commit there; an agent that can push opens
+its pull requests itself (SKILL.md). The tools are in `scripts/` next to this file (`$SKILL` in
+SKILL.md); `selftest.sh` tests them.
+
+## Building a kit
+
+Build and test in a scratch clone outside the workspace, never in the workspace itself: one
+commit per pull request, each the previous stage plus its change.
+
+```bash
+SCRATCH=~/.cache/dynamoxy-stack/<topic>     # outside the workspace
+git clone --quiet https://github.com/kalaspuff/dynamoxy.git "$SCRATCH"   # read access is enough
+# Commit the workspace's files on the commit the workspace is on, then move them onto main:
+git -C "$SCRATCH" fetch --quiet "$PWD" HEAD && git -C "$SCRATCH" switch --quiet --detach FETCH_HEAD
+git -C "$SCRATCH" --work-tree="$PWD" add --all
+git -C "$SCRATCH" commit --quiet -F <message> && git -C "$SCRATCH" reset --quiet --hard
+git -C "$SCRATCH" rebase --quiet origin/main   # what main has already drops out
+git -C "$SCRATCH" show --stat HEAD             # only your files?
+# The descriptions go in .stacks/<topic>/prs/1.md, 2.md, ...
+python3 "$SKILL/kit.py" build --repo "$SCRATCH" --base origin/main --tip HEAD \
+  --prefix <topic>-stack/ --names 1-<name>,2-<name> --workspace . .stacks/<topic>
+"$SKILL/verify_stages.sh" "$SCRATCH" refs/kits/<topic>/stage-1 refs/kits/<topic>/stage-2
+"$SKILL/rehearse.sh" --repo "$SCRATCH" .stacks/<topic>   # also with --bash <bash 3.2>: see below
+```
+
+Committing on the workspace's own commit matters: when main has moved past the workspace (the
+user merged something meanwhile), a commit of the workspace's files on top of main would undo
+those changes. For a stack, split the commit: `git reset --quiet origin/main` leaves the changes
+in the scratch clone's working tree, then add and commit each stage's files in order, editing a
+file to its intermediate state when a stage has only part of it. For a single pull request,
+`--prefix docs/ --names <topic>` gives the branch `docs/<topic>`.
+
+`--workspace .` checks that every file the pull requests change is exactly as in the workspace,
+and lists the other differences (a newer main, or a change missing from the stack): the last stage
+must be exactly the work. `kit.py` also warns about titles, placeholders and lines longer than 72
+characters (a kit's descriptions are wrapped at 72 columns, which GitHub keeps as they are): fix
+what it reports and build again. Then test the stages against each other:
+
+- `verify_stages.sh` runs the CI checks on every stage on its own, in a clone of its own.
+- Each pull request contains only its own change: read `git diff stage-<N-1> stage-<N>` for every
+  stage.
+- `rehearse.sh --repo SCRATCH KIT` publishes the kit against a local origin, applies the fixes,
+  adds a review commit, squash-merges every pull request in order with a restack after each, and
+  checks every tree on the way.
+
+## Handing a kit over
+
+Tell the user, in this order:
+
+- what the pull requests are, by their titles;
+- the commands, one line on what each does, `--dry-run` first, and that they run on the user's
+  machine with git and an authenticated `gh`:
+
+  ```bash
+  .stacks/<topic>/publish.sh --dry-run   # builds and verifies the commits, pushes nothing
+  .stacks/<topic>/publish.sh             # pushes the branches and opens the pull requests
+  .stacks/<topic>/publish.sh restack     # after each squash merge (a stack only)
+  ```
+
+- what was verified: the CI checks per stage (which Pythons, the emulator), the rehearsal, and the
+  match with the workspace;
+- for a stack, that each merge is followed by `restack`.
+
+Until the user reports back, the work is handed over, not published. After the merge, the user's
+working tree still holds the changes, uncommitted. When their main has no commits of its own,
+`git switch main && git fetch && git reset origin/main` lines the checkout up without touching any
+file. When everything is merged, the kit directory and the local branches can go (`restack` prints
+the command).
+
+## After publishing: fixes and restacks
+
+After each squash merge, the user runs `publish.sh restack`: unlike an agent that pushes its own
+branches (SKILL.md section 4), it rebases the rest of the stack onto main and pushes the branches
+with `--force-with-lease=<branch>:<old tip>` (see below). After a restack, `git range-diff
+OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP` must show the same patches; when main did not move, the trees
+must be the same too.
+
+**Fixes**, for a failed check or a review comment: never rebuild a published kit (`kit.py build`
+refuses once `forks` exists), because the pull requests and their reviews belong to the pushed
+commits. Fix the earliest stage that has the cause and add the fix to the kit:
+
+```bash
+git -C "$SCRATCH" switch --detach refs/kits/<topic>/stage-<n>   # the stage as published
+# change, test and commit it (a conventional message with the trailers)
+python3 "$SKILL/kit.py" fix --repo "$SCRATCH" --name <fix> --commit HEAD .stacks/<topic>
+"$SKILL/verify_stages.sh" "$SCRATCH" refs/kits/<topic>/stage-<n> ... refs/kits/<topic>/stage-<last>
+"$SKILL/rehearse.sh" --repo "$SCRATCH" .stacks/<topic>
+```
+
+The user then runs `.stacks/<topic>/publish.sh fix <fix> --dry-run`, and the same without
+`--dry-run`: the fix becomes a new commit on its branch, the later branches are rebased onto it,
+and every tree is checked before anything is pushed with a lease. Fixes are applied in the order
+they were added.
+
+**Failed checks without credentials.** The check runs of a commit are public, but their logs need
+a login:
+
+```bash
+curl -s https://api.github.com/repos/kalaspuff/dynamoxy/commits/<sha>/check-runs |
+  jq -r '.check_runs[] | "\(.conclusion) \(.name) \(.html_url)"'
+```
+
+Ask the user for the log of the failing step. When the workspace is shared, they can save
+`gh run view --job <id> --log-failed` to a file there. Fetch the pull request's head into the
+scratch clone (`git fetch https://github.com/kalaspuff/dynamoxy.git refs/pull/<n>/head`, read
+only), reproduce the failure and find the stage that causes it as SKILL.md section 5 shows, then
+add the fix as above.
 
 ## Files
 
@@ -27,10 +133,9 @@ tests them.
 
 `kit.py build` writes everything but `forks`, taking the descriptions from `prs/` (the agent writes
 them first) or `--bodies DIR`. `kit.py fix` adds a fix and makes `patches/` and `TREES` those of
-the fixed stack, so that a
-first `publish` after a fix builds the fixed stack and a repeated one finds the branches up to
-date. `kit.py check` validates a kit: titles, widths, files, the chain of fixes and, with
-`--repo`, that the patches rebuild the recorded trees.
+the fixed stack, so that a first `publish` after a fix builds the fixed stack and a repeated one
+finds the branches up to date. `kit.py check` validates a kit: titles, widths, files, the chain of
+fixes and, with `--repo`, that the patches rebuild the recorded trees.
 
 ## What publish.sh does
 
@@ -79,6 +184,10 @@ Every command takes `--dry-run`, `--yes`, `--remote NAME` and `--main NAME`.
 
 ## Testing such scripts
 
+After any change to the scripts, run `$SKILL/selftest.sh`, the same with `--bash <bash 3.2>` and
+`shellcheck $SKILL/*.sh`. A new `gh` call in `publish.sh` also needs support in `gh_stub.py`,
+which refuses options it does not know.
+
 - `$SKILL/gh_stub.py` plays the GitHub CLI against a local bare repository. Pull requests live in
   a JSON file, `--jq` filters run through the real `jq`, and `pr merge --squash
   [--delete-branch]` merges and retargets like GitHub does. `GH_STUB_FAIL_CREATE` makes opening a
@@ -106,18 +215,3 @@ Every command takes `--dry-run`, `--yes`, `--remote NAME` and `--main NAME`.
   rm -f y.tab.c y.tab.h && make YACC="bison -y" && make install   # apt-get install bison
   "$SKILL/selftest.sh" --bash "$HOME/.cache/bash32/bin/bash"   # SKILL: see SKILL.md
   ```
-
-## Handing a kit over
-
-Tell the user, in this order:
-
-- what the pull requests are, by their titles;
-- the commands (`--dry-run` first), and that they run on the user's machine with git and an
-  authenticated `gh`;
-- what was verified: the CI checks per stage (which Pythons, the emulator), the rehearsal, and the
-  match with the workspace;
-- for a stack, that each merge is followed by `restack`.
-
-After the merge, the user's working tree still holds the changes, uncommitted. When their main has
-no commits of its own, `git switch main && git fetch && git reset origin/main` lines the checkout up
-without touching any file.

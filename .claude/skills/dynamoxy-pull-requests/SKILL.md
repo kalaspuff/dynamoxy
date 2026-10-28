@@ -1,22 +1,25 @@
 ---
 name: dynamoxy-pull-requests
-description: Commit and open pull requests for dynamoxy - conventional titles, descriptions that become the squash commit, stacked pull requests (splitting work, verifying every stage, restacking after squash merges), fixing failing checks and review comments on a stack, and publish kits (a tested script the user runs) when the agent cannot push to GitHub. Use when committing, opening, updating or merging pull requests, splitting a change into a stack, handling a failing CI check, or handing work over from a machine without GitHub credentials.
+description: Commit, push and open pull requests for dynamoxy - conventional titles, descriptions that become the squash commit, stacked pull requests (splitting work, verifying every stage, updating the stack after squash merges without force-pushing), fixing failing checks and review comments, and publish kits for agents that cannot push to GitHub. Use when committing, pushing, opening, updating or merging pull requests, splitting a change into a stack, handling a failing CI check, or handing work over from a machine without GitHub credentials.
 ---
 
-# Pull requests, stacks and publish kits
+# Pull requests and stacks
 
-Every change reaches `main` as a squash-merged pull request. The tools in `scripts/` build, test
-and publish pull requests, also from a machine that cannot push: `kit.py` builds and checks
-publish kits, `publish.sh` is what the user runs, `verify_stages.sh` runs the CI checks on every
-stage, `rehearse.sh` rehearses a kit against a local origin with a stub `gh`, and `selftest.sh`
-tests the tools. [kits.md](kits.md) describes kits and the rules for such scripts. The commands
-below run from the top of the repository, with `SKILL=.claude/skills/dynamoxy-pull-requests/scripts`.
+Every change reaches `main` as a squash-merged pull request. An agent that can push to GitHub
+(`git push` works and `gh auth status` is logged in) does all of it itself, in the checkout it works
+in: it branches, commits, pushes, opens the pull request with `gh` and follows its checks and
+reviews. That takes no publish kit, no scratch clone and no separate go-ahead to push the branch or
+open the pull request. Only an agent that cannot push hands its work over as a publish kit
+(section 6). The commands below run from the top of the repository, with
+`SKILL=.claude/skills/dynamoxy-pull-requests/scripts`.
 
 ## 1. How a pull request lands
 
-- **Squash merge.** The commit on main is `<PR title> (#N)`, with the PR description as its body
-  (GitHub rewraps prose lines longer than 72 characters, but not code blocks) and the
-  `Co-authored-by` trailers of the branch's commits. The branch's own commit messages are dropped.
+- **Squash merge** is the only merge method the repository allows. The commit on main is
+  `<PR title> (#N)`, with the PR description as its body and the `Co-authored-by` trailers of the
+  branch's commits; the branch's own commit messages are dropped. Building that commit, GitHub
+  wraps description lines longer than 72 characters (not code blocks). The merged branch is
+  deleted, and GitHub points the pull requests that were based on it at main.
 - **Changelog.** git-cliff (`cliff.toml`) builds the release notes from the subjects on main: the
   type picks the group, the scope becomes a bold prefix, and `!` or `BREAKING CHANGE:` marks a
   breaking change. The PR title is the changelog line, so write it for users of dynamoxy. What a
@@ -28,25 +31,29 @@ below run from the top of the repository, with `SKILL=.claude/skills/dynamoxy-pu
   and docs consistency; Rust tests and the MiniStack parity scenarios; Python 3.12-3.15 on Linux
   x86_64 and arm64 with the e2e tests; macOS and Windows on 3.12 and 3.15 without them; packaging.
   CodeQL runs too.
+- **Merging is the maintainer's call.** Do not merge pull requests, push to main or start a
+  release unless you are asked to.
 
 ## 2. One pull request
 
-1. **Branch** from the current main: `<type>/<topic>`, for example `docs/credentials-and-region`.
-2. **Commit** with a conventional subject and a body, wrapped at 72 columns, that says why. End
-   it with the attribution trailers your harness gives you (Claude Code: `Co-Authored-By:` and
-   `Claude-Session:`).
-3. **Title** = the commit subject. **Description**: what changes and why, a `## Breaking change`
-   section with the migration when there is one, and how it was tested. Wrap prose at 72 columns
-   so that the squash commit reads as written (code blocks may be longer), and end with the
-   attribution lines. Leave out what does not belong in main's history: instructions for whoever
-   merges, local paths, script names, the order of a stack.
-4. **Check** with `make check` before opening it. If the workspace is the user's own checkout,
-   mounted into your machine, build and test in a scratch clone instead: `$SKILL/verify_stages.sh`
-   runs the checks in a clone of its own.
-5. **Publish** once the user agrees, since pushing is outward-facing. With credentials:
-   `git push -u origin <branch>` and `gh pr create --base main --title "<title>" --body-file
-   <description>`. Without them, hand over a publish kit (section 6); a kit is the tested path
-   with credentials too.
+1. **Branch** from the current main: `git fetch origin && git switch -c <type>/<topic> origin/main`,
+   for example `docs/credentials-and-region`, or use the branch your harness created for the task.
+2. **Commit** as you go, with a conventional subject and a body, wrapped at 72 columns, that says
+   why. End it with the attribution trailers your harness gives you.
+3. **Check** with `make check` before you open the pull request; CI runs the same on more
+   Pythons and platforms (section 1).
+4. **Push and open it**: `git push -u origin HEAD`, then `gh pr create --base main --title
+   "<title>" --body-file <description>`. The title is the subject the squash commit will have.
+5. **Describe it for main's history**, since the description becomes the squash commit's body:
+   what changes and why, a `## Breaking change` section with the migration when there is one, and
+   how it was verified. Write each paragraph and list item on one line: GitHub shows it as written
+   and wraps it at 72 columns in the squash commit, whereas text hard-wrapped wider than 72
+   columns comes out ragged there. Leave out what does not belong in main's history: instructions
+   for whoever merges, local paths, the order of a stack (section 3). End it with the attribution
+   lines your harness asks for. When later commits change what the pull request does, rewrite the
+   description (`gh pr edit <n> --body-file <file>`) and, if needed, the title.
+6. **Follow it**: `gh pr checks <n> --watch` waits for CI. Fix a failed check (section 5) and
+   answer reviews (section 4) with new commits.
 
 ## 3. Stacked pull requests
 
@@ -57,137 +64,112 @@ while the feature is still in review.
 - Each pull request passes CI on its own and has its own tests, docs and changelog lines.
 - Pull request N is based on branch N-1, the first one on main. Branches are named
   `<topic>-stack/<n>-<name>`, for example `instances-stack/2-copies`.
-- Merge strictly in order with "Squash and merge", and only the pull request whose base is main:
-  a pull request based on another branch merges into that branch. After each merge, restack the
-  rest (section 4) before merging the next one.
-- The order of the stack goes in a comment on each pull request (`publish.sh` posts it), not into
-  the descriptions, which become commit messages.
+- They are merged strictly in order, each once its base is main: a pull request based on another
+  branch would merge into that branch. After each merge, the next branch is updated (section 4)
+  before it is merged.
+- The order of the stack goes in a comment on each pull request, not into the descriptions, which
+  become commit messages.
 
-**Build the stages** in a scratch clone at the current main, never in the workspace: one commit
-per pull request, each the previous stage plus its change. When the work already exists as one
-diff in the workspace, commit it once in the scratch clone (section 6 shows how), then split that
-commit into the stages. The last stage must be exactly the work: `kit.py build --workspace .`
-compares the files.
+**Build the stages as branches** in your checkout, each on the one before it:
 
-**Test the branches against each other:**
+```bash
+git fetch origin
+git switch -c <topic>-stack/1-<name> origin/main   # commit stage 1
+git switch -c <topic>-stack/2-<name>               # on top of stage 1: commit stage 2, and so on
+```
+
+When the work already exists as one change, commit it on a branch of its own first, then build
+the stages from it: on each stage's branch, `git restore --source <work> -- <files>` takes that
+stage's files (edit a file to its intermediate state when a stage has only part of it), and you
+commit them. The last stage must be exactly the work: `git diff <work> <last stage>` shows
+nothing.
+
+**Test the stages against each other** before you push them:
 
 - Every stage passes the CI checks on its own:
-  `$SKILL/verify_stages.sh SCRATCH refs/kits/<topic>/stage-1 refs/kits/<topic>/stage-2 ...`.
-- Each pull request contains only its own change: read `git diff stage-<N-1> stage-<N>` for every
-  stage. After a restack, `git range-diff OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP` must show the same
-  patches; when main did not move, the trees must be the same too.
-- Rehearse the merges: `$SKILL/rehearse.sh --repo SCRATCH KIT` publishes against a local origin,
-  applies the fixes, adds a review commit, squash-merges every pull request in order with a
-  restack after each, and checks every tree on the way.
-- On GitHub, the CI of each pull request then tests exactly its stage: its branch merged into the
-  branch before it.
+  `$SKILL/verify_stages.sh . <topic>-stack/1-<name> <topic>-stack/2-<name> ...` checks each branch
+  out in a clone of its own (your checkout stays as it is) and runs lint, types, the consistency
+  checks and the tests on Python 3.12 and 3.15 with the e2e tests, and the Rust checks when the
+  stack changes Rust.
+- Each pull request contains only its own change: read `git diff <branch N-1> <branch N>` for every
+  stage.
 
-## 4. After publishing: reviews, restacks, a moving main
+**Open them** in order: push each branch with `git push -u origin <branch N>` and open its pull
+request with `gh pr create --base <branch N-1> --head <branch N> ...` (the first one with
+`--base main`). The `-u` makes each branch track its own remote branch, which the plain `git push`
+and `git pull --ff-only` of section 4 rely on: otherwise the first branch tracks `origin/main`,
+where `git switch -c` started it, and the others track nothing. Then comment the order on each
+pull request (`gh pr comment <n> --body-file <file>`):
 
-- **A review comment or a failed check** becomes a new commit on the branch that needs it, never an
-  amended or rewritten published commit. The branches after it are rebased onto it; with a kit,
-  that is a fix (section 6).
-- **After each squash merge**, restack. Rebase the next branch onto main without the merged
-  commits (`git rebase --onto origin/main <last head of the merged branch> <next branch>`), each
-  later branch onto its rebased predecessor in the same way, and push them with
-  `--force-with-lease=<branch>:<old tip>`. Then point the next pull request at main
-  (`gh pr edit <n> --base main`; GitHub only does it itself when the merged branch is deleted).
-  `publish.sh restack` does all of this, and stops before pushing anything if a rebase conflicts.
-- **When main moves** under an open stack (other merges, conflicts in `CHANGELOG.md`), restack as
-  well: the bottom branch is rebased onto main, and CI then tests the new combination.
+```markdown
+**Stack** of 3 pull requests, merged in this order with "Squash and merge":
+
+1. #61 fix(query): ...
+2. #62 feat(query): ... ← this pull request
+3. #63 docs: ...
+```
+
+On GitHub, the CI of each pull request tests its branch merged into the branch before it.
+
+## 4. After publishing: reviews, merges, a moving main
+
+Published branches only move forward: never force-push them, and never amend or rebase their
+commits. Every change is a new commit, merges included, so that reviews keep their context; the
+squash merge leaves none of these commits on main.
+
+- **A review comment or a failed check** becomes a new commit on the branch that needs it. Then
+  merge each branch into the next one, in order, and push them: `git switch <branch N+1> && git
+  merge --no-edit <branch N> && git push`.
+- **After a squash merge** of the bottom pull request, update the next branch with three merges.
+  A plain merge of main would conflict wherever the next stage changes lines the merged one wrote;
+  these give the tree a rebase onto main would give:
+
+  ```bash
+  git fetch origin
+  squash=$(gh pr view <merged n> --json mergeCommit --jq .mergeCommit.oid)
+  head=$(gh pr view <merged n> --json headRefOid --jq .headRefOid)
+  git switch <next branch> && git pull --ff-only
+  git merge-base --is-ancestor "$head" HEAD   # holds the merged branch's last commit? (see below)
+  git merge --no-edit "$squash^"              # main up to the squash commit
+  git merge --no-edit -s ours "$squash"       # the squash commit, whose changes are here already
+  git merge --no-edit origin/main             # what main got after it
+  git diff origin/main...HEAD --stat          # only this pull request's change
+  git push
+  ```
+
+  If the ancestor check fails, the merged branch got commits that never reached this one: merge
+  them first (`git fetch origin pull/<merged n>/head && git merge --no-edit FETCH_HEAD`). GitHub
+  has already pointed the pull request at main (otherwise: `gh pr edit <n> --base main`). Then
+  merge each later branch's updated predecessor into it, as for a review commit.
+- **When main moves** under an open stack (other merges, a conflict in `CHANGELOG.md`), merge
+  `origin/main` into the bottom branch, resolve the conflicts, and merge each branch into the next.
 
 ## 5. Fixing a failing check
 
-1. **Find what failed.** With credentials: `gh pr checks <n>` and `gh run view <run> --log-failed`.
-   Without them, the check runs of a commit are public, but their logs need a login:
+1. **Find what failed**: `gh pr checks <n>`, then `gh run view <run id> --log-failed` (or
+   `gh run view --job <job id> --log-failed`).
+2. **Reproduce it on the exact commit** with the failing job's command and Python. Give another
+   Python an environment of its own, since `uv run -p 3.12` would replace `.venv`:
+   `UV_PROJECT_ENVIRONMENT=~/.cache/dynamoxy-venvs/3.12 uv run -p 3.12 pytest ...` (uv downloads
+   the interpreter if needed). For a platform you cannot run (Windows, macOS), work out what differs
+   there: clock resolution, path separators, line endings, the event loop, case-insensitive or
+   locked files. Emulate it so that the test fails first and passes after the fix. Example: PR #10
+   failed only on Windows with Python 3.12, whose clock advances in steps of about 15.6 ms. Two
+   writes got the same timestamp, which the test had assumed impossible; a pytest plugin with a
+   frozen clock reproduced it.
+3. **Fix it on the earliest branch that has the cause** (`git log -S`, `git blame`), as a commit of
+   its own (`test: ...`, `fix(<scope>): ...`).
+4. **Verify that stage and every stage after it** again, push the fix and merge it forward through
+   the later branches (section 4).
 
-   ```bash
-   curl -s https://api.github.com/repos/kalaspuff/dynamoxy/commits/<sha>/check-runs |
-     jq -r '.check_runs[] | "\(.conclusion) \(.name) \(.html_url)"'
-   ```
+## 6. Without push access: publish kits
 
-   Ask the user for the log of the failing step. When the workspace is shared, they can save
-   `gh run view --job <id> --log-failed` to a file there.
-2. **Reproduce it on the exact commit.** Fetch the PR's head into the scratch clone (`git fetch
-   https://github.com/kalaspuff/dynamoxy.git refs/pull/<n>/head`, read only) and run the failing
-   job's command with the same Python (`uv run -p 3.12 ...`). For a platform you cannot run
-   (Windows, macOS), work out what differs there: clock resolution, path separators, line endings,
-   the event loop, case-insensitive or locked files. Emulate it so that the test fails first and
-   passes after the fix. Example: PR #10 failed only on Windows with Python 3.12, whose clock
-   advances in steps of about 15.6 ms. Two writes got the same timestamp, which the test had
-   assumed impossible; a pytest plugin with a frozen clock reproduced it.
-3. **Fix it on the earliest branch that has the cause** (`git log -S`, `git blame` on the stage
-   commits), as a commit of its own (`test: ...`, `fix(<scope>): ...`).
-4. **Verify that stage and every stage after it** again, then publish the fix: with credentials,
-   push it and restack the branches after it; with a kit, add it with `kit.py fix` (section 6).
-
-## 6. Without GitHub credentials: publish kits
-
-When you cannot push, or the workspace is the user's checkout and you must not commit there, hand
-over a **publish kit**: a directory `.stacks/<topic>/` in the workspace that ignores itself, with
-each pull request's patch, commit message and description, the tested trees, and `publish.sh`.
-The user runs it on their machine. It builds the commits in a temporary worktree with the user's
-identity and refuses to push anything that is not exactly the tested tree. Later it also restacks
-after merges and applies fixes.
-
-```bash
-SCRATCH=~/.cache/dynamoxy-stack/<topic>     # outside the workspace
-git clone --quiet https://github.com/kalaspuff/dynamoxy.git "$SCRATCH"   # read access is enough
-# Commit the workspace's files on the commit the workspace is on, then move them onto main:
-git -C "$SCRATCH" fetch --quiet "$PWD" HEAD && git -C "$SCRATCH" switch --quiet --detach FETCH_HEAD
-git -C "$SCRATCH" --work-tree="$PWD" add --all
-git -C "$SCRATCH" commit --quiet -F <message> && git -C "$SCRATCH" reset --quiet --hard
-git -C "$SCRATCH" rebase --quiet origin/main   # what main has already drops out
-git -C "$SCRATCH" show --stat HEAD             # only your files?
-# The descriptions go in .stacks/<topic>/prs/1.md, 2.md, ...
-python3 "$SKILL/kit.py" build --repo "$SCRATCH" --base origin/main --tip HEAD \
-  --prefix <topic>-stack/ --names 1-<name>,2-<name> --workspace . .stacks/<topic>
-"$SKILL/verify_stages.sh" "$SCRATCH" refs/kits/<topic>/stage-1 refs/kits/<topic>/stage-2
-"$SKILL/rehearse.sh" --repo "$SCRATCH" .stacks/<topic>   # also with --bash <bash 3.2>: kits.md
-```
-
-Committing on the workspace's own commit matters: when main has moved past the workspace (the
-user merged something meanwhile), a commit of the workspace's files on top of main would undo
-those changes. For a stack, split the commit: `git reset --quiet origin/main` leaves the changes
-in the scratch clone's working tree, then add and commit each stage's files in order, editing a
-file to its intermediate state when a stage has only part of it. For a single pull request,
-`--prefix docs/ --names <topic>` gives the branch `docs/<topic>`. `--workspace .` checks that
-every file the pull requests change is exactly as in the workspace, and lists the other
-differences (a newer main, or a change missing from the stack). `kit.py` also warns about titles,
-line widths and placeholders: fix what it reports and build again.
-
-**Hand over** the commands, one line on what each does, and what you verified:
-
-```bash
-.stacks/<topic>/publish.sh --dry-run   # builds and verifies the commits, pushes nothing
-.stacks/<topic>/publish.sh             # pushes the branches and opens the pull requests
-.stacks/<topic>/publish.sh restack     # after each squash merge (a stack only)
-```
-
-Until the user reports back, the work is handed over, not published.
-
-**Fixes after publishing**, for a failed check or a review comment: never rebuild a published kit
-(`kit.py build` refuses once `forks` exists), because the pull requests and their reviews belong
-to the pushed commits. Add a fix instead:
-
-```bash
-git -C "$SCRATCH" switch --detach refs/kits/<topic>/stage-<n>   # the stage as published
-# change, test and commit it (a conventional message with the trailers)
-python3 "$SKILL/kit.py" fix --repo "$SCRATCH" --name <fix> --commit HEAD .stacks/<topic>
-"$SKILL/verify_stages.sh" "$SCRATCH" refs/kits/<topic>/stage-<n> ... refs/kits/<topic>/stage-<last>
-"$SKILL/rehearse.sh" --repo "$SCRATCH" .stacks/<topic>
-```
-
-The user then runs `.stacks/<topic>/publish.sh fix <fix> --dry-run`, and the same without
-`--dry-run`: the fix becomes a new commit on its branch, the later branches are rebased onto it,
-and every tree is checked before anything is pushed with a lease. Fixes are applied in the order
-they were added.
-
-**When everything is merged**, the kit directory and the local branches can go (`restack` prints
-the command).
-
-## 7. Changing these tools
-
-After any change, run `$SKILL/selftest.sh`, `$SKILL/selftest.sh --bash <bash 3.2>` (macOS ships
-bash 3.2; kits.md shows how to build one) and `shellcheck $SKILL/*.sh`. A new `gh` call in
-`publish.sh` also needs support in `gh_stub.py`, which refuses options it does not know.
+When you cannot push to GitHub, or the workspace is the user's own checkout and you must not
+commit there, hand the work over as a **publish kit**: a directory `.stacks/<topic>/` in the
+workspace that git ignores, with each pull request's patch, commit message and description, the
+tested trees, and `publish.sh`, which the user runs to push the branches, open the pull requests,
+restack after merges and apply fixes. [kits.md](kits.md) shows how to build, test and hand over a
+kit, and the rules for the scripts in `scripts/` (`kit.py`, `publish.sh`, `rehearse.sh`,
+`gh_stub.py`, `selftest.sh`). After changing them, run `$SKILL/selftest.sh`, the same with
+`--bash <bash 3.2>` (macOS ships bash 3.2; kits.md shows how to build one) and
+`shellcheck $SKILL/*.sh`.

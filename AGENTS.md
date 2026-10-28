@@ -149,11 +149,20 @@ The README stays short and links to the docs.
 * Conventional commits (`feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `ci:`, `build:`,
   `chore:`; `feat!:` or `BREAKING CHANGE:` for breaking changes). PR titles are checked, squash
   merges use them, and git-cliff builds the changelog from them.
+* Agents that can push to GitHub work in their own checkout like any contributor: commit on a
+  branch, push it, open the pull request with `gh pr create`, and follow its checks
+  (`gh pr checks`) and reviews. That takes no publish kit, no scratch clone and no separate
+  go-ahead. Merging, pushes to main and releases stay with the maintainer unless they ask.
+  Publish kits are only for agents that cannot push.
+* Agents never force-push a published branch or rewrite its commits: fixes, review changes and
+  updates from main are new commits or merges.
 * Pull requests are squash-merged: the title becomes the subject of the commit on main and its
-  changelog line, the description its body. Write descriptions for that history: prose wrapped at
-  72 columns, no instructions for whoever merges. Split large changes into stacked pull requests
-  that each pass CI. `.claude/skills/dynamoxy-pull-requests` covers stacks, restacking after
-  merges, fixing failed checks, and publish kits for agents that cannot push.
+  changelog line, the description its body. Write descriptions for that history: what changes
+  and why, how it was verified, the migration of a breaking change, and no instructions for
+  whoever merges. Write each paragraph and list item on one line; GitHub wraps them at 72
+  columns in the squash commit. Split large changes into stacked pull requests that each pass CI.
+  `.claude/skills/dynamoxy-pull-requests` covers pull requests, stacks and their updates after
+  merges, fixing failed checks, and publish kits.
 * One version for the workspace (`Cargo.toml` `[workspace.package]`); the Python package takes it
   from the binding crate. While 0.x, breaking changes bump the minor version.
 * Release: run the "Prepare release" workflow, polish the generated CHANGELOG.md section in the PR
