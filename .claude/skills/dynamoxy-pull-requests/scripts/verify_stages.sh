@@ -5,11 +5,13 @@
 #
 #   verify_stages.sh [--dir DIR] [--python "3.12 3.15"] [--quick] REPO REF...
 #
-# REPO is the scratch repository (only read); REF... are the stage commits in order, for example
-# refs/kits/<topic>/stage-1 refs/kits/<topic>/stage-2. For each stage: ruff format and lint,
-# pyrefly, the consistency checks and actionlint, then pytest on each Python of --python (default:
-# 3.12 and 3.15, the oldest and newest in CI; including the e2e tests on MiniStack unless --quick),
-# and cargo fmt, clippy and test if the stage changes Rust files compared with the parent of the
+# REPO is the repository holding the stages (only read): your checkout, or a kit's scratch clone.
+# REF... are the stages in order, for example the branches of a stack, or refs/kits/<topic>/stage-1
+# refs/kits/<topic>/stage-2. For each stage: ruff format and lint, pyrefly, the consistency checks
+# and actionlint, then pytest on each Python of --python (default: 3.12 and 3.15, the oldest and
+# newest in CI; including the e2e tests on MiniStack unless --quick), and cargo fmt, clippy and test
+# if the stage changes Rust files compared with the base of the stack: where the first REF leaves
+# REPO's origin/main (a stage may have several commits), or without origin/main the parent of the
 # first REF. A stage fails, too, if the checks leave files changed. DIR (default:
 # ~/.cache/dynamoxy-stages) holds the clone, the virtual environments, the logs and, unless
 # CARGO_TARGET_DIR is set, cargo's target directory.
@@ -62,7 +64,11 @@ for ref in $REFS; do
 done
 # shellcheck disable=SC2086 # a list of commits
 set -- $COMMITS
-BASE=$(git -C "$REPO" rev-parse "$1^")
+if git -C "$REPO" rev-parse --verify --quiet "origin/main^{commit}" >/dev/null; then
+  BASE=$(git -C "$REPO" merge-base origin/main "$1")
+else
+  BASE=$(git -C "$REPO" rev-parse "$1^")
+fi
 # shellcheck disable=SC2086 # a list of versions
 LAST_PYTHON=$(printf '%s\n' $PYTHONS | tail -n 1)
 
