@@ -47,7 +47,8 @@ then runs one query per partition key value, so the `WHERE` clause must name the
 (`pk = ?`, `pk IN [?, ?]`), and with several the partition key must be ordered too:
 `... WHERE pk IN [?, ?] ORDER BY pk, sk DESC`. The in-memory backend applies the same rules
 (MiniStack does not support `ORDER BY`).
-`execute_transaction()` is all-or-nothing; `batch_execute()` reports an error per statement.
+`execute_transaction()` is all-or-nothing, and like every transaction it names each item at most
+once (`ValidationError` otherwise); `batch_execute()` reports an error per statement.
 
 ## DynamoDB's typed JSON
 
