@@ -304,6 +304,90 @@ async fn partiql_writes_follow_the_same_rules() {
     assert_eq!(call.stats.attempts, 1, "a batch with writes is not sent again");
 }
 
+fn fail(operation: &str, code: &str, times: u32) -> Fault {
+    Fault {
+        operation: Some(operation.into()),
+        table: None,
+        kind: FaultKind::Error { code: code.into(), message: "injected".into() },
+        times,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn writes_that_run_out_of_attempts_after_one_that_may_have_been_applied_are_unknown() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+    let create = PutItemInput { condition_expression: Some("attribute_not_exists(pk)".into()), ..put("a") };
+
+    // The first attempt creates the item and its response is lost; the others are throttled.
+    backend.inject_fault(lose("PutItem"));
+    backend.inject_fault(throttle("PutItem", 2));
+    kinds(&client);
+    let call = client.put_item(create.clone()).await;
+    assert_eq!(unknown_item(&call), None);
+    assert_eq!(call.stats.attempts, 3);
+    assert!(kinds(&client).ends_with(&[EventKind::RequestGaveUp, EventKind::RequestOutcomeUnknown]));
+    assert!(stored(&client, "a").await.is_some());
+
+    // A transaction whose first attempt is still being applied (DynamoDB answers the same token
+    // with TransactionInProgressException) is applied, whatever the later attempts say.
+    backend.inject_fault(lose("TransactWriteItems"));
+    backend.inject_fault(fail("TransactWriteItems", "TransactionInProgressException", 2));
+    let target = TransactTarget { table_name: "items".into(), ..Default::default() };
+    let input = TransactWriteItemsInput {
+        transact_items: vec![TransactWriteItem::Put { target, item: item([("pk", AttributeValue::s("t"))]) }],
+        ..Default::default()
+    };
+    let call = client.transact_write_items(input).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+    assert!(stored(&client, "t").await.is_some());
+
+    // The last attempt may have been applied too: a 5xx on an update that is not sent again is
+    // unknown whichever attempt gets it, also without retries.
+    let add = || update("a", "ADD n :v", AttributeValue::n(1));
+    backend.inject_fault(throttle("UpdateItem", 2));
+    backend.inject_fault(fail("UpdateItem", "InternalServerError", 1));
+    let call = client.update_item(add()).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 3);
+    let once =
+        client_with_table(ClientConfig { retry: RetryConfig { max_attempts: 1, ..config().retry }, ..config() }).await;
+    once.memory_backend().unwrap().inject_fault(fail("UpdateItem", "InternalServerError", 1));
+    let call = once.update_item(add()).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+
+    // Throttling alone applies nothing, and reads have no outcome to lose.
+    backend.inject_fault(throttle("PutItem", 3));
+    let call = client.put_item(put("b")).await;
+    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::Throttling));
+    backend.inject_fault(lose("GetItem"));
+    backend.inject_fault(throttle("GetItem", 2));
+    let call = client.get_item(GetItemInput { table_name: "items".into(), key: put("a").item, ..Default::default() });
+    assert_eq!(call.await.result.unwrap_err().kind(), Some(ErrorKind::Throttling));
+}
+
+#[tokio::test(start_paused = true)]
+async fn calls_in_progress_finish_their_retries_after_close() {
+    let client = client_with_table(config()).await;
+    // The first attempt takes longer than the timeout; the client is closed meanwhile.
+    client.memory_backend().unwrap().inject_fault(Fault {
+        operation: Some("PutItem".into()),
+        table: None,
+        kind: FaultKind::Latency(Duration::from_secs(5)),
+        times: 1,
+    });
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move { client.put_item(put("a")).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    client.close();
+    let call = call.await.unwrap();
+    assert!(call.result.is_ok(), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 2);
+    assert_eq!(client.put_item(put("b")).await.result.unwrap_err(), Error::Shutdown, "new calls are refused");
+}
+
 #[tokio::test(start_paused = true)]
 async fn slow_requests_emit_an_event() {
     let client = client_with_table(ClientConfig { slow_operation_threshold: 0.5, ..config() }).await;

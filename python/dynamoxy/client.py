@@ -334,7 +334,10 @@ class Client:
             await self.close()
 
     async def close(self) -> None:
-        """Stops the event pump, delivers the remaining events and refuses further calls."""
+        """Stops the event pump, delivers the remaining events and refuses further calls.
+
+        Calls in progress finish, retries included.
+        """
         if self._closed:
             return
         self._closed = True

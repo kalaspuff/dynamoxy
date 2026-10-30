@@ -86,7 +86,9 @@ plain repository per model, on first use, and returns it afterwards.
    and full jitter; emit events; record metrics; return the output with `OperationStats`. After
    an attempt that may have been applied (a timeout, a lost connection, a 5xx), only writes that
    apply once even when sent twice are sent again, and an answer that attempt may have caused
-   (a failed condition, old values) is `OutcomeUnknown` (`WriteOutcomeUnknownError`).
+   (a failed condition, old values), or no answer when the attempts run out, is `OutcomeUnknown`
+   (`WriteOutcomeUnknownError`). `close()` refuses new calls; calls in progress finish their
+   retries.
 7. **Backend**: AWS SDK call (errors classified in `aws/errors.rs`) or the in-memory backend.
 8. **Python**: map failures to specific errors (`explain_failure`: `ItemAlreadyExistsError`,
    `VersionConflictError`, `UniqueConstraintError`, `ItemNotFoundError`), finalize the

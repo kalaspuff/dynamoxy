@@ -85,6 +85,12 @@ may have caused itself, and never applies a write twice:
   `ItemAlreadyExistsError` or `VersionConflictError`. Old values that the next attempt returns
   (`return_old=True`) may be the earlier attempt's own write, or the absence of the item it
   deleted, and raise it too.
+- When the attempts run out without an answer that says whether the write was applied (the
+  later attempts were throttled, or the last attempt itself timed out or got a 5xx), the call
+  raises `WriteOutcomeUnknownError` too, not the last attempt's `ThrottlingError` or
+  `InternalServerError`: those say that nothing was applied, and invite a retry that could
+  apply the write twice. This holds for one attempt as well (`RetryPolicy.none()`), and for
+  transactions, whose later attempts would only return the earlier one's result.
 
 Model writes settle most of these themselves. Each write that runs alone stores a random id in
 the item (`_wid`, [ADR 0016](../adr/0016-writes-store-a-write-id.md)); when the outcome is
@@ -94,9 +100,9 @@ it when an update was not sent again. If the item holds this write's id, the wri
 `request.outcome_settled`. The outcome stays unknown when another writer wrote in between, for
 deletes, for the dict-level API, and for models declared with `write_ids=False`.
 
-`WriteOutcomeUnknownError` is a `TransportError`, like the timeout without retries, and never a
-`ConditionalCheckFailedError`, so code that handles lost races does not mistake a write that
-happened for one. It is not `.retryable`: read the item to find out what happened, and repeat
+`WriteOutcomeUnknownError` is a `TransportError` and never a `ConditionalCheckFailedError`, so
+code that handles lost races does not mistake a write that happened for one. Reads have no
+outcome to lose: they raise the last attempt's error. It is not `.retryable`: read the item to find out what happened, and repeat
 only writes that apply once. Each one emits `request.outcome_unknown`.
 
 A write that must apply exactly once even when the application repeats it (a payment, a stock
