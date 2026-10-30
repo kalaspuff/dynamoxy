@@ -312,7 +312,11 @@ class Repository[M]:
 
     def _target_key(self, target: Any) -> dict[str, Any]:
         if isinstance(target, self.model_class):
-            return self.schema.key_of(target)
+            key = self.schema.key_of(target)
+            stored = self._stored(target)
+            if stored is not None:
+                self._check_key_unchanged(stored, key)
+            return key
         if isinstance(target, dict):
             schema = self.schema
             if target.keys() == schema._key_attribute_set and all(
@@ -389,7 +393,9 @@ class Repository[M]:
         Raises:
             ItemNotFoundError: The item no longer exists.
         """
-        key = self.schema.key_of(instance)
+        # A loaded instance reloads the item it was loaded from, also when a key field changed.
+        stored = self._stored(instance)
+        key = self.schema.key_values(stored) if stored is not None else self.schema.key_of(instance)
         item = await self._get_raw(key, consistent=consistent)
         if item is None:
             raise ItemNotFoundError(
@@ -624,8 +630,7 @@ class Repository[M]:
             changes.update(derived)
         item = schema._encode_rendered(values)
         if mode != "create":
-            state = schema.state(instance)
-            stored = state.stored if state is not None and state.loaded else None
+            stored = self._stored(instance)
             if stored is not None:
                 self._check_unchanged(stored, item)
                 item = self._with_undeclared(stored, item)
@@ -700,6 +705,25 @@ class Repository[M]:
                     ("guard", spec, after),
                 )
 
+    def _stored(self, instance: M) -> dict[str, Any] | None:
+        """The item ``instance`` was loaded with (``None``: it was not loaded)."""
+        state = self.schema.state(instance)
+        return state.stored if state is not None and state.loaded else None
+
+    def _check_key_unchanged(self, stored: dict[str, Any], item: Mapping[str, Any]) -> None:
+        """Refuses a write through a loaded instance whose key now addresses another item.
+
+        Raises:
+            ValueError: The key (or a field a key template uses) changed since the instance was
+                loaded.
+        """
+        schema = self.schema
+        if stored_identity(schema.key_values(stored)) != stored_identity(schema.key_values(item)):
+            raise ValueError(
+                f"{self.model_class.__name__}: the key of this instance changed since it was loaded, and DynamoDB "
+                "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
+            )
+
     def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> None:
         """Refuses a write of a loaded instance that changes its key or an immutable field.
 
@@ -709,12 +733,7 @@ class Repository[M]:
         """
         schema = self.schema
         name = self.model_class.__name__
-        before, key = schema.key_values(stored), schema.key_values(item)
-        if stored_identity(before) != stored_identity(key):
-            raise ValueError(
-                f"{name}: the key of this instance changed since it was loaded, and DynamoDB "
-                "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
-            )
+        self._check_key_unchanged(stored, item)
         for spec in schema._immutable:
             old = stored.get(spec.attribute)
             if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
@@ -869,6 +888,11 @@ class Repository[M]:
             if spec.role is not None or spec.template is not None:
                 raise ValueError(
                     f"{self.model_class.__name__}.{spec.name} is a key or derived attribute and cannot be updated"
+                )
+            if spec.name in schema._key_template_fields:
+                raise ValueError(
+                    f"{self.model_class.__name__}.{spec.name} is part of the key (a key template uses it) and cannot "
+                    "be updated: write the new item from a copy (create(instance.copy())) and delete the old one"
                 )
             if spec.immutable:
                 raise ValueError(f"{self.model_class.__name__}.{spec.name} is immutable")

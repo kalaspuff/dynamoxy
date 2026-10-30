@@ -231,6 +231,43 @@ async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> N
     assert [item.customer_id for item in await orders.scan().all()] == ["c2"]
 
 
+async def test_writes_of_a_loaded_instance_never_reach_another_item(app: dynamoxy.Client) -> None:
+    orders = app.model(Order)
+    mine = await orders.create(order("o1", 1))
+    await orders.create(order("o1", 2, customer_id="c2"))  # another customer's order with the same id
+    mine.customer_id = "c2"  # the instance now renders the other order's key
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await mine.update(Order.total.set(Decimal(0)))
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await mine.delete()
+    with pytest.raises(ValueError, match="key of this instance changed"):
+        await app.transaction().update(mine, Order.total.set(Decimal(0))).delete(mine).commit()
+    async with app.batch_writer() as batch:
+        with pytest.raises(ValueError, match="key of this instance changed"):
+            await batch.delete(mine)
+    stored = {(item.customer_id, item.order_id): item.total for item in await orders.scan(consistent=True).all()}
+    assert stored == {("c1", "o1"): Decimal(1), ("c2", "o1"): Decimal(2)}, "both orders unchanged"
+    # refresh() reloads the item the instance was loaded from, local changes included.
+    await mine.refresh()
+    assert (mine.customer_id, mine.total) == ("c1", Decimal(1))
+
+    # A field a key template uses is part of the key: updates cannot change it either.
+    customers = app.model(Customer)
+    ada = await customers.create(Customer(customer_id="a", name="Ada"))
+    for update in (
+        ada.update(Customer.customer_id.set("b")),
+        customers.update(Customer.key(customer_id="a"), Customer.customer_id.set("b")),
+        customers.update(Customer.key(customer_id="a"), dynamoxy.F("customer_id").remove()),
+    ):
+        with pytest.raises(ValueError, match=r"Customer\.customer_id is part of the key"):
+            await update
+    with pytest.raises(ValueError, match=r"Customer\.customer_id is part of the key"):
+        await app.transaction().update(ada, Customer.customer_id.set("b")).commit()
+    assert [(item.pk, item.customer_id) for item in await customers.scan(consistent=True).all()] == [
+        ("CUSTOMER#a", "a")
+    ]
+
+
 async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None:
     await client.create_tables(Price)
     prices = client.model(Price)

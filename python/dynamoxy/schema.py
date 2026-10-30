@@ -664,6 +664,10 @@ class ModelSchema:
         self._key_specs: tuple[FieldSpec, ...] = tuple(self.key_fields())
         self._key_attributes: tuple[str, ...] = tuple(spec.attribute for spec in self._key_specs)
         self._key_attribute_set: frozenset[str] = frozenset(self._key_attributes)
+        # The fields a key template uses: part of the key, so updates cannot change them.
+        self._key_template_fields: frozenset[str] = frozenset(
+            name for spec in self._key_specs if spec.template is not None for name in spec.template.fields
+        )
         # A hashable identity of a stored key or of the item that has it (both hold every key
         # attribute): the key values, in key order. Float keys compare as the numbers DynamoDB
         # returns (0.1 is stored and read back as Decimal("0.1")).

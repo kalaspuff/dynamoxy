@@ -16,9 +16,11 @@ and refresh the instance from DynamoDB's response.
 A write of an instance that was loaded (read or written by dynamoxy) keeps what it was loaded
 with:
 
-- Its key cannot change (nor a field that a key template uses): `put()`, `save()` and batch
-  puts raise `ValueError` before any I/O. Write a copy as a new item
-  (`await orders.create(order.copy(customer_id="c2"))`) and delete the old one.
+- Its key cannot change (nor a field that a key template uses): `put()`, `save()`, `update()`,
+  `delete()`, batch puts and deletes and transactions raise `ValueError` before any I/O, so no
+  write reaches another item. Write a copy as a new item
+  (`await orders.create(order.copy(customer_id="c2"))`) and delete the old one. `refresh()`
+  reloads the item the instance was loaded from, which undoes such a change.
 - `immutable=True` fields keep their stored value: a changed one raises `ValueError`. A field
   that the stored item does not have yet can get its first value.
 
@@ -119,8 +121,9 @@ await users.update(
 | `path.append_or_create(list)` | `SET path = list_append(if_not_exists(path, :empty), :v)` |
 
 Rules from DynamoDB: one action per path, no overlapping paths (`a` and `a.b`), key attributes
-cannot change. dynamoxy also refuses updates of derived (templated) and `immutable` fields and of
-unique fields with anything but `set()`/`remove()`.
+cannot change. dynamoxy also refuses updates of the fields a key template uses (they are part of
+the key), of derived (templated) and `immutable` fields, and of unique fields with anything but
+`set()`/`remove()`.
 
 `None` means "no attribute" for model fields, as in `put()` and `save()`: `User.nickname.set(None)`
 removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another writer stored
