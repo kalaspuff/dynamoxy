@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
-from dynamoxy._utils import LoopLocal, seconds
+from dynamoxy._utils import LoopLocal, deprecated, seconds
 from dynamoxy.errors import DynamoxyError
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
@@ -170,7 +170,7 @@ class Client:
     Example::
 
         async with dynamoxy.Client(region="eu-west-1") as client:
-            users = client.repository(User)
+            users = client.model(User)
             await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
 
     Args:
@@ -634,11 +634,35 @@ class Client:
 
     # ---- factories ------------------------------------------------------------------------
 
-    def repository[M](self, model: type[M]) -> Repository[M]:
-        """A typed repository for a model (``client.repository(User)``)."""
+    def model[M](self, model: type[M]) -> Repository[M]:
+        """The typed operations of a model on this client.
+
+        ``client.model(User)`` reads, queries and writes ``User`` items: ``get``, ``query``,
+        ``create``, ``save``, ``update``, ``delete``, ... It is a plain
+        :class:`dynamoxy.Repository`; subclass ``Repository[User]`` to add domain queries.
+        Building one does no I/O and is cheap: call it where you need it, or keep it.
+
+        Example::
+
+            users = client.model(User)
+            user = await users.get("u1")
+            orders = await client.model(Order).query(customer_id="c1").all()
+
+        Raises:
+            TypeError: ``model`` is not a dynamoxy model, or not one stored in a table (abstract,
+                or no ``table=``).
+        """
         from dynamoxy.repository import Repository
 
         return Repository(self, model)
+
+    @deprecated(
+        "Client.repository() is deprecated and will be removed in dynamoxy 0.5: "
+        "use client.model(), which returns the same Repository"
+    )
+    def repository[M](self, model: type[M]) -> Repository[M]:
+        """Deprecated alias of :meth:`model`, removed in dynamoxy 0.5."""
+        return self.model(model)
 
     def table(self, name: str) -> Table:
         """Dict-level access to a table by its logical name (prefix and mapping apply)."""

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from datetime import timedelta
-from typing import Any
+from typing import Any, assert_type
 
 import pytest
 
 import dynamoxy
-from dynamoxy import testing
-from tests.models import Event, User
+from dynamoxy import _utils, testing
+from dynamoxy._utils import deprecated_backport
+from tests.models import Event, LineItem, User
 
 
 @pytest.mark.parametrize(
@@ -68,6 +70,57 @@ def test_core_configuration_and_secrets() -> None:
     assert testing.memory_client().backend == "memory"
 
 
+def test_model_gives_the_operations_of_a_model_without_io() -> None:
+    client = dynamoxy.Client(region="eu-west-1", table_prefix="dev-", table_names={"users": "legacy_users"})
+    with dynamoxy.collect() as collected:
+        users = client.model(User)
+        events = client.model(Event)
+    assert_type(users, dynamoxy.Repository[User])
+    assert type(users) is dynamoxy.Repository
+    assert (users.client, users.model_class, users.table_name) == (client, User, "legacy_users")
+    assert (events.model_class, events.table_name) == (Event, "dev-events")
+    assert repr(events) == "<Repository Event @ dev-events>"
+    assert collected.calls == 0
+    assert not client.closed
+    with pytest.raises(TypeError, match=r"LineItem is not stored in a table; declare table='\.\.\.' on the class"):
+        client.model(LineItem)
+    with pytest.raises(TypeError, match="is not a dynamoxy model"):
+        client.model(int)
+
+
+def test_repository_is_a_deprecated_alias_of_model() -> None:
+    client = testing.memory_client()
+    with pytest.warns(DeprecationWarning, match=r"use client\.model\(\)") as caught:
+        users = client.repository(User)
+    assert len(caught) == 1
+    assert str(caught[0].message) == (
+        "Client.repository() is deprecated and will be removed in dynamoxy 0.5: "
+        "use client.model(), which returns the same Repository"
+    )
+    assert caught[0].filename == __file__, "the warning points at the caller"
+    assert type(users) is dynamoxy.Repository
+    assert (users.client, users.model_class, users.table_name) == (client, User, client.model(User).table_name)
+    assert "removed in dynamoxy 0.5" in getattr(dynamoxy.Client.repository, "__deprecated__", "")  # PEP 702
+    assert dynamoxy.Client.repository.__name__ == "repository"
+    assert "Deprecated alias of" in (dynamoxy.Client.repository.__doc__ or "")
+
+
+def test_deprecated_backport_matches_python_3_13() -> None:
+    # Python 3.12 has no warnings.deprecated; the backport behaves like it for functions.
+    @deprecated_backport("old() is deprecated: use new()")
+    def old(value: int, *, twice: bool = False) -> int:
+        """Doubles a number."""
+        return value * 2 if twice else value
+
+    with pytest.warns(DeprecationWarning, match=r"^old\(\) is deprecated: use new\(\)$") as caught:
+        assert old(21, twice=True) == 42
+    assert caught[0].filename == __file__, "the warning points at the caller"
+    assert (old.__name__, old.__doc__) == ("old", "Doubles a number.")
+    assert getattr(old, "__deprecated__", None) == "old() is deprecated: use new()"
+    # Python 3.13 and later use their own.
+    assert _utils.deprecated is getattr(warnings, "deprecated", deprecated_backport)
+
+
 async def test_middleware_wraps_calls_in_order() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Event)
@@ -88,13 +141,13 @@ async def test_middleware_wraps_calls_in_order() -> None:
 
         remove_outer = client.use(outer)
         client.use(inner)
-        await client.repository(Event).put(Event(stream="s", seq=1, kind="k"))
+        await client.model(Event).put(Event(stream="s", seq=1, kind="k"))
         assert seen == ["outer:PutItem", "inner:x:Event", "outer:done:1"]
-        assert (await client.repository(Event).get_or_raise("s", 1)).kind == "rewritten"
+        assert (await client.model(Event).get_or_raise("s", 1)).kind == "rewritten"
         remove_outer()
         remove_outer()  # removing twice is harmless
         seen.clear()
-        await client.repository(Event).get("s", 1)
+        await client.model(Event).get("s", 1)
         assert seen == ["inner:None:Event"]
 
 
@@ -109,7 +162,7 @@ async def test_middleware_can_short_circuit() -> None:
 
         client.use(deny)
         with pytest.raises(PermissionError):
-            await client.repository(Event).delete(Event.key("s", 1))
+            await client.model(Event).delete(Event.key("s", 1))
 
 
 async def test_event_hooks() -> None:
@@ -135,7 +188,7 @@ async def test_event_hooks() -> None:
         assert created.fields["table"] == "events"
         unsubscribe()
         received.clear()
-        await client.repository(Event).get("s", 1)
+        await client.model(Event).get("s", 1)
         await client.events.drain()
         assert received == []
         with pytest.raises(ValueError, match="matches no event kind"):
@@ -176,7 +229,7 @@ async def test_metrics_and_collection() -> None:
     assert client.metrics().operations == {}, "nothing before connecting"
     async with client:
         await client.create_tables(User, Event)
-        events = client.repository(Event)
+        events = client.model(Event)
         with dynamoxy.collect() as outer:
             await events.put(Event(stream="s", seq=1, kind="k"))
             with dynamoxy.collect() as inner:
@@ -202,7 +255,7 @@ async def test_metrics_and_collection() -> None:
 async def test_collectors_follow_tasks() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Event)
-        events = client.repository(Event)
+        events = client.model(Event)
         with dynamoxy.collect() as collected:
             await asyncio.gather(*(events.get("s", seq) for seq in range(5)))
         assert collected.calls == 5
@@ -218,15 +271,15 @@ async def test_closed_clients_refuse_calls() -> None:
     assert client.closed
     assert len(closed) == 1
     with pytest.raises(dynamoxy.ShutdownError, match="closed"):
-        await client.repository(Event).get("s", 1)
+        await client.model(Event).get("s", 1)
 
 
 async def test_clients_work_across_event_loops() -> None:
     client = testing.memory_client()
 
     async def work(seq: int) -> int:
-        await client.repository(Event).put(Event(stream="s", seq=seq, kind="k"))
-        return await client.repository(Event).count()
+        await client.model(Event).put(Event(stream="s", seq=seq, kind="k"))
+        return await client.model(Event).count()
 
     await client.create_tables(Event)
     assert await work(1) == 1
@@ -242,11 +295,11 @@ async def test_shared_stores_and_purging_expired_items() -> None:
     store = dynamoxy.MemoryStore()
     writer, reader = testing.memory_client(store=store), testing.memory_client(store=store)
     await writer.create_tables(Event)
-    await writer.repository(Event).put(Event(stream="s", seq=1, kind="k", expires_at=dynamoxy_epoch(1)))
-    await writer.repository(Event).put(Event(stream="s", seq=2, kind="k"))
-    assert await reader.repository(Event).count() == 2
+    await writer.model(Event).put(Event(stream="s", seq=1, kind="k", expires_at=dynamoxy_epoch(1)))
+    await writer.model(Event).put(Event(stream="s", seq=2, kind="k"))
+    assert await reader.model(Event).count() == 2
     assert testing.purge_expired(store) == 1
-    assert [event.seq for event in await reader.repository(Event).scan().all()] == [2]
+    assert [event.seq for event in await reader.model(Event).scan().all()] == [2]
     with pytest.raises(TypeError, match="in-memory client"):
         testing.purge_expired(dynamoxy.Client())
     await writer.close()

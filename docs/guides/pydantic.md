@@ -56,7 +56,7 @@ class ContactRecord(Contact, dynamoxy.PydanticModel, table="contacts"):
     email: Annotated[str, dynamoxy.Unique()]
 
 
-contacts = client.repository(ContactRecord)
+contacts = client.model(ContactRecord)
 await contacts.create(ContactRecord.model_validate(contact.model_dump()))  # from a Contact
 record = await contacts.get("c1")  # a ContactRecord, and therefore a Contact
 ```

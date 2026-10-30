@@ -32,7 +32,7 @@ async def stored_id(table: dynamoxy.Table, key: Mapping[str, Any]) -> str | None
 @pytest.fixture
 async def users(client: dynamoxy.Client) -> dynamoxy.Repository[User]:
     await client.create_tables(User, Event, Plain)
-    return client.repository(User)
+    return client.model(User)
 
 
 async def test_each_write_stores_a_new_id(users: dynamoxy.Repository[User]) -> None:
@@ -55,13 +55,13 @@ async def test_transactions_and_batches_store_none(client: dynamoxy.Client, user
     async with client.transaction() as tx:
         tx.create(User(user_id="u2", email="grace@example.com", name="Grace"))
     assert await stored_id(users.table, {"user_id": "u2"}) is None
-    events = client.repository(Event)
+    events = client.model(Event)
     await events.batch_put([Event(stream="s", seq=1, kind="k")])
     assert await stored_id(events.table, {"stream": "s", "seq": 1}) is None
 
 
 async def test_models_can_store_none(client: dynamoxy.Client, users: dynamoxy.Repository[User]) -> None:
-    plains = client.repository(Plain)
+    plains = client.model(Plain)
     await plains.create(Plain(plain_id="p1"))
     await plains.update({"plain_id": "p1"}, Plain.n.increment(1))
     assert await stored_id(plains.table, {"plain_id": "p1"}) is None

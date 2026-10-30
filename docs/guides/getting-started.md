@@ -71,7 +71,7 @@ how to get the definitions).
 ## Read and write
 
 ```python
-users = client.repository(User)
+users = client.model(User)
 
 ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
 await ada.increment(User.visits)                     # atomic, refreshes `ada` in place
@@ -82,10 +82,11 @@ by_email = await users.query(index=User.by_email, email="ada@example.com").first
 await ada.delete()
 ```
 
-An instance remembers the repository that read or wrote it, so `ada.save()` is
-`users.save(ada)` and `ada.increment(User.visits)` is `users.update(ada, User.visits.add(1))`.
-The repository does the same by key, without an instance:
-`await users.update(User.key("u1"), User.visits.add(1))`.
+`client.model(User)` gives the typed operations of a model on this client, a
+`dynamoxy.Repository[User]`. An instance remembers the repository that read or wrote it, so
+`ada.save()` is `users.save(ada)` and `ada.increment(User.visits)` is
+`users.update(ada, User.visits.add(1))`. The repository does the same by key, without an
+instance: `await users.update(User.key("u1"), User.visits.add(1))`.
 
 ## Next steps
 

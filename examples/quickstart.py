@@ -29,7 +29,7 @@ async def main(client: dynamoxy.Client | None = None) -> User:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(User)
-        users = db.repository(User)
+        users = db.model(User)
 
         ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
         print(f"created {ada.user_id} (version {ada.version}) at {ada.created_at:%Y-%m-%d %H:%M}")

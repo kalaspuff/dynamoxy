@@ -87,7 +87,7 @@ async def transact_get(client: Client, gets: Sequence[Get[Any]]) -> list[Any]:
     repositories: dict[type, Repository[Any]] = {}
     for get in gets:
         if get.model not in repositories:
-            repositories[get.model] = client.repository(get.model)
+            repositories[get.model] = client.model(get.model)
     items = [{"table_name": repositories[get.model].table_name, "key": get.key} for get in gets]
     output = await client.call("transact_get_items", "TransactGetItems", transact_items=items)
     return [
@@ -128,7 +128,7 @@ class Transaction:
             return bound
         repository = self._repositories.get(model)
         if repository is None:
-            repository = self._repositories[model] = self.client.repository(model)
+            repository = self._repositories[model] = self.client.model(model)
         return repository
 
     def _add(self, description: str, plan: Callable[[], Awaitable[Any]]) -> Self:

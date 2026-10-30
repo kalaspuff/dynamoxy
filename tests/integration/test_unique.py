@@ -43,7 +43,7 @@ def make_user(user_id: str, email: str, **changes: Any) -> User:
 @pytest.fixture
 async def users(client: dynamoxy.Client) -> dynamoxy.Repository[User]:
     await client.create_tables(User, Account)
-    return client.repository(User)
+    return client.model(User)
 
 
 async def test_values_are_unique_across_items(users: dynamoxy.Repository[User]) -> None:
@@ -112,7 +112,7 @@ async def test_batches_refuse_unique_models(users: dynamoxy.Repository[User]) ->
 
 
 async def test_pydantic_unique_and_versions(client: dynamoxy.Client, users: dynamoxy.Repository[User]) -> None:
-    accounts = client.repository(Account)
+    accounts = client.model(Account)
     account = await accounts.create(Account(account_id="a1", owner="Ada", handle="ada"))
     assert account.version == 1
     assert account.is_loaded
@@ -128,7 +128,7 @@ async def test_pydantic_unique_and_versions(client: dynamoxy.Client, users: dyna
 
 async def test_partitions_of_unique_models_can_be_queried(client: dynamoxy.Client) -> None:
     await client.create_tables(Membership)
-    memberships = client.repository(Membership)
+    memberships = client.model(Membership)
     for user_id in ("u1", "u2", "u3"):
         await memberships.create(Membership(org_id="o1", user_id=user_id, email=f"{user_id}@example.com"))
     # DynamoDB refuses filters on the key attributes a query reads: guard items need none here.
@@ -147,7 +147,7 @@ async def test_partitions_of_unique_models_can_be_queried(client: dynamoxy.Clien
 
 async def test_optional_unique_values_can_be_removed_and_set_again(client: dynamoxy.Client) -> None:
     await client.create_tables(Profile)
-    profiles = client.repository(Profile)
+    profiles = client.model(Profile)
     profile = await profiles.create(Profile(profile_id="p1", handle="ada"))
     await profiles.update(profile, Profile.handle.set(None))
     assert profile.handle is None
@@ -160,7 +160,7 @@ async def test_optional_unique_values_can_be_removed_and_set_again(client: dynam
 
 async def test_unique_values_stored_as_null_can_be_set(client: dynamoxy.Client) -> None:
     await client.create_tables(Profile)
-    profiles = client.repository(Profile)
+    profiles = client.model(Profile)
     # A NULL stored by another writer (or by set(None) of older versions) reads as None.
     await profiles.table.put({"profile_id": "p1", "handle": None, "seat": None})
     profile = await profiles.get_or_raise("p1")
@@ -183,7 +183,7 @@ async def test_unique_values_stored_as_null_can_be_set(client: dynamoxy.Client) 
 
 async def test_unique_numbers_compare_as_numbers(client: dynamoxy.Client) -> None:
     await client.create_tables(Profile)
-    profiles = client.repository(Profile)
+    profiles = client.model(Profile)
     await profiles.create(Profile(profile_id="p1", seat=Decimal("5.0")))
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await profiles.create(Profile(profile_id="p2", seat=Decimal(5)))
@@ -195,7 +195,7 @@ async def test_unique_numbers_compare_as_numbers(client: dynamoxy.Client) -> Non
 
 async def test_put_of_an_instance_whose_unique_values_changed_meanwhile(client: dynamoxy.Client) -> None:
     await client.create_tables(Profile)
-    profiles = client.repository(Profile)
+    profiles = client.model(Profile)
     stale = await profiles.create(Profile(profile_id="p1", handle="one"))
     other = await profiles.get_or_raise("p1")
     await profiles.update(other, Profile.handle.set("two"))

@@ -56,7 +56,7 @@ async def main(client: dynamoxy.Client | None = None) -> tuple[Decimal, Decimal]
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Account, Transfer, LedgerEntry)
-        accounts = db.repository(Account)
+        accounts = db.model(Account)
         await accounts.create(Account(account_id="alice", owner="Alice", balance=Decimal(100)))
         await accounts.create(Account(account_id="bob", owner="Bob"))
 

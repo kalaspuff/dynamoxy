@@ -19,7 +19,7 @@ class keeps the rest of the code stable, makes cost reviews easy (every query is
 and makes services trivially testable with the memory client.
 
 Construct repositories once from the shared client (`OrderRepository(client)`) and inject them.
-`client.repository(Order)` returns a plain `Repository[Order]` when you need no extra methods.
+`client.model(Order)` returns a plain `Repository[Order]` when you need no extra methods.
 
 Instances remember the repository that read or wrote them, so code that already holds an
 instance can write it directly (`await order.save()`, `await order.increment(Order.reminders)`,

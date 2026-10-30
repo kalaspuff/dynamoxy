@@ -31,7 +31,7 @@ async def main(client: dynamoxy.Client | None = None) -> int:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Message)
-        messages = db.repository(Message)
+        messages = db.model(Message)
         start = datetime(2026, 1, 1, tzinfo=UTC)
         await messages.batch_put(
             Message(room_id="general", sent_at=start + timedelta(minutes=index), author="ada", text=f"message {index}")

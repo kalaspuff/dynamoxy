@@ -118,6 +118,13 @@ tests in Rust (memory + `tests/emulator.rs`) and Python (`tests/integration`).
 too), map failures in `explain_failure`, test on both backends (`tests/integration`), update the
 guides and AGENT_GUIDE.
 
+**Renamed or retired API**: keep the old one working for one minor version, decorated with
+`@deprecated("... will be removed in dynamoxy 0.N: use ...")` from `dynamoxy._utils` (a
+`DeprecationWarning` at runtime, flagged by type checkers), add it to `DEPRECATED` in
+`scripts/check_consistency.py` (the check fails from the removal version on), test that it warns,
+move the docs, examples and tests to the new API, and note it under `### Deprecated` in
+`CHANGELOG.md`.
+
 **Bug fix**: reproduce with a failing test first (memory backend if possible, emulator if it is a
 protocol issue), fix, keep the test.
 

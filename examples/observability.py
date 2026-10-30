@@ -38,7 +38,7 @@ async def main(client: dynamoxy.Client | None = None) -> dict[str, object]:
 
         db.use(count_calls)
         await db.ensure_tables(Session)
-        sessions = db.repository(Session)
+        sessions = db.model(Session)
 
         # What did this "request" cost? collect() records every operation inside the block.
         with dynamoxy.collect() as usage:

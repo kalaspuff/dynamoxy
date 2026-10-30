@@ -27,7 +27,7 @@
                 raise ValueError("name must not start or end with spaces")
 
 Models validate on construction and on assignment. Persistence goes through a
-:class:`dynamoxy.Repository` (``client.repository(User)``); model classes hold no client, so
+:class:`dynamoxy.Repository` (``client.model(User)``); model classes hold no client, so
 several clients can use the same models. An instance that a repository read or wrote remembers
 that repository and can persist itself through it::
 
@@ -673,7 +673,7 @@ def _repository_of(instance: Any, method: str, repository_method: str) -> Reposi
         raise RuntimeError(
             f"{name}.{method}(): this instance is not bound to a repository (no repository read or wrote it; "
             "new instances, copies and unpickled instances are not bound). Use a repository once, for example "
-            f"`await client.repository({name}).{repository_method}({arguments})`; that binds the instance"
+            f"`await client.model({name}).{repository_method}({arguments})`; that binds the instance"
         )
     return repository
 

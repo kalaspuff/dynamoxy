@@ -37,7 +37,7 @@ class ProfileV2(dynamoxy.Model, table="profiles_v"):
 @pytest.fixture
 async def players(client: dynamoxy.Client) -> dynamoxy.Repository[Player]:
     await client.create_tables(Player)
-    return client.repository(Player)
+    return client.model(Player)
 
 
 async def test_save_writes_the_changes_of_a_loaded_instance(players: dynamoxy.Repository[Player]) -> None:
@@ -88,7 +88,7 @@ async def test_delete_through_the_instance(client: dynamoxy.Client, players: dyn
     assert not player.is_loaded
     assert await players.get("p1") is None
     await client.create_tables(Event)
-    events = client.repository(Event)
+    events = client.model(Event)
     event = await events.create(Event(stream="s", seq=1, kind="k"))
     with pytest.raises(dynamoxy.ConditionalCheckFailedError):
         await event.delete(condition=Event.kind == "other")
@@ -142,7 +142,7 @@ async def test_lists_are_created_and_derived_index_keys_follow(
 
 async def test_atomic_changes_check_versions_and_fail_before_io(client: dynamoxy.Client) -> None:
     await client.create_tables(Player, Event)
-    players = client.repository(Player)
+    players = client.model(Player)
     player = await players.create(Player(player_id="p1", name="Ada"))
     stale = await players.get_or_raise("p1")
     await player.increment(Player.score)
@@ -150,7 +150,7 @@ async def test_atomic_changes_check_versions_and_fail_before_io(client: dynamoxy
         await stale.increment(Player.score)
     with pytest.raises(dynamoxy.ConditionalCheckFailedError):
         await player.decrement(Player.coins, 5, condition=Player.coins >= 5)
-    event = await client.repository(Event).create(Event(stream="s", seq=1, kind="k"))
+    event = await client.model(Event).create(Event(stream="s", seq=1, kind="k"))
     with dynamoxy.collect() as usage:
         with pytest.raises(TypeError, match=r"Player\.name holds str values: increment\(\) needs a number"):
             await player.increment(Player.name)  # pyrefly: ignore[no-matching-overload]
@@ -179,7 +179,7 @@ async def test_atomic_changes_check_versions_and_fail_before_io(client: dynamoxy
 
 async def test_reads_and_writes_bind_instances(client: dynamoxy.Client) -> None:
     await client.create_tables(Player, Customer, Order, Event)
-    players = client.repository(Player)
+    players = client.model(Player)
     await players.batch_put([Player(player_id=f"p{index}", name=f"P{index}") for index in range(3)])
     found: list[Any] = [
         await players.get_or_raise("p0"),
@@ -191,7 +191,7 @@ async def test_reads_and_writes_bind_instances(client: dynamoxy.Client) -> None:
         await players.update(Player.key("p0"), Player.score.add(1)),
         await players.refresh(Player(player_id="p1", name="P1")),
     ]
-    await client.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await client.model(Customer).create(Customer(customer_id="c1", name="Ada"))
     found += await client.collection(Customer, Order).query(customer_id="c1").all()
     for instance in found:
         await instance.refresh()  # needs the repository that read it
@@ -204,8 +204,8 @@ async def test_reads_and_writes_bind_instances(client: dynamoxy.Client) -> None:
     async with client.batch_writer() as batch:
         await batch.put(event)
     await event.increment(Event.payload["n"])
-    assert (await client.repository(Event).get_or_raise("s", 1)).payload == {"n": 1}
-    assert (await client.repository(Customer).get_or_raise(customer_id="c2")).name == "Renamed"
+    assert (await client.model(Event).get_or_raise("s", 1)).payload == {"n": 1}
+    assert (await client.model(Customer).get_or_raise(customer_id="c2")).name == "Renamed"
 
 
 class AuditedPlayers(dynamoxy.Repository[Player]):
@@ -243,7 +243,7 @@ class AuditedPlayers(dynamoxy.Repository[Player]):
 async def test_instance_methods_use_the_repository_that_read_the_instance(client: dynamoxy.Client) -> None:
     await client.create_tables(Player)
     audited = AuditedPlayers(client)
-    await client.repository(Player).create(Player(player_id="p1", name="Ada"))
+    await client.model(Player).create(Player(player_id="p1", name="Ada"))
     player = await audited.get_or_raise("p1")
     player.name = "Bo"
     await player.save()
@@ -260,16 +260,16 @@ async def test_instances_stay_with_the_client_that_last_wrote_them() -> None:
     async with testing.memory_client() as primary, testing.memory_client() as replica:
         await primary.create_tables(Player)
         await replica.create_tables(Player)
-        player = await primary.repository(Player).create(Player(player_id="p1", name="Ada"))
-        await replica.repository(Player).put(player)  # copied to the other store: bound there now
+        player = await primary.model(Player).create(Player(player_id="p1", name="Ada"))
+        await replica.model(Player).put(player)  # copied to the other store: bound there now
         await player.increment(Player.score)
-        assert (await replica.repository(Player).get_or_raise("p1")).score == 1
-        assert (await primary.repository(Player).get_or_raise("p1")).score == 0
+        assert (await replica.model(Player).get_or_raise("p1")).score == 1
+        assert (await primary.model(Player).get_or_raise("p1")).score == 0
 
 
 async def test_pydantic_instances(client: dynamoxy.Client) -> None:
     await client.create_tables(Account)
-    accounts = client.repository(Account)
+    accounts = client.model(Account)
     await accounts.create(Account(account_id="a1", owner="Ada", handle="ada"))
     account = await accounts.get_or_raise("a1")
     account.owner = "Ada L."
@@ -344,7 +344,7 @@ async def test_lifecycle_hooks_run_around_instance_methods(client: dynamoxy.Clie
         calls.append(f"client after_update ({context.operation})")
 
     await client.create_tables(Tracked)
-    tracked = client.repository(Tracked)
+    tracked = client.model(Tracked)
     item = await tracked.create(Tracked(pk="t", label=" x "))
     assert item.label == "x"
     await item.increment(Tracked.visits)
@@ -380,7 +380,7 @@ async def test_before_update_hooks_can_abort_updates(client: dynamoxy.Client) ->
             raise PermissionError("frozen")
 
     await client.create_tables(Frozen)
-    frozen = client.repository(Frozen)
+    frozen = client.model(Frozen)
     item = await frozen.create(Frozen(pk="f"))
     with dynamoxy.collect() as usage, pytest.raises(PermissionError):
         await item.increment(Frozen.visits)
@@ -405,7 +405,7 @@ async def test_atomic_changes_send_documented_update_actions() -> None:
             return await call_next(request)
 
         client.use(record)
-        event = await client.repository(Event).create(Event(stream="s", seq=1, kind="k"))
+        event = await client.model(Event).create(Event(stream="s", seq=1, kind="k"))
         await event.increment(F("total"))  # not a field: a number by its value
         await event.increment(Event.payload["n"], 2)
         await event.add(Event.payload["tags"], {"a"})
@@ -426,16 +426,16 @@ async def test_writes_of_loaded_instances_keep_attributes_their_model_does_not_d
     newer = client_factory()
     await newer.create_tables(ProfileV2)
     older = client_factory(store=newer.store) if newer.store is not None else client_factory()  # the same tables
-    await newer.repository(ProfileV2).create(ProfileV2(profile_id="p1", name="Ada", nickname="ada"))
-    loaded = await older.repository(ProfileV1).get_or_raise("p1")
+    await newer.model(ProfileV2).create(ProfileV2(profile_id="p1", name="Ada", nickname="ada"))
+    loaded = await older.model(ProfileV1).get_or_raise("p1")
     loaded.name = "Ada L."
     await loaded.save()
-    await older.repository(ProfileV1).put(loaded)
-    stored = await newer.repository(ProfileV2).get_or_raise("p1")
+    await older.model(ProfileV1).put(loaded)
+    stored = await newer.model(ProfileV2).get_or_raise("p1")
     assert (stored.name, stored.nickname, stored.version) == ("Ada L.", "ada", 3)
-    await older.repository(ProfileV1).update(loaded, F("nickname").remove())  # how to remove one
-    assert (await newer.repository(ProfileV2).get_or_raise("p1")).nickname is None
-    await older.repository(ProfileV1).put(ProfileV1(profile_id="p1", name="New"))  # not loaded: replaced
+    await older.model(ProfileV1).update(loaded, F("nickname").remove())  # how to remove one
+    assert (await newer.model(ProfileV2).get_or_raise("p1")).nickname is None
+    await older.model(ProfileV1).put(ProfileV1(profile_id="p1", name="New"))  # not loaded: replaced
     replaced = await newer.table("profiles_v").get({"profile_id": "p1"})
     assert replaced is not None
     assert re.fullmatch(r"[0-9a-f]{16}", replaced.pop("_wid")), "the id of the write"

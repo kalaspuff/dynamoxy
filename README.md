@@ -31,7 +31,7 @@ class User(dynamoxy.Model, table="users"):
 async def main() -> None:
     async with dynamoxy.Client(region="eu-west-1") as client:  # or dynamoxy.testing.memory_client()
         await client.ensure_tables(User)
-        users = client.repository(User)
+        users = client.model(User)
 
         ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
         await ada.increment(User.visits)  # atomic; `ada` is refreshed in place
@@ -112,7 +112,7 @@ class Customer(dynamoxy.PydanticModel, table="customers"):  # instead of BaseMod
 
 
 await client.ensure_tables(Customer)
-customers = client.repository(Customer)
+customers = client.model(Customer)
 await customers.create(Customer(customer_id="c1", email="ada@example.com", name="Ada"))
 customer = await customers.get("c1")  # a validated Customer
 ```

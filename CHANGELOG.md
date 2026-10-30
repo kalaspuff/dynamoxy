@@ -8,6 +8,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Deprecated
+
+- `client.repository(User)` is now `client.model(User)`, which returns the same `Repository`: the
+  old name read like the repository pattern of an application. `client.repository()` still
+  works, warns with a `DeprecationWarning` (type checkers flag it too) and will be removed in
+  0.5. `dynamoxy.Repository` keeps its name, as the base class of domain repositories.
+
 ## [0.3.0] - 2026-10-17
 
 ### Features

@@ -41,7 +41,7 @@ async def main() -> None:
     async with dynamoxy.testing.memory_client() as client:
         client.on("table.created", seen.append)
         await client.create_tables(Account, Entry)
-        accounts, entries = client.repository(Account), client.repository(Entry)
+        accounts, entries = client.model(Account), client.model(Entry)
         account = await accounts.create(Account(account_id="a1", email="smoke@example.com"))
         try:
             await accounts.create(Account(account_id="a2", email="smoke@example.com"))

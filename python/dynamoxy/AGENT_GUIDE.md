@@ -17,11 +17,11 @@ optimistic locking · transactions · single-table design · tables · the dict-
 1. **Create one `dynamoxy.Client` per process and share it.** It holds the connection pool,
    retries and metrics. Create it after `fork()` (worker processes create their own) and close it
    at shutdown (`async with client:` or `await client.close()`).
-2. **Use repositories for models.** `client.repository(User)` gives typed `get`, `query`,
-   `create`, `update`, ... Keep DynamoDB access behind repositories (or your own subclasses of
-   `dynamoxy.Repository`) instead of scattering raw calls. Instances a repository read or wrote
-   write themselves through it: `await user.save()`, `await user.increment(User.visits)`,
-   `await user.delete()`.
+2. **Reach models through the client.** `client.model(User)` gives typed `get`, `query`,
+   `create`, `update`, ... (a `dynamoxy.Repository[User]`). Collect the queries of an aggregate
+   in a subclass of `dynamoxy.Repository` instead of scattering raw calls. Instances a
+   repository read or wrote write themselves through it: `await user.save()`,
+   `await user.increment(User.visits)`, `await user.delete()`.
 3. **Pick the write that states your intent.** `create()` fails if the key exists, `save()`
    checks the version (optimistic locking), `put()` overwrites, and `update()` changes attributes
    in place without reading. Prefer `update()` with atomic actions (`User.visits.add(1)`) over
@@ -76,7 +76,7 @@ async def main() -> None:
     # Region and credentials come from the standard AWS configuration unless given.
     async with dynamoxy.Client(region="eu-west-1") as client:
         await client.ensure_tables(User)  # creates missing tables and indexes; deletes nothing
-        users = client.repository(User)
+        users = client.model(User)
 
         ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
         await users.update(ada, User.visits.add(1), User.tags.add({"admin"}))
@@ -320,7 +320,7 @@ inherited, and loaded records are instances of the original model.
 ## 4. Reading
 
 ```python
-users = client.repository(User)
+users = client.model(User)
 
 user = await users.get("u1")  # None when missing
 user = await users.get_or_raise("u1")  # ItemNotFoundError when missing
@@ -339,7 +339,7 @@ key for APIs that take one.
 A query reads one partition of the table or of an index:
 
 ```python
-entries = client.repository(Entry)
+entries = client.model(Entry)
 
 recent = (
     entries.query(account_id="a1")
@@ -352,7 +352,7 @@ async for entry in recent:
     ...
 
 first = await recent.first()  # or .one(), .all(), .count(), .exists()
-by_kind = await client.repository(Event).query(index=Event.by_kind, kind="signup").all()
+by_kind = await client.model(Event).query(index=Event.by_kind, kind="signup").all()
 latest = await entries.query(account_id="a1", consistent=True).all()  # strongly consistent read
 ```
 
@@ -903,7 +903,7 @@ async def client():
 
 
 async def test_signup(client: dynamoxy.Client) -> None:
-    users = client.repository(User)
+    users = client.model(User)
     await users.create(User(user_id="u1", email="a@example.com", name="Ada"))
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await users.create(User(user_id="u2", email="a@example.com", name="Bob"))

@@ -40,24 +40,24 @@ def order(order_id: str, total: str = "10") -> Order:
 
 async def test_commit_applies_everything(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    user = await client.repository(User).create(User(user_id="u1", email="a@example.com", name="Ada"))
+    user = await client.model(User).create(User(user_id="u1", email="a@example.com", name="Ada"))
     async with client.transaction() as tx:
         tx.create(Customer(customer_id="c1", name="Ada"))
         tx.create(order("o1"))
         tx.update(user, User.visits.add(5), User.tags.add({"vip"}))
         tx.put_item("events", {"stream": "s", "seq": 1, "kind": "raw"})
     assert len(tx) == 4
-    assert await client.repository(Customer).get(customer_id="c1") is not None
+    assert await client.model(Customer).get(customer_id="c1") is not None
     assert (user.visits, user.tags, user.version) == (5, {"vip"}, 2), "instances are refreshed"
     assert user.is_loaded
-    assert (await client.repository(User).get_or_raise("u1")).visits == 5
+    assert (await client.model(User).get_or_raise("u1")).visits == 5
     assert await client.table("events").get({"stream": "s", "seq": 1}) == {"stream": "s", "seq": 1, "kind": "raw"}
 
 
 async def test_canceled_transactions_explain_every_operation(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    await client.repository(Order).create(order("o1"))
-    await client.repository(Order).create(order("o3"))
+    await client.model(Order).create(order("o1"))
+    await client.model(Order).create(order("o3"))
     with pytest.raises(dynamoxy.TransactionCanceledError) as caught:  # noqa: PT012 - the block commits
         async with client.transaction() as tx:
             tx.create(order("o2"))
@@ -73,12 +73,12 @@ async def test_canceled_transactions_explain_every_operation(client_with_tables:
     assert reasons[1].item["order_id"] == "o1"
     assert reasons[0].failed is False
     assert [type(specific) for specific in error.errors] == [dynamoxy.ItemAlreadyExistsError]
-    assert await client.repository(Order).get(customer_id="c1", order_id="o2") is None, "nothing was written"
+    assert await client.model(Order).get(customer_id="c1", order_id="o2") is None, "nothing was written"
 
 
 async def test_unique_and_version_failures_in_transactions(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    users = client.repository(User)
+    users = client.model(User)
     ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
     stale = await users.get_or_raise("u1")
     await users.update(ada, User.visits.add(1))
@@ -92,7 +92,7 @@ async def test_unique_and_version_failures_in_transactions(client_with_tables: d
 
 async def test_delete_and_dict_level_operations(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    events = client.repository(Event)
+    events = client.model(Event)
     for seq, kind in enumerate("abc", start=1):
         await events.put(Event(stream="s", seq=seq, kind=kind))
     async with client.transaction() as tx:
@@ -106,7 +106,7 @@ async def test_delete_and_dict_level_operations(client_with_tables: dynamoxy.Cli
 
 async def test_tokens_make_retries_idempotent(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    events = client.repository(Event)
+    events = client.model(Event)
     await events.put(Event(stream="t", seq=1, kind="k", payload={}))
     token = uuid.uuid4().hex  # tokens are account-wide: unique per logical operation, at most 36 characters
     for _ in range(2):
@@ -147,8 +147,8 @@ async def test_aborted_blocks_do_not_commit(client_with_tables: dynamoxy.Client)
 
 async def test_transact_get_reads_a_snapshot(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
-    await client.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    await client.repository(Order).create(order("o1", "42"))
+    await client.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await client.model(Order).create(order("o1", "42"))
     customer, found, missing = await client.transact_get(
         dynamoxy.Get(Customer, customer_id="c1"),
         dynamoxy.Get(Order, customer_id="c1", order_id="o1"),
