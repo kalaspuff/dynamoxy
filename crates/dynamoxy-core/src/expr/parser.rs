@@ -216,7 +216,9 @@ fn lex(kind: ExpressionKind, text: &str) -> Result<Vec<Spanned<'_>>> {
                 Token::Ident(word)
             }
             _ => {
-                return Err(syntax_error(kind, text, &char_at(text, index), start, start + 1));
+                // The whole character: one outside ASCII spans several bytes.
+                let token = char_at(text, index);
+                return Err(syntax_error(kind, text, &token, start, start + token.len()));
             }
         };
         index += 1;

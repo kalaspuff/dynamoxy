@@ -261,3 +261,27 @@ fn deeply_nested_expressions_are_refused_without_exhausting_the_stack() {
     assert_eq!(update(MAX_NESTING), Ok(()));
     assert!(update(MAX_NESTING + 1).unwrap_err().contains("more than 100 levels deep"));
 }
+
+#[test]
+fn characters_outside_ascii_are_syntax_errors() {
+    let values = values(&[(":v", AttributeValue::n(1))]);
+    for (text, token, near) in [
+        ("größe > :v", "ö", "größe"),
+        ("a\u{a0}= :v", "\u{a0}", "a\u{a0}="),
+        ("a = :v AND é = :v", "é", "AND é"),
+        ("#\u{e9} = :v", "#", "#\u{e9}"),
+    ] {
+        let error = condition(text, &Names::new(), &values).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "ValidationException: Invalid ConditionExpression: Syntax error; token: \"{token}\", near: \"{near}\""
+            ),
+        );
+    }
+    let no_names = Names::new();
+    let mut placeholders = Placeholders::new(&no_names, &values);
+    assert!(parse_update("SET a = :v, ü = :v", &mut placeholders).unwrap_err().to_string().contains("token: \"ü\""));
+    let mut placeholders = Placeholders::new(&no_names, &values);
+    assert!(parse_projection("a, ñ", &mut placeholders).unwrap_err().to_string().contains("token: \"ñ\""));
+}
