@@ -37,7 +37,7 @@ async def main(client: dynamoxy.Client | None = None) -> Customer:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Customer)
-        customers = db.repository(Customer)
+        customers = db.model(Customer)
         ada = await customers.create(
             Customer(
                 customer_id="c1", email="ada@example.com", name="Ada", address=Address(street="Main 1", city="Lund")

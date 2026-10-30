@@ -30,7 +30,7 @@ class Reading(Model, table="decoding-readings"):
 @pytest.fixture
 async def accounts(client: dynamoxy.Client) -> dynamoxy.Repository[Account]:
     await client.create_tables(Account, Reading)
-    return client.repository(Account)
+    return client.model(Account)
 
 
 async def test_a_fraction_in_an_int_field_is_not_truncated(accounts: dynamoxy.Repository[Account]) -> None:
@@ -49,7 +49,7 @@ async def test_text_in_a_bool_field_is_not_converted(accounts: dynamoxy.Reposito
 
 async def test_a_fraction_in_an_int_key_does_not_read_another_items_key(client: dynamoxy.Client) -> None:
     await client.create_tables(Reading)
-    readings = client.repository(Reading)
+    readings = client.model(Reading)
     await readings.table.put({"sensor": "s1", "at": Decimal("1700000000.5"), "value": "x"})  # another writer
     await readings.table.put({"sensor": "s1", "at": 1700000000, "value": "y"})
     # Truncated, the first item read as the second one's key, and delete() or update() of it

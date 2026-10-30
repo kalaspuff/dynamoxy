@@ -56,7 +56,7 @@ async def main(client: dynamoxy.Client | None = None) -> list[str]:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Customer, Order)  # one table, created once
-        customers, orders = db.repository(Customer), db.repository(Order)
+        customers, orders = db.model(Customer), db.model(Order)
 
         await customers.create(Customer(customer_id="c1", name="Ada"))
         for day, order_id in enumerate(["o1", "o2", "o3"], start=1):

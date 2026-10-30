@@ -16,6 +16,9 @@ description: Prepare and publish a dynamoxy release - version bump, changelog fr
    Locally: `uv run --no-project scripts/release.py 0.2.0`.
 3. **Polish** the CHANGELOG section in the PR (it becomes the GitHub release notes via
    `scripts/release_notes.py`), with commits on its branch `release/vX.Y.Z`, and squash-merge it.
+   If the docs check fails because a deprecated API is due for removal in this version
+   (`DEPRECATED` in `scripts/check_consistency.py`), remove it in a pull request of its own
+   (`feat!:`) and merge that first.
 4. **Automatic**: `tag-release.yml` tags `vX.Y.Z` and dispatches `release.yml`, which verifies the
    version, builds wheels (Linux x86_64/aarch64 glibc+musl via zig, macOS arm64/x86_64, Windows
    x64, Windows arm64 best effort) and the sdist, smoke-tests them, creates the GitHub release

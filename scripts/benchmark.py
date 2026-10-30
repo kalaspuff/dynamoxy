@@ -160,7 +160,7 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
     results: dict[str, float] = {}
     async with testing.memory_client() as client:
         await client.create_tables(User, Entry)
-        users, entries = client.repository(User), client.repository(Entry)
+        users, entries = client.model(User), client.model(Entry)
         loaded = await users.create(ada())
         await users.create(User(user_id="u1", email="bob@example.com", name="Bob"))
         await entries.batch_put(ledger("a1", 100))
@@ -253,8 +253,8 @@ async def tables(endpoint: str) -> AsyncIterator[Tables]:
     async with client:
         await client.create_tables(User, Entry)
         try:
-            await client.repository(User).put(ada())
-            await client.repository(Entry).batch_put(ledger("a1", 100))
+            await client.model(User).put(ada())
+            await client.model(Entry).batch_put(ledger("a1", 100))
             yield Tables(client, client.table_name("users"), client.table_name("entries"))
         finally:
             await client.delete_tables(User, Entry)
@@ -278,7 +278,7 @@ async def emulator(endpoint: str, rounds: int, calls: int, query_calls: int) -> 
         print(f"{library:<12} {operation:<34} {duration(seconds)} CPU per call")
 
     async with tables(endpoint) as names:
-        users, entries = names.client.repository(User), names.client.repository(Entry)
+        users, entries = names.client.model(User), names.client.model(Entry)
         keys = itertools.count()
 
         def user() -> User:  # one of 500 keys
@@ -353,7 +353,7 @@ async def main() -> None:
     credentials = dynamoxy.Credentials("test", "test")
     options = {"endpoint_url": ENDPOINT, "region": "us-east-1", "table_names": {"users": TABLE}}
     async with dynamoxy.Client(credentials=credentials, **options) as client:
-        assert await client.repository(User).get("u0") is not None
+        assert await client.model(User).get("u0") is not None
 
 
 asyncio.run(main())

@@ -28,6 +28,19 @@ def test_code_and_docs_are_consistent(capsys: pytest.CaptureFixture[str]) -> Non
     assert load("check_consistency").main() == 0, capsys.readouterr().out
 
 
+@pytest.mark.parametrize(("version", "due"), [("0.4.0", False), ("0.4.9", False), ("0.5.0", True), ("1.0.0", True)])
+def test_deprecated_apis_fail_the_checks_once_due(monkeypatch: pytest.MonkeyPatch, version: str, due: bool) -> None:
+    check_consistency = load("check_consistency")
+    read = check_consistency.read
+    cargo = f'[workspace.package]\nversion = "{version}"\n'
+    monkeypatch.setattr(check_consistency, "read", lambda path: cargo if path == "Cargo.toml" else read(path))
+    problems = list(check_consistency.deprecations_removed_on_schedule())
+    assert bool(problems) == due
+    if due:
+        assert "Client.repository is deprecated and due for removal in 0.5.0" in problems[0]
+    assert check_consistency.version_tuple("0.5.0-rc.1+build.7") == (0, 5, 0)
+
+
 def test_generated_reference_is_current() -> None:
     generate_reference = load("generate_reference")
     assert generate_reference.EVENTS.read_text(encoding="utf-8") == generate_reference.render_events()

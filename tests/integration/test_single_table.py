@@ -67,8 +67,8 @@ def order(order_id: str, day: int, status: OrderStatus = OrderStatus.NEW, custom
 
 
 async def test_templates_build_keys_and_queries_select_one_entity(app: dynamoxy.Client) -> None:
-    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    orders = app.repository(Order)
+    await app.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    orders = app.model(Order)
     for index in range(1, 4):
         await orders.create(order(f"o{index}", index))
     await orders.create(order("x", 9, customer_id="c2"))
@@ -81,12 +81,12 @@ async def test_templates_build_keys_and_queries_select_one_entity(app: dynamoxy.
     assert [item.order_id for item in in_partition] == ["o1", "o2", "o3"], "the profile item is not an order"
     one = await orders.query(customer_id="c1", order_id="o3").all()
     assert [item.order_id for item in one] == ["o3"]
-    profile = await app.repository(Customer).query(customer_id="c1").all()
+    profile = await app.model(Customer).query(customer_id="c1").all()
     assert [item.name for item in profile] == ["Ada"]
 
 
 async def test_derived_index_keys_follow_updates(app: dynamoxy.Client) -> None:
-    orders = app.repository(Order)
+    orders = app.model(Order)
     first = await orders.create(order("o1", 1))
     await orders.create(order("o2", 2, OrderStatus.PAID))
     paid = await orders.query(index=Order.by_status, status=OrderStatus.PAID).all()
@@ -104,9 +104,9 @@ async def test_derived_index_keys_follow_updates(app: dynamoxy.Client) -> None:
 
 
 async def test_collections_decode_mixed_partitions(app: dynamoxy.Client) -> None:
-    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    await app.repository(Order).create(order("o1", 1))
-    await app.repository(Order).create(order("o2", 2))
+    await app.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await app.model(Order).create(order("o1", 1))
+    await app.model(Order).create(order("o2", 2))
     view = app.collection(Customer, Order)
     items = await view.query(customer_id="c1").all()
     assert sorted(type(item).__name__ for item in items) == ["Customer", "Order", "Order"]
@@ -119,8 +119,8 @@ async def test_collections_decode_mixed_partitions(app: dynamoxy.Client) -> None
 
 
 async def test_collections_read_consistently(app: dynamoxy.Client) -> None:
-    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    await app.repository(Order).create(order("o1", 1))
+    await app.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await app.model(Order).create(order("o1", 1))
     view = app.collection(Customer, Order)
     sent = record_consistent_reads(app)
     assert len(await view.query(customer_id="c1", consistent=True).all()) == 2
@@ -136,17 +136,17 @@ async def test_collections_read_consistently(app: dynamoxy.Client) -> None:
 
 
 async def test_entity_types_keep_models_apart(app: dynamoxy.Client) -> None:
-    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    await app.repository(Order).create(order("o1", 1))
-    assert await app.repository(Order).count() == 1
-    assert await app.repository(Customer).count() == 1
+    await app.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    await app.model(Order).create(order("o1", 1))
+    assert await app.model(Order).count() == 1
+    assert await app.model(Customer).count() == 1
     raw = await app.table("app").scan().all()
     assert sorted(item["_type"] for item in raw) == ["Customer", "Order"]
 
 
 async def test_where_replaces_the_prefix_of_templated_sort_keys(app: dynamoxy.Client) -> None:
-    await app.repository(Customer).create(Customer(customer_id="c1", name="Ada"))
-    orders = app.repository(Order)
+    await app.model(Customer).create(Customer(customer_id="c1", name="Ada"))
+    orders = app.model(Order)
     for order_id, day in (("2025-01", 1), ("2025-02", 2), ("2026-01", 3)):
         await orders.create(order(order_id, day))
     query = orders.query(customer_id="c1")
@@ -161,7 +161,7 @@ async def test_where_replaces_the_prefix_of_templated_sort_keys(app: dynamoxy.Cl
 
 
 async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> None:
-    orders = app.repository(Order)
+    orders = app.model(Order)
     await orders.batch_put([order(f"o{index:02}", 1 + index % 27) for index in range(30)])
     limits: list[int | None] = []
 
@@ -183,7 +183,7 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
     gsi1 = (await client.table("ledger").describe()).indexes["gsi1"]
     assert gsi1.projection == "INCLUDE"
     assert set(gsi1.projected_attributes) == {"_type", "state"}, "the entity type is projected for its filter"
-    payments, refunds = client.repository(Payment), client.repository(Refund)
+    payments, refunds = client.model(Payment), client.model(Refund)
 
     async def write_items() -> None:
         await payments.create(Payment(account_id="a1", payment_id="p1", amount=5))
@@ -216,7 +216,7 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
 
 
 async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> None:
-    orders = app.repository(Order)
+    orders = app.model(Order)
     placed = await orders.create(order("o1", 1))
     placed.customer_id = "c2"
     with pytest.raises(ValueError, match="key of this instance changed"):
@@ -233,7 +233,7 @@ async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> N
 
 async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None:
     await client.create_tables(Price)
-    prices = client.repository(Price)
+    prices = client.model(Price)
     local = timezone(timedelta(hours=2))
     price = await prices.create(
         Price(sku="a", amount=Decimal("1.50"), valid_from=datetime(2026, 1, 1, 0, 30, tzinfo=local))

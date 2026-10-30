@@ -36,7 +36,7 @@ async def main(client: dynamoxy.Client | None = None) -> list[str]:
     outcomes: list[str] = []
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Member)
-        members = db.repository(Member)
+        members = db.model(Member)
         ada = await members.create(Member(member_id="m1", email="ada@example.com", handle="ada", display_name="Ada"))
 
         try:

@@ -69,7 +69,7 @@ async def test_boto3_reads_what_dynamoxy_writes(client: dynamoxy.Client, boto: A
         status=OrderStatus.PAID,
         lines=[LineItem(sku="a", quantity=2, price=Decimal("49.975"))],
     )
-    await client.repository(Order).create(order)
+    await client.model(Order).create(order)
     response = boto.get_item(
         TableName=client.table_name("app"), Key={"pk": {"S": "CUSTOMER#c1"}, "sk": {"S": "ORDER#o1"}}
     )
@@ -99,7 +99,7 @@ async def test_dynamoxy_reads_what_boto3_writes(client: dynamoxy.Client, boto: A
     boto.put_item(
         TableName=client.table_name("users"), Item={key: serializer.serialize(value) for key, value in item.items()}
     )
-    user = await client.repository(User).get_or_raise("u1")
+    user = await client.model(User).get_or_raise("u1")
     assert (user.age, user.visits, user.tags, user.version) == (36, 3, {"admin", "ops"}, 4)
     assert user.status.value == "suspended"
     assert user.created_at == datetime(2026, 1, 1, tzinfo=UTC)
@@ -108,7 +108,7 @@ async def test_dynamoxy_reads_what_boto3_writes(client: dynamoxy.Client, boto: A
 
 
 async def test_updates_from_both_sides(client: dynamoxy.Client, boto: Any) -> None:
-    users = client.repository(User)
+    users = client.model(User)
     user = await users.create(User(user_id="u2", email="b@example.com", name="Bob"))
     boto.update_item(
         TableName=client.table_name("users"),
@@ -128,7 +128,7 @@ async def test_updates_from_both_sides(client: dynamoxy.Client, boto: Any) -> No
 
 
 async def test_transaction_cancellations_look_the_same(client: dynamoxy.Client, boto: Any) -> None:
-    await client.repository(Customer).create(Customer(customer_id="c9", name="Ada"))
+    await client.model(Customer).create(Customer(customer_id="c9", name="Ada"))
     table = client.table_name("app")
     put = {
         "Put": {

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
+import sys
+import warnings
 import weakref
 from datetime import timedelta
 from decimal import Decimal
@@ -12,7 +15,46 @@ from typing import TYPE_CHECKING, Any, Self
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-__all__ = ["MISSING", "LoopLocal", "Missing", "maybe_await", "number_text", "seconds", "stored_identity"]
+__all__ = [
+    "MISSING",
+    "LoopLocal",
+    "Missing",
+    "deprecated",
+    "deprecated_backport",
+    "maybe_await",
+    "number_text",
+    "seconds",
+    "stored_identity",
+]
+
+
+def deprecated_backport(
+    message: str, /, *, category: type[Warning] = DeprecationWarning, stacklevel: int = 1
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """``warnings.deprecated`` (PEP 702, Python 3.13) for functions, for Python 3.12.
+
+    The decorated function warns with ``message`` on every call, pointing at the caller.
+    """
+
+    def decorator(function: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(function)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            warnings.warn(message, category, stacklevel=stacklevel + 1)
+            return function(*args, **kwargs)
+
+        function.__deprecated__ = wrapper.__deprecated__ = message  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorator
+
+
+if TYPE_CHECKING:
+    # Type checkers ship typing_extensions, whatever is installed: they flag every use.
+    from typing_extensions import deprecated
+elif sys.version_info >= (3, 13):
+    from warnings import deprecated
+else:
+    deprecated = deprecated_backport
 
 
 class Missing:

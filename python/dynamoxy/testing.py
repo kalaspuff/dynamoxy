@@ -9,7 +9,7 @@ transactions, indexes, paging, capacity), no network, deterministic and fast.
     async def test_signup() -> None:
         async with dynamoxy.testing.memory_client() as client:
             await client.create_tables(User)
-            users = client.repository(User)
+            users = client.model(User)
             await users.create(User(user_id="u1", email="a@example.com", name="Ada"))
             with pytest.raises(dynamoxy.UniqueConstraintError):
                 await users.create(User(user_id="u2", email="a@example.com", name="Bob"))

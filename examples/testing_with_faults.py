@@ -26,7 +26,7 @@ async def main(client: dynamoxy.Client | None = None) -> list[str]:
     checks: list[str] = []
     async with testing.memory_client() as db:
         await db.ensure_tables(Token)
-        tokens = db.repository(Token)
+        tokens = db.model(Token)
 
         # Throttling is retried with backoff; the events show it.
         testing.inject_fault(db, operation="PutItem", error="throttling", times=2)

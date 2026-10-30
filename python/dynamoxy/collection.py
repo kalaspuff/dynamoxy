@@ -56,7 +56,7 @@ class Collection[M]:
         self._repositories: dict[str, Repository[Any]] = {}
         for model, schema in zip(models, schemas, strict=True):
             assert schema.entity is not None
-            self._repositories[schema.entity] = client.repository(model)
+            self._repositories[schema.entity] = client.model(model)
         self._first = self._repositories[next(iter(self._repositories))]
         self.table_name = self._first.table_name
 

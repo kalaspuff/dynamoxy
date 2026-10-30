@@ -47,7 +47,7 @@ def event(seq: int) -> Event:
 async def test_throttling_is_retried(client: dynamoxy.Client) -> None:
     testing.inject_fault(client, operation="PutItem", error="throttling", times=2)
     with testing.capture_events(client, "request.*") as events, dynamoxy.collect() as collected:
-        await client.repository(Event).put(event(1))
+        await client.model(Event).put(event(1))
     assert [record.attempts for record in collected.records] == [3]
     assert collected.records[0].throttles == 2
     assert [entry.kind for entry in events].count(dynamoxy.EventKind.REQUEST_RETRY) == 2
@@ -59,7 +59,7 @@ async def test_throttling_is_retried(client: dynamoxy.Client) -> None:
 async def test_retries_give_up(client: dynamoxy.Client) -> None:
     testing.inject_fault(client, operation="GetItem", error="throttling", times=5)
     with testing.capture_events(client, "request.gave_up") as events, pytest.raises(dynamoxy.ThrottlingError) as caught:
-        await client.repository(Event).get("s", 1)
+        await client.model(Event).get("s", 1)
     error = caught.value
     assert (error.retryable, error.attempts, error.operation) == (True, 3, "GetItem")
     assert error.duration is not None
@@ -79,29 +79,29 @@ async def test_retries_give_up(client: dynamoxy.Client) -> None:
 )
 async def test_retryable_errors(client: dynamoxy.Client, fault: str, expected: type[Exception]) -> None:
     testing.inject_fault(client, operation="PutItem", error=fault, times=2)
-    await client.repository(Event).put(event(1))
+    await client.model(Event).put(event(1))
     testing.inject_fault(client, operation="PutItem", error=fault, times=3)
     with pytest.raises(expected) as caught:
-        await client.repository(Event).put(event(2))
+        await client.model(Event).put(event(2))
     assert caught.value.retryable  # type: ignore[attr-defined]
 
 
 async def test_errors_that_are_not_retried(client: dynamoxy.Client) -> None:
     testing.inject_fault(client, operation="PutItem", error="ValidationException", message="nope")
     with pytest.raises(dynamoxy.ValidationError, match="nope") as caught:
-        await client.repository(Event).put(event(1))
+        await client.model(Event).put(event(1))
     assert (caught.value.retryable, caught.value.attempts) == (False, 1)
     testing.inject_fault(client, error="access_denied")
     with pytest.raises(dynamoxy.AccessDeniedError):
-        await client.repository(Event).get("s", 1)
+        await client.model(Event).get("s", 1)
 
 
 async def test_faults_target_tables_and_run_out(client: dynamoxy.Client) -> None:
     testing.inject_fault(client, table=client.table_name("users"), error="ValidationException", times=1)
-    await client.repository(Event).put(event(1)), "other tables are not affected"
+    await client.model(Event).put(event(1)), "other tables are not affected"
     with pytest.raises(dynamoxy.ValidationError):
-        await client.repository(User).get("u1")
-    assert await client.repository(User).get("u1") is None, "the fault was used up"
+        await client.model(User).get("u1")
+    assert await client.model(User).get("u1") is None, "the fault was used up"
 
 
 async def test_slow_attempts_time_out_and_are_retried() -> None:
@@ -110,11 +110,11 @@ async def test_slow_attempts_time_out_and_are_retried() -> None:
     ) as client:
         await client.create_tables(Event)
         testing.inject_fault(client, operation="GetItem", latency=0.5)
-        assert await client.repository(Event).get("s", 1) is None
+        assert await client.model(Event).get("s", 1) is None
         assert client.metrics().operations["GetItem"].attempts == 2
         testing.inject_fault(client, operation="GetItem", latency=0.5, times=2)
         with pytest.raises(dynamoxy.TransportError, match="no response within") as caught:
-            await client.repository(Event).get("s", 1)
+            await client.model(Event).get("s", 1)
         assert caught.value.retryable
 
 
@@ -124,12 +124,12 @@ async def test_timeouts_of_writes_can_be_left_to_the_caller() -> None:
         await client.create_tables(Event)
         testing.inject_fault(client, operation="PutItem", latency=0.5)
         with pytest.raises(dynamoxy.TransportError):
-            await client.repository(Event).put(event(1))
+            await client.model(Event).put(event(1))
         assert client.metrics().operations["PutItem"].attempts == 1
 
 
 async def test_conditions_that_fail_after_a_lost_response_have_an_unknown_outcome(client: dynamoxy.Client) -> None:
-    table = client.repository(Event).table
+    table = client.model(Event).table
     item = {"stream": "s", "seq": 1, "kind": "k"}
     testing.inject_fault(client, operation="PutItem", lose_response=True)
     with (
@@ -157,7 +157,7 @@ class Plain(Model, table="plain", write_ids=False):
 
 async def test_model_writes_recognise_their_own_earlier_attempt(client: dynamoxy.Client) -> None:
     await client.create_tables(Note)
-    events, notes, users = client.repository(Event), client.repository(Note), client.repository(User)
+    events, notes, users = client.model(Event), client.model(Note), client.model(User)
     # The stored item holds this write's id: the lost attempt was applied, and create() succeeds
     # (instead of a false ItemAlreadyExistsError).
     testing.inject_fault(client, operation="PutItem", lose_response=True)
@@ -184,7 +184,7 @@ async def test_model_writes_recognise_their_own_earlier_attempt(client: dynamoxy
 
 
 async def test_writes_overwritten_since_their_lost_attempt_stay_unknown(client: dynamoxy.Client) -> None:
-    events = client.repository(Event)
+    events = client.model(Event)
     await events.create(event(1))
     table = events.table
     # The first attempt is applied and lost; before the second one, another writer writes.
@@ -205,7 +205,7 @@ async def test_writes_overwritten_since_their_lost_attempt_stay_unknown(client: 
 
 async def test_models_without_write_ids_report_the_unknown_outcome(client: dynamoxy.Client) -> None:
     await client.create_tables(Plain)
-    plains = client.repository(Plain)
+    plains = client.model(Plain)
     testing.inject_fault(client, operation="PutItem", lose_response=True)
     with pytest.raises(dynamoxy.WriteOutcomeUnknownError) as caught:
         await plains.create(Plain(plain_id="p1"))
@@ -213,7 +213,7 @@ async def test_models_without_write_ids_report_the_unknown_outcome(client: dynam
 
 
 async def test_updates_that_would_apply_twice_are_not_sent_again(client: dynamoxy.Client) -> None:
-    table = client.repository(Event).table
+    table = client.model(Event).table
     await table.put({"stream": "s", "seq": 1, "kind": "k", "n": 0})
     testing.inject_fault(client, operation="UpdateItem", lose_response=True)
     with pytest.raises(dynamoxy.WriteOutcomeUnknownError, match="could apply it twice") as caught:
@@ -230,7 +230,7 @@ async def test_updates_that_would_apply_twice_are_not_sent_again(client: dynamox
 
 
 async def test_transactions_are_sent_again_after_a_lost_response(client: dynamoxy.Client) -> None:
-    users = client.repository(User)  # unique emails: create() is a transaction
+    users = client.model(User)  # unique emails: create() is a transaction
     testing.inject_fault(client, operation="TransactWriteItems", lose_response=True)
     await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
     assert client.metrics().operations["TransactWriteItems"].attempts == 2
@@ -242,14 +242,14 @@ async def test_slow_operations_emit_events() -> None:
         await client.create_tables(Event)
         testing.inject_fault(client, operation="GetItem", latency=0.3)
         with testing.capture_events(client, "request.slow") as events:
-            await client.repository(Event).get("s", 1)
-            await client.repository(Event).get("s", 1)
+            await client.model(Event).get("s", 1)
+            await client.model(Event).get("s", 1)
         assert len(events) == 1
         assert events[0].fields["operation"] == "GetItem"
 
 
 async def test_unprocessed_batch_items_are_sent_again(client: dynamoxy.Client) -> None:
-    events = client.repository(Event)
+    events = client.model(Event)
     testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times=2)
     with testing.capture_events(client, "batch.*") as emitted:
         await events.batch_put([event(seq) for seq in range(40)])
@@ -268,7 +268,7 @@ async def test_batches_report_what_stays_unprocessed() -> None:
             testing.capture_events(client, "batch.incomplete") as emitted,
             pytest.raises(dynamoxy.UnprocessedItemsError) as caught,
         ):
-            await client.repository(Event).batch_put([event(seq) for seq in range(3)])
+            await client.model(Event).batch_put([event(seq) for seq in range(3)])
         assert sorted(item["seq"] for _, item in caught.value.unprocessed) == [0, 1, 2]
         assert {kind for kind, _ in caught.value.unprocessed} == {"put"}
         assert caught.value.retryable
@@ -276,7 +276,7 @@ async def test_batches_report_what_stays_unprocessed() -> None:
 
 
 async def test_failed_operations_are_collected_and_counted(client: dynamoxy.Client) -> None:
-    users = client.repository(User)
+    users = client.model(User)
     await users.create(User(user_id="u1", email="a@example.com", name="Ada"))
     with (
         dynamoxy.collect() as collected,
@@ -304,7 +304,7 @@ async def test_batch_writers_finalize_only_what_was_written() -> None:
         assert SAVED == [], "no after_save hook for writes that were not made"
         assert [(note.is_loaded, note.version) for note in notes] == [(False, None)] * 3
         client.store.clear_faults()  # type: ignore[union-attr]
-        await client.repository(Note).batch_put(notes)
+        await client.model(Note).batch_put(notes)
         assert SAVED == ["n0", "n1", "n2"]
         assert all(note.is_loaded for note in notes)
 

@@ -245,6 +245,29 @@ def versions_agree() -> Iterator[str]:
         yield f"CHANGELOG.md has no section for the current version {version}"
 
 
+#: Deprecated APIs: (owner, attribute) and the version that removes them. From that version on,
+#: this check fails until the API (and its entry) is gone, so a promised removal is not forgotten.
+DEPRECATED: dict[str, tuple[Any, str, str]] = {
+    "Client.repository": (dynamoxy.Client, "repository", "0.5.0"),
+}
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    """``"0.5.0"`` as ``(0, 5, 0)`` (pre-release and build suffixes are ignored)."""
+    return tuple(int(part) for part in re.findall(r"\d+", version.split("-")[0].split("+")[0])[:3])
+
+
+@check
+def deprecations_removed_on_schedule() -> Iterator[str]:
+    version = tomllib.loads(read("Cargo.toml"))["workspace"]["package"]["version"]
+    for name, (owner, attribute, removal) in DEPRECATED.items():
+        if version_tuple(version) >= version_tuple(removal) and hasattr(owner, attribute):
+            yield (
+                f"{name} is deprecated and due for removal in {removal}, but version {version} still has it: "
+                "remove it, its tests and docs, and its entry in DEPRECATED (scripts/check_consistency.py)"
+            )
+
+
 @check
 def agent_guide_packaged() -> Iterator[str]:
     if len(read("python/dynamoxy/AGENT_GUIDE.md")) < 2000:

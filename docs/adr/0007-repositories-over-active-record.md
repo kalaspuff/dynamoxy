@@ -12,8 +12,9 @@ middleware, hooks) and on key design that changes with access patterns.
 ## Decision
 
 * Models are plain data with validation; they hold no client.
-* `Repository[M]` (from `client.repository(M)` or subclasses) performs persistence; transactions
-  plan model writes through the same repository code paths.
+* `Repository[M]` (from `client.model(M)`, named `client.repository(M)` before 0.4, or
+  subclasses) performs persistence; transactions plan model writes through the same repository
+  code paths.
 
 ## Consequences
 

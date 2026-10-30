@@ -61,13 +61,13 @@ def make_user(user_id: str = "u1", **changes: Any) -> User:
 @pytest.fixture
 async def users(client: dynamoxy.Client) -> dynamoxy.Repository[User]:
     await client.create_tables(User)
-    return client.repository(User)
+    return client.model(User)
 
 
 @pytest.fixture
 async def events(client: dynamoxy.Client) -> dynamoxy.Repository[Event]:
     await client.create_tables(Event)
-    return client.repository(Event)
+    return client.model(Event)
 
 
 async def test_create_get_and_automatic_fields(users: dynamoxy.Repository[User]) -> None:
@@ -186,7 +186,7 @@ async def test_update_requires_the_item_unless_upsert(events: dynamoxy.Repositor
 
 async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
     await client.create_tables(User, Customer, Order)
-    users = client.repository(User)
+    users = client.model(User)
     with dynamoxy.collect() as collected, pytest.raises(ValueError, match=r"required field\(s\) email, name"):
         await users.update(User.key("u1"), User.visits.add(1), upsert=True)
     with pytest.raises(ValueError, match="must set it in the actions"):
@@ -203,7 +203,7 @@ async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
     loaded = await users.get_or_raise("u3")
     await users.update(loaded, User.visits.add(1), upsert=True)  # loaded: its guard exists already
     assert loaded.visits == 3
-    orders = client.repository(Order)
+    orders = client.model(Order)
     placed = datetime(2026, 1, 1, tzinfo=UTC)
     with pytest.raises(ValueError, match="pass the key as field values"):
         await orders.update(Order.key(customer_id="c1", order_id="o1"), Order.total.set(10), upsert=True)
@@ -229,7 +229,7 @@ async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
 
 async def test_derived_attributes_follow_arithmetic_updates(client: dynamoxy.Client) -> None:
     await client.create_tables(Player)
-    players = client.repository(Player)
+    players = client.model(Player)
     ada = await players.create(Player(player_id="p1", name="Ada"))
     await players.create(Player(player_id="p2", name="Bo", score=5))
     await players.update(ada, Player.score.add(10))  # a loaded instance: computed from the stored item
@@ -487,7 +487,7 @@ async def test_consistent_queries_and_scans(client: dynamoxy.Client, events: dyn
 
 
 async def test_consistent_reads_of_global_indexes_fail_before_any_io(client: dynamoxy.Client) -> None:
-    events = client.repository(Event)
+    events = client.model(Event)
     refused = r"^Event index 'by_kind' is a global secondary index, which does not support consistent reads: remove"
     with dynamoxy.collect() as usage:
         with pytest.raises(ValueError, match=refused):
@@ -525,7 +525,7 @@ class Reading(dynamoxy.Model, table="readings", datetime_format="iso_z"):
 
 async def test_timestamps_with_a_z_suffix(client: dynamoxy.Client) -> None:
     await client.create_tables(Reading)
-    readings = client.repository(Reading)
+    readings = client.model(Reading)
     for hour in range(4):
         await readings.create(Reading(sensor_id="s1", taken_at=at(1, hour), value=hour))
     raw = await client.table("readings").get(Reading.key("s1", at(1, 2)))
@@ -553,7 +553,7 @@ async def test_timestamps_with_a_z_suffix(client: dynamoxy.Client) -> None:
 
 async def test_validation_fails_before_any_io(client_factory: ClientFactory) -> None:
     client = client_factory()
-    users = client.repository(User)
+    users = client.model(User)
     user = make_user()
     user.__dict__["email"] = "broken"  # bypass assignment validation to simulate corrupted state
     with dynamoxy.collect() as usage, pytest.raises(dynamoxy.ValidationError, match="email"):
@@ -587,7 +587,7 @@ async def test_model_and_client_hooks(client: dynamoxy.Client) -> None:
 
     client.hooks.add("after_delete", lambda item, context: calls.append("client.after_delete"))
     await client.create_tables(Hooked)
-    repository = client.repository(Hooked)
+    repository = client.model(Hooked)
     await repository.create(Hooked(pk="h", email="ADA@EXAMPLE.COM"))
     stored = await repository.get_or_raise("h")
     assert stored.email == "ada@example.com"
@@ -611,7 +611,7 @@ async def test_hooks_can_abort_writes(client: dynamoxy.Client) -> None:
             raise PermissionError("read-only")
 
     await client.create_tables(Guarded)
-    repository = client.repository(Guarded)
+    repository = client.model(Guarded)
     with pytest.raises(PermissionError):
         await repository.put(Guarded(pk="x"))
     assert await repository.get("x") is None
@@ -639,7 +639,7 @@ async def test_update_hooks_run_for_updates_of_instances(client: dynamoxy.Client
         calls.append(f"client after_update ({context.operation})")
 
     await client.create_tables(Counted)
-    counted = client.repository(Counted)
+    counted = client.model(Counted)
     item = await counted.create(Counted(pk="c"))
     await counted.update(item, Counted.visits.add(1))
     async with client.transaction() as tx:
@@ -677,7 +677,7 @@ async def test_repository_subclasses(client: dynamoxy.Client) -> None:
 
 async def test_updates_validate_values_they_set(client: dynamoxy.Client) -> None:
     await client.create_tables(User)
-    users = client.repository(User)
+    users = client.model(User)
     user = await users.create(make_user("u1"))
     with dynamoxy.collect() as collected, pytest.raises(dynamoxy.ValidationError, match=r"User\.age: .*0") as caught:
         await users.update(user, User.age.set(-1))
@@ -713,7 +713,7 @@ async def test_set_none_removes_attributes(users: dynamoxy.Repository[User]) -> 
 
 async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> None:
     await client.create_tables(Ticket)
-    tickets = client.repository(Ticket)
+    tickets = client.model(Ticket)
     ticket = await tickets.create(Ticket(ticket_id="t1"))
 
     async def check() -> None:
@@ -736,7 +736,7 @@ async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> Non
 
 async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Ticket)
-    tickets = client.repository(Ticket)
+    tickets = client.model(Ticket)
     ticket = await tickets.create(Ticket(ticket_id="t1"))
     ticket.country = "NO"
     with pytest.raises(ValueError, match=r"Ticket\.country is immutable"):
@@ -755,7 +755,7 @@ async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -
 
 async def test_numbers_of_other_types(client: dynamoxy.Client) -> None:
     await client.create_tables(Ticket)
-    tickets = client.repository(Ticket)
+    tickets = client.model(Ticket)
     ticket = await tickets.create(Ticket(ticket_id="t1"))
     await tickets.update(ticket, Ticket.spent.increment(timedelta(seconds=90)))
     assert ticket.spent == timedelta(seconds=90)
@@ -767,7 +767,7 @@ async def test_numbers_of_other_types(client: dynamoxy.Client) -> None:
 
 async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Device)
-    devices = client.repository(Device)
+    devices = client.model(Device)
     device_id = uuid.uuid4()
     await devices.create(Device(device_id=device_id))
     updated = await devices.update({"device_id": device_id}, Device.label.set("x"))
@@ -781,7 +781,7 @@ async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
 
 async def test_float_keys_in_batch_reads(client: dynamoxy.Client) -> None:
     await client.create_tables(Measurement)
-    measurements = client.repository(Measurement)
+    measurements = client.model(Measurement)
     values = [0.1, 0.3, 2.5, 1e16]
     await measurements.batch_put([Measurement(sensor="s", value=value) for value in values])
     found = await measurements.batch_get([("s", value) for value in values])
@@ -801,7 +801,7 @@ async def test_batches_write_repeated_keys_once(events: dynamoxy.Repository[Even
 
 async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend: str) -> None:
     await client.create_tables(Counter, Event)
-    counters = client.repository(Counter)
+    counters = client.model(Counter)
     await counters.create(Counter(counter_id="c1", count=42, note="important"))
     by_group = counters.query(index=Counter.by_group, group="a")
     with pytest.raises(ValueError, match="does not hold every attribute of Counter"):
@@ -809,7 +809,7 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     assert await by_group.exists()
     assert [(item.count, item.note) for item in await by_group.hydrate().all()] == [(42, "important")]
     assert await by_group.project("counter_id").all() == [{"counter_id": "c1"}]
-    events = client.repository(Event)
+    events = client.model(Event)
     expires = datetime(2030, 1, 1, tzinfo=UTC)
     await events.put(Event(stream="x", seq=1, kind="k", payload={"a": 1}, expires_at=expires))
     local = await events.query(index="by_kind_local", stream="x").all()

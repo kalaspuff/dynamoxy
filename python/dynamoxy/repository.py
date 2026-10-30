@@ -2,7 +2,7 @@
 
 ::
 
-    users = client.repository(User)  # or a subclass with domain queries
+    users = client.model(User)  # or a subclass with domain queries
     await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
     user = await users.get("u1")
     await users.update(user, User.visits.add(1))

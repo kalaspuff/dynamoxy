@@ -36,7 +36,7 @@ def assert_private(error: BaseException, *values: str) -> None:
 @pytest.fixture
 async def users(client: dynamoxy.Client) -> dynamoxy.Repository[User]:
     await client.create_tables(User, Wallet)
-    return client.repository(User)
+    return client.model(User)
 
 
 def make_user(user_id: str = PERSON, email: str = EMAIL) -> User:
@@ -105,7 +105,7 @@ async def test_changed_keys(users: dynamoxy.Repository[User]) -> None:
 
 
 async def test_stored_items_that_do_not_decode(client: dynamoxy.Client, users: dynamoxy.Repository[User]) -> None:
-    wallets = client.repository(Wallet)
+    wallets = client.model(Wallet)
     await wallets.table.put({"owner": PERSON, "balance": "secret-balance"})  # another writer
     with pytest.raises(dynamoxy.ItemDecodeError) as caught:
         await wallets.get(PERSON)

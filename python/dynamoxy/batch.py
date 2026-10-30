@@ -63,7 +63,7 @@ class BatchWriter:
         """
         repository = self._repositories.get(model)
         if repository is None:
-            repository = self.client.repository(model)
+            repository = self.client.model(model)
             if repository.schema.unique_fields:
                 raise TypeError(f"{model.__name__} has unique attributes; batch writes cannot maintain them")
             self._repositories[model] = repository

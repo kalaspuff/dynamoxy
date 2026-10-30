@@ -59,7 +59,7 @@ async def otel() -> AsyncIterator[Telemetry]:
 
 
 async def test_spans_follow_the_semantic_conventions(otel: Telemetry) -> None:
-    events = otel.client.repository(Event)
+    events = otel.client.model(Event)
     await events.put(Event(stream="s", seq=1, kind="k"))
     await events.query(stream="s").consistent().limit(5).all()
     put, query = otel.finished()
@@ -84,7 +84,7 @@ async def test_spans_follow_the_semantic_conventions(otel: Telemetry) -> None:
 
 
 async def test_failures_mark_spans_as_errors(otel: Telemetry) -> None:
-    users = otel.client.repository(User)
+    users = otel.client.model(User)
     await users.create(User(user_id="u1", email="a@example.com", name="Ada"))
     otel.spans.clear()
     with pytest.raises(dynamoxy.ItemAlreadyExistsError):
@@ -99,7 +99,7 @@ async def test_failures_mark_spans_as_errors(otel: Telemetry) -> None:
 async def test_spans_nest_under_the_application_span(otel: Telemetry) -> None:
     tracer = otel.client._recorder._tracer  # the client's tracer, from the test's provider
     with tracer.start_as_current_span("handler") as parent:
-        await otel.client.repository(Event).get("s", 1)
+        await otel.client.model(Event).get("s", 1)
     get, handler = otel.finished()
     assert handler.name == "handler"
     assert get.parent is not None
@@ -107,7 +107,7 @@ async def test_spans_nest_under_the_application_span(otel: Telemetry) -> None:
 
 
 async def test_metrics(otel: Telemetry) -> None:
-    events = otel.client.repository(Event)
+    events = otel.client.model(Event)
     await events.put(Event(stream="s", seq=1, kind="k"))
     await events.get("s", 1)
     testing.inject_fault(otel.client, operation="GetItem", error="throttling")
@@ -141,7 +141,7 @@ async def test_expressions_are_recorded_without_values() -> None:
     settings = dynamoxy.Telemetry(tracer_provider=provider, metrics=False, record_expressions=True)
     async with testing.memory_client(telemetry=settings, endpoint_url=None) as client:
         await client.create_tables(Event)
-        await client.repository(Event).query(stream="secret-stream").filter(Event.kind == "secret-kind").all()
+        await client.model(Event).query(stream="secret-stream").filter(Event.kind == "secret-kind").all()
     (query,) = [span for span in exporter.get_finished_spans() if span.name.startswith("Query")]
     text = str(dict(query.attributes or {})["db.query.text"])
     assert "key_condition_expression: " in text
