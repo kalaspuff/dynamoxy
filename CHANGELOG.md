@@ -123,7 +123,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   as the model of updates by key (`TypeError: Timestamped is not stored in a table`), and
   assigning or comparing such a field raised `TypeError` when the base class's key template
   names a field of the subclass. A subclass now has attributes of its own for the fields it
-  inherits; those of the base class keep its format.
+  inherits; those of the base class keep its format. So `add()`, `increment()` and `decrement()`
+  of an instance refuse the attribute of a sibling class, as they did for pydantic models: with
+  `Page` and `Post` both inheriting `views`, `post.increment(Page.views)` raises `TypeError`,
+  which now names the attribute to use (`Post.views`).
 
 ### Security
 

@@ -816,7 +816,8 @@ def _target(instance: Any, path: Path[Any], method: str) -> tuple[str, Codec[Any
     """A description of ``path`` for messages, and the codec of its values (``None`` when unknown).
 
     Raises:
-        TypeError: ``path`` is not a path, or a field of another model.
+        TypeError: ``path`` is not a path, or a field of another model (also of a sibling class that
+            inherits the same field: each class has paths of its own).
     """
     model = type(instance)
     if not isinstance(path, Path):
@@ -825,7 +826,10 @@ def _target(instance: Any, path: Path[Any], method: str) -> tuple[str, Codec[Any
             f"got {type(path).__name__}"
         )
     if isinstance(path, FieldPath) and not issubclass(model, path.model):
-        raise TypeError(f"{path.model.__name__}.{path.field_name} is not a field of {model.__name__}")
+        problem = f"{path.model.__name__}.{path.field_name} is not a field of {model.__name__}"
+        if path.field_name in schema_of(model).fields:
+            problem += f": use {model.__name__}.{path.field_name}"
+        raise TypeError(problem)
     root, *rest = path.elements
     spec = schema_of(model).attributes.get(str(root))
     codec: Codec[Any] | None = spec.codec if spec is not None else None
