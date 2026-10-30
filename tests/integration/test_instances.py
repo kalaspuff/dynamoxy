@@ -284,6 +284,34 @@ async def test_save_checks_versions_and_conditions(players: dynamoxy.Repository[
     assert (await players.get_or_raise("p1")).name == "Cy"
 
 
+async def test_items_stored_before_the_model_had_a_version_can_be_saved(
+    client: dynamoxy.Client, players: dynamoxy.Repository[Player]
+) -> None:
+    # As stored by the application before it added `version: Attr[int] = dynamoxy.version()`.
+    legacy = {"player_id": "p1", "name": "Ada", "board": "global", "score": 0, "rank": "SCORE#00000000"}
+    await client.table("players").put(legacy)
+    player = await players.get_or_raise("p1")
+    stale = await players.get_or_raise("p1")
+    assert (player.version, player.is_loaded) == (None, True)
+    player.name = "Ada L."
+    await player.save()  # the stored item must still have no version: it gets version 1
+    assert (player.version, (await players.get_or_raise("p1")).version) == (1, 1)
+    stale.name = "Stale"
+    with pytest.raises(dynamoxy.VersionConflictError, match="stored version 1, expected no version"):
+        await stale.save()
+    await client.table("players").put({**legacy, "player_id": "p2"})
+    gone = await players.get_or_raise("p2")
+    await client.table("players").delete({"player_id": "p2"})
+    with pytest.raises(dynamoxy.VersionConflictError, match="was deleted after it was loaded"):
+        await gone.save()
+    assert await players.get("p2") is None, "not created again"
+    await client.table("players").put({**legacy, "player_id": "p3"})
+    in_transaction = await players.get_or_raise("p3")
+    async with client.transaction() as tx:
+        tx.save(in_transaction)
+    assert (in_transaction.version, (await players.get_or_raise("p3")).version) == (1, 1)
+
+
 async def test_delete_through_the_instance(client: dynamoxy.Client, players: dynamoxy.Repository[Player]) -> None:
     player = await players.create(Player(player_id="p1", name="Ada"))
     deleted = await player.delete()

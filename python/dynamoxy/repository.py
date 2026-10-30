@@ -150,6 +150,7 @@ class _WritePlan:
         prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
         stale: bool = False,
         write_id: str | None = None,
+        loaded: bool = False,
     ) -> None:
         self.repository = repository
         self.plan = plan
@@ -166,6 +167,8 @@ class _WritePlan:
         self.stale = stale
         # The id this write stores in the item (None: the model stores none, or a delete).
         self.write_id = write_id
+        # Whether the instance was loaded (a save of one without a version expects no version).
+        self.loaded = loaded
 
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
@@ -773,9 +776,15 @@ class Repository[M]:
         if mode == "create":
             parts.append(partition.not_exists())
         elif mode == "save" and schema.version_field is not None:
-            parts.append(
-                schema._path(schema.version_field.attribute) == expected if expected else partition.not_exists()
-            )
+            version = schema._path(schema.version_field.attribute)
+            if expected:
+                parts.append(version == expected)
+            elif loaded is not None:
+                # Loaded from an item stored before the model had a version: it must still exist
+                # without one (and gets its first version now).
+                parts.append(partition.exists() & version.not_exists())
+            else:
+                parts.append(partition.not_exists())
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
@@ -814,7 +823,18 @@ class Repository[M]:
                 await hooks.run("after_save", instance, self._context(mode))
 
         write_id = item.get(WRITE_ID_ATTRIBUTE) if standalone and schema.write_ids else None
-        return _WritePlan(self, plan, mode, key, expected, finalize, prepared=prepared, stale=stale, write_id=write_id)
+        return _WritePlan(
+            self,
+            plan,
+            mode,
+            key,
+            expected,
+            finalize,
+            prepared=prepared,
+            stale=stale,
+            write_id=write_id,
+            loaded=loaded is not None,
+        )
 
     async def _write(self, instance: M, mode: WriteMode, condition: Condition | bool | None) -> M:
         write = await self._plan_put(instance, mode, condition, standalone=True)
@@ -1287,17 +1307,19 @@ class Repository[M]:
         if mode == "update" and stored is None and not write.upsert:
             return ItemNotFoundError(f"{name} does not exist (see .key)", model=self.model_class, key=key)
         if version is not None and (mode in ("save", "update", "delete")) and (expected or mode == "save"):
-            if stored is None and expected:
+            if stored is None and (expected or write.loaded):
                 return VersionConflictError(
-                    f"{name} was deleted after it was loaded (version {expected}; see .key)",
+                    f"{name} was deleted after it was loaded ({f'version {expected}' if expected else 'no version'}; "
+                    "see .key)",
                     model=self.model_class,
                     key=key,
                     expected_version=expected,
                     cause=error,
                 )
             if stored is not None and stored_version != (expected or None):
+                wanted = f"version {expected}" if expected else "no version"
                 return VersionConflictError(
-                    f"{name} changed since it was loaded: stored version {stored_version}, expected {expected} "
+                    f"{name} changed since it was loaded: stored version {stored_version}, expected {wanted} "
                     "(see .key)",
                     model=self.model_class,
                     key=key,

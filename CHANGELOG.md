@@ -77,6 +77,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - `close()` refused the retries of calls in progress, so a write whose first attempt may have
   been applied raised `ShutdownError`, as if nothing had happened. Calls in progress now finish,
   retries included, as the core documented; new calls are refused.
+- Items stored before their model had a `version()` field could never be saved: `save()` of such
+  a loaded instance (version `None`) required that the item did not exist, like a new instance,
+  and raised an unexplained `ConditionalCheckFailedError`, also in transactions. It now requires
+  that the item still has no version, stores version 1, and raises `VersionConflictError` when
+  another writer saved or deleted the item meanwhile.
 
 ### Security
 
