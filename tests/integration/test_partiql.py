@@ -53,3 +53,16 @@ async def test_transactions_and_batches(client: dynamoxy.Client, table: str) -> 
     assert results[0]["error"] is None
     assert results[1]["error"] is not None
     assert results[1]["error"][0] == "DuplicateItem"
+
+
+async def test_transactions_name_each_item_once(client: dynamoxy.Client, table: str, backend: str) -> None:
+    if backend != "memory":
+        pytest.skip("MiniStack runs statements on one item one after another, which DynamoDB refuses")
+    await client.execute(f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?, 'a': 0, 'b': 0}}", "x", 1)
+    statements = [
+        (f'UPDATE "{table}" SET a = ? WHERE pk = ? AND sk = ?', [1, "x", 1]),
+        (f'UPDATE "{table}" SET b = ? WHERE pk = ? AND sk = ?', [2, "x", 1]),
+    ]
+    with pytest.raises(dynamoxy.ValidationError, match="cannot include multiple operations on one item"):
+        await client.execute_transaction(statements)
+    assert await client.execute(f'SELECT a, b FROM "{table}" WHERE pk = ? AND sk = ?', "x", 1) == [{"a": 0, "b": 0}]
