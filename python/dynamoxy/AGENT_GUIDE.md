@@ -198,12 +198,13 @@ Rules that are easy to miss:
 
 - Assigning a field validates it immediately (`user.age = -1` raises `ValidationError`), and so
   does the constructor. `ValidationError.errors` lists every `FieldError`.
-- Field names cannot shadow the model API (`key`, `primary_key`, `validate`, `to_item`,
-  `copy`, `create`, `get`, `query`, `save`, `delete`, `update`, `add`, `increment`,
-  `decrement`, `refresh`, ...), in pydantic models too. Name the field differently and keep the
-  stored name with `attribute_name=` (`search_query: Attr[str] = field(attribute_name="query")`;
-  pydantic: `Annotated[str, dynamoxy.AttributeName("query")]`, plus `Field(alias="query")` to
-  keep the name in pydantic's input and output).
+- Field names cannot shadow the model API (`key`, `primary_key`, `to_item`, `create`, `get`,
+  `query`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`, ...), in
+  pydantic models too; native models also reserve `validate`, `copy` and `to_dict`. Name the
+  field differently and keep the stored name with `attribute_name=`
+  (`search_query: Attr[str] = field(attribute_name="query")`; pydantic:
+  `Annotated[str, dynamoxy.AttributeName("query")]`, plus `Field(alias="query")` to keep the
+  name in pydantic's input and output).
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,

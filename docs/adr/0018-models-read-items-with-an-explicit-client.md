@@ -22,9 +22,10 @@ Python name. dynamoxy chooses the shorter API for everyone over those names.
 * As for `create`, the client comes first and positional-only, and a call without a client
   raises `TypeError` before any I/O.
 * `get` and `query` become part of the model API: fields cannot use the names. Pydantic models
-  now refuse every name of the model API too (`key`, `to_item`, `save`, ...), with the
-  `TypeError` of native models: pydantic only warned, and the field's path replaced the method,
-  so `Model.query(...)` failed later with `'FieldPath' object is not callable`.
+  now refuse every name dynamoxy adds to them too (`key`, `to_item`, `save`, ...), with the
+  `TypeError` of native models; pydantic's own names (`copy`, ...) follow pydantic's rules.
+  Pydantic only warned, and the field's path replaced the method, so `Model.query(...)` failed
+  later with `'FieldPath' object is not callable`.
   `attribute_name="query"` (`AttributeName("query")` in pydantic models) keeps such a stored
   name under another Python name, and a pydantic alias keeps it in pydantic's input and output;
   expressions name the field, and the dict-level API sees the attribute unchanged.
