@@ -18,10 +18,11 @@ optimistic locking · transactions · single-table design · tables · the dict-
    retries and metrics. Create it after `fork()` (worker processes create their own) and close it
    at shutdown (`async with client:` or `await client.close()`).
 2. **Reach models through the client.** `client.model(User)` gives typed `get`, `query`,
-   `create`, `update`, ... (a `dynamoxy.Repository[User]`). Collect the queries of an aggregate
-   in a subclass of `dynamoxy.Repository` instead of scattering raw calls. Instances a
-   repository read or wrote write themselves through it: `await user.save()`,
-   `await user.increment(User.visits)`, `await user.delete()`.
+   `create`, `update`, ... (a `dynamoxy.Repository[User]`), and
+   `await User.create(client, user_id="u1", ...)` builds and writes a new item. Collect the
+   queries of an aggregate in a subclass of `dynamoxy.Repository` instead of scattering raw
+   calls. Instances a repository read or wrote write themselves through it:
+   `await user.save()`, `await user.increment(User.visits)`, `await user.delete()`.
 3. **Pick the write that states your intent.** `create()` fails if the key exists, `save()`
    checks the version (optimistic locking), `put()` overwrites, and `update()` changes attributes
    in place without reading. Prefer `update()` with atomic actions (`User.visits.add(1)`) over
@@ -78,7 +79,7 @@ async def main() -> None:
         await client.ensure_tables(User)  # creates missing tables and indexes; deletes nothing
         users = client.model(User)
 
-        ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+        ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
         await users.update(ada, User.visits.add(1), User.tags.add({"admin"}))
 
         found = await users.query(index=User.by_email, email="ada@example.com").first()
@@ -199,8 +200,8 @@ Rules that are easy to miss:
 - Assigning a field validates it immediately (`user.age = -1` raises `ValidationError`), and so
   does the constructor. `ValidationError.errors` lists every `FieldError`.
 - Field names cannot shadow the model API (`key`, `primary_key`, `validate`, `to_item`,
-  `copy`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`, ...). Name the
-  field differently and keep the stored name with `attribute_name=`.
+  `copy`, `create`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`,
+  ...). Name the field differently and keep the stored name with `attribute_name=`.
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
@@ -416,7 +417,8 @@ hatch for hand-written expressions.
 ## 5. Writing
 
 ```python
-user = await users.create(User(user_id="u2", email="bob@example.com", name="Bob"))  # new key only
+user = await User.create(client, user_id="u2", email="bob@example.com", name="Bob")  # new key only
+# or, with an instance: user = await users.create(User(user_id="u2", ...))
 await users.put(user)  # create or replace
 user.name = "Robert"
 await users.save(user)  # replace, but only if nobody changed it since it was loaded
@@ -440,8 +442,13 @@ fields change, `updated_at` and `version` included. Key, derived (templated) and
 attributes cannot be updated. Keys can be stored keys or field values
 (`devices.update({"device_id": uuid}, ...)`).
 
-Every write takes `condition=`; when it does not hold, `ConditionalCheckFailedError` is raised
-with `.item` set to the stored item.
+`User.create(client, ...)` validates its values like the constructor (type checkers check
+them too) and writes through `client.model(User)`, a plain repository: code that relies on the
+overrides of a repository subclass calls the subclass's `create()`. The client comes first, so
+a field may be named `client`.
+
+Every write of a repository takes `condition=`; when it does not hold,
+`ConditionalCheckFailedError` is raised with `.item` set to the stored item.
 
 `upsert=True` creates the item when it is missing, so the result must be a complete item: fields
 the actions leave alone get their defaults (and existing items keep their values), derived keys
@@ -472,8 +479,9 @@ deleted = await user.delete()  # users.delete(user)
 missing lists). `add`, `increment` and `decrement` take nested paths too
 (`player.increment(Player.stats["wins"])`) and validate the value against the attribute before
 any I/O. New instances, `copy()` results and unpickled instances are not bound: write them with
-a repository first (`await users.create(user)`); their methods raise `RuntimeError` before any
-I/O. Instance updates check the version of versioned models; update hot counters by key instead.
+a repository first (`await users.create(user)`, or build and write in one call with
+`User.create(client, ...)`); their methods raise `RuntimeError` before any I/O. Instance
+updates check the version of versioned models; update hot counters by key instead.
 
 ### Batches
 

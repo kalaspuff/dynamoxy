@@ -14,7 +14,7 @@ preserve. Decisions behind it are recorded in [docs/adr](adr/README.md).
 │ Python API  python/dynamoxy                                                              │
 │                                                                                          │
 │  models.py  attributes.py  _pydantic.py   declare models (Attr descriptors / pydantic),  │
-│                                           instance methods (save, update, delete, ...)   │
+│                                           Model.create(client, ...), instance methods    │
 │  schema.py  codecs.py                     ModelSchema: fields, keys, templates, indexes,  │
 │                                           encode/decode/validate (per model, cached)      │
 │  repository.py  transactions.py  batch.py  plan writes (_WritePlan), run hooks, guards    │
@@ -56,6 +56,8 @@ asyncio bridge only: no logic.
 The instance methods (`user.save()`, `user.update(...)`, `user.add(...)`, `user.increment(...)`,
 `user.delete()`, ...) call these on the repository the instance is bound to (see "Bound
 instances" below); `add`/`increment`/`decrement` only build the update action.
+`User.create(client, ...)` constructs the instance and calls `client.model(User).create(...)`
+([ADR 0017](adr/0017-models-create-items-with-an-explicit-client.md)).
 
 1. **Python, `repository.py`**: validate the instance (`ModelSchema.validate`: codecs,
    constraints, validators), run `before_*` hooks (model methods, then client hooks), compute

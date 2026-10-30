@@ -22,6 +22,28 @@ with:
 - `immutable=True` fields keep their stored value: a changed one raises `ValueError`. A field
   that the stored item does not have yet can get its first value.
 
+## Creating from the model
+
+`Model.create(client, ...)` builds an instance from field values and writes it as a new item,
+in one call:
+
+```python
+ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+# the same as: ada = await client.model(User).create(User(user_id="u1", ...))
+await ada.increment(User.visits)                      # `ada` is stored and bound
+```
+
+- The values are validated like constructor arguments, before any I/O, and type checkers
+  check them like the constructor's: names, types and required fields.
+- It fails like `create()` when the key exists (`ItemAlreadyExistsError`) or a unique value is
+  taken (`UniqueConstraintError`), and runs the `before_save` and `after_save` hooks.
+- The instance it returns is bound to `client.model(User)`, a plain repository. Code that
+  relies on the overrides of a repository subclass (auditing, tenant checks) calls
+  `UserRepository(client).create(...)` instead.
+- The client comes first and positionally, so a field may be named `client`. Models hold no
+  client, and there is no implicit one
+  ([ADR 0017](../adr/0017-models-create-items-with-an-explicit-client.md)).
+
 ## Writing through an instance
 
 An instance that a repository read or wrote remembers that repository, so it can write itself:
@@ -60,8 +82,8 @@ await user.delete()                                   # users.delete(user)
   transactions). An instance stays with the repository, and client, that last read or wrote it;
   transactions and batch writers keep that binding.
 - New instances are not bound until a repository writes them: `await users.create(user)` (or
-  `save`/`put`) first. `copy()` results and unpickled instances are not bound either. Their
-  methods raise `RuntimeError` before any I/O.
+  `save`/`put`, or `User.create(client, ...)`) first. `copy()` results and unpickled instances
+  are not bound either. Their methods raise `RuntimeError` before any I/O.
 - `add`, `increment` and `decrement` check the value against the attribute before any I/O, and
   type checkers check it too: `increment(User.name)` raises `TypeError`,
   `increment(User.visits, 0.5)` a `ValidationError`.
