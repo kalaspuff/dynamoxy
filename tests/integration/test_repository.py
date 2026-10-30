@@ -440,6 +440,7 @@ async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -
 
 class Kind(str, enum.Enum):  # noqa: UP042 - the mixin of code written before enum.StrEnum
     BOOK = "book"
+    CD = "cd"
 
 
 class Code(int, enum.Enum):  # and of code written before enum.IntEnum
@@ -453,9 +454,10 @@ class Product(Model, table="products"):
     kind: Attr[str]
     sku: Attr[str]
     shelf: Attr[Literal["top", "bottom"]] = field(default="top")
+    media: Attr[Literal[Kind.BOOK, Kind.CD]] = field(default=Kind.BOOK)
     code: Attr[int] = field(default=0)
     label: Attr[str] = field(default="", unique=True)
-    gsi1pk: Attr[str] = field(template="CODE#{code}#{shelf}")
+    gsi1pk: Attr[str] = field(template="CODE#{code}#{shelf}#{media}")
 
     by_code = GlobalIndex("gsi1", partition_key=gsi1pk)
 
@@ -472,11 +474,13 @@ async def test_members_of_mixin_enums_are_stored_as_their_values(client: dynamox
     product = await products.create(
         Product(kind=Kind.BOOK, sku="s1", code=Code.ONE, shelf=Shelf.TOP, label=Kind.BOOK)  # pyrefly: ignore[bad-argument-type]
     )
-    assert (type(product.kind), type(product.code), type(product.shelf)) == (str, int, str)
-    assert (product.pk, product.gsi1pk) == ("KIND#book#s1", "CODE#1#top")
+    assert (type(product.kind), type(product.code), type(product.shelf), type(product.media)) == (str, int, str, str)
+    assert (product.pk, product.gsi1pk) == ("KIND#book#s1", "CODE#1#top#book")
     loaded = await products.get_or_raise(kind="book", sku="s1")
+    assert (loaded.media, loaded.gsi1pk) == ("book", "CODE#1#top#book")
     await loaded.save()  # the key it renders is the stored key
-    assert [item.sku for item in await products.query(index=Product.by_code, code=1, shelf="top").all()] == ["s1"]
+    by_code = products.query(index=Product.by_code, code=1, shelf="top", media=Kind.BOOK)
+    assert [item.sku for item in await by_code.all()] == ["s1"]
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await products.create(Product(kind="book", sku="s2", label="book"))
     await products.update(loaded, Product.label.set(Kind.BOOK))  # the same value: the guard stays
