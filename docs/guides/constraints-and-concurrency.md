@@ -104,7 +104,8 @@ another read.
 
 `field(immutable=True)` fields cannot change once stored: `update()` actions on them raise
 `ValueError`, and so do `put()`, `save()` and batch puts of a loaded instance whose value changed.
-Keys are always immutable, and so are the fields a key template uses on a loaded instance.
+Keys are always immutable, and so are the fields a key template uses: `update()` actions on
+them raise `ValueError`, and so does every write through a loaded instance whose key changed.
 
 ## Idempotency
 

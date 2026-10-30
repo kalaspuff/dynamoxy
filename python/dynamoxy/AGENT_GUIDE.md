@@ -212,8 +212,9 @@ Rules that are easy to miss:
   `TypeError`. `copy.copy(item)` and pydantic's `model_copy()` duplicate the instance as it is,
   loaded state included.
 - A loaded instance keeps its key and its `immutable=True` values: `save()`/`put()` of one whose
-  key (or a field its key template uses) or immutable value changed raises `ValueError`. Write a
-  copy instead (`create(item.copy(...))`) and delete the old item.
+  key (or a field its key template uses) or immutable value changed raises `ValueError`, and so
+  do `update()`, `delete()` and transactions of one whose key changed. Write a copy instead
+  (`create(item.copy(...))`) and delete the old item; `refresh()` reloads the stored item.
 - DynamoDB reserved words (`name`, `status`, `count`, ...) are fine as attribute names:
   dynamoxy always uses placeholders.
 
@@ -445,8 +446,8 @@ Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, 
 are checked against the field (`User.visits.increment(0.5)` raises `ValidationError`). Updates
 refresh the instance in place with the stored result, and re-render templated attributes whose
 fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
-attributes cannot be updated. Keys can be stored keys or field values
-(`devices.update({"device_id": uuid}, ...)`).
+attributes cannot be updated, nor the fields a key template uses. Keys can be stored keys or
+field values (`devices.update({"device_id": uuid}, ...)`).
 
 `User.create(client, ...)` validates its values like the constructor (type checkers check
 them too) and writes through `client.model(User)`, a plain repository: code that relies on the

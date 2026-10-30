@@ -30,6 +30,17 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   works, warns with a `DeprecationWarning` (type checkers flag it too) and will be removed in
   0.5. `dynamoxy.Repository` keeps its name, as the base class of domain repositories.
 
+### Fixed
+
+- Writes through a loaded instance could change another item. `update()`, `delete()`,
+  transactions and batch deletes of an instance whose key field changed since it was loaded
+  (`order.customer_id = "c2"`) wrote the item of the new key, where `save()` and `put()` raise
+  `ValueError`; they now raise it too, and `refresh()` reloads the item the instance was loaded
+  from. Updates of a field that a key template uses (`Customer.customer_id.set("c2")` with
+  `pk="CUSTOMER#{customer_id}"`) were accepted and left the item's key and fields disagreeing,
+  so the instance's later writes went to another item: they now raise `ValueError` like
+  updates of the key itself.
+
 ### Security
 
 - The native extension bundles rustls 0.23.46 and rustls-webpki 0.103.16. rustls 0.23.46 fixes

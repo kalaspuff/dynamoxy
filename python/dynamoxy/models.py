@@ -600,6 +600,7 @@ class _Persistence:
         Raises:
             VersionConflictError: The item changed since it was loaded (versioned models).
             ConditionalCheckFailedError: ``condition`` did not hold.
+            ValueError: The key of the instance changed since it was loaded.
             RuntimeError: The instance is not bound to a repository.
         """
         return await _repository_of(self, "delete", "delete").delete(self, condition=condition)
@@ -617,7 +618,8 @@ class _Persistence:
             ItemNotFoundError: The item no longer exists (unless ``upsert``).
             VersionConflictError: The item changed since it was loaded (versioned models).
             ConditionalCheckFailedError: ``condition`` did not hold.
-            ValueError: An action targets a key, immutable or derived attribute (see ``update``).
+            ValueError: An action targets a key, immutable or derived attribute, or the key of
+                the instance changed since it was loaded (see ``update``).
             RuntimeError: The instance is not bound to a repository.
         """
         repository = _repository_of(self, "update", "update")
@@ -746,6 +748,8 @@ class _Persistence:
 
     async def refresh(self, *, consistent: bool = True) -> Self:
         """Reloads the instance in place from DynamoDB (``repository.refresh``).
+
+        It reloads the item it was loaded from, also when a key field changed since.
 
         Raises:
             ItemNotFoundError: The item no longer exists.
