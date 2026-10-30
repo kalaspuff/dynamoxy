@@ -202,14 +202,35 @@ impl Statement {
     }
 }
 
+/// How deep parentheses, `NOT` and the brackets of values may nest. Values hold at most 32
+/// levels and conditions this deep are contrived; the parser refuses deeper statements before its
+/// recursion could exhaust the stack of the thread it runs on (2 MiB for runtime threads, and
+/// statements are parsed on every backend, see [`effect`]), which would kill the process.
+const MAX_NESTING: usize = 100;
+
 struct Parser<'a> {
     tokens: Vec<Token>,
     position: usize,
     parameters: &'a [AttributeValue],
     next_parameter: usize,
+    /// How many parentheses, `NOT`s and value brackets enclose the current position.
+    depth: usize,
 }
 
 impl Parser<'_> {
+    /// Runs `parse` one nesting level deeper (see [`MAX_NESTING`]).
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth == MAX_NESTING {
+            return Err(invalid(format!(
+                "Statement wasn't well formed, can't be processed: it nests more than {MAX_NESTING} levels deep"
+            )));
+        }
+        self.depth += 1;
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
+    }
+
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position)
     }
@@ -318,44 +339,44 @@ impl Parser<'_> {
             Some(Token::Word(word)) if word.eq_ignore_ascii_case("true") => Ok(AttributeValue::Bool(true)),
             Some(Token::Word(word)) if word.eq_ignore_ascii_case("false") => Ok(AttributeValue::Bool(false)),
             Some(Token::Word(word)) if word.eq_ignore_ascii_case("null") => Ok(AttributeValue::Null),
-            Some(Token::Symbol("[")) => {
+            Some(Token::Symbol("[")) => self.nested(|parser| {
                 let mut values = Vec::new();
-                while !self.at_symbol("]") {
-                    values.push(self.literal()?);
-                    if !self.at_symbol("]") {
-                        self.symbol(",")?;
+                while !parser.at_symbol("]") {
+                    values.push(parser.literal()?);
+                    if !parser.at_symbol("]") {
+                        parser.symbol(",")?;
                     }
                 }
-                self.symbol("]")?;
+                parser.symbol("]")?;
                 Ok(AttributeValue::L(values))
-            }
-            Some(Token::Symbol("{")) => {
+            }),
+            Some(Token::Symbol("{")) => self.nested(|parser| {
                 let mut map = Item::new();
-                while !self.at_symbol("}") {
-                    let key = match self.next() {
+                while !parser.at_symbol("}") {
+                    let key = match parser.next() {
                         Some(Token::Str(key) | Token::Quoted(key)) => key,
-                        _ => return Err(self.error()),
+                        _ => return Err(parser.error()),
                     };
-                    self.symbol(":")?;
-                    map.insert(key, self.literal()?);
-                    if !self.at_symbol("}") {
-                        self.symbol(",")?;
+                    parser.symbol(":")?;
+                    map.insert(key, parser.literal()?);
+                    if !parser.at_symbol("}") {
+                        parser.symbol(",")?;
                     }
                 }
-                self.symbol("}")?;
+                parser.symbol("}")?;
                 Ok(AttributeValue::M(map))
-            }
-            Some(Token::Symbol("<<")) => {
+            }),
+            Some(Token::Symbol("<<")) => self.nested(|parser| {
                 let mut values = Vec::new();
-                while !self.at_symbol(">>") {
-                    values.push(self.literal()?);
-                    if !self.at_symbol(">>") {
-                        self.symbol(",")?;
+                while !parser.at_symbol(">>") {
+                    values.push(parser.literal()?);
+                    if !parser.at_symbol(">>") {
+                        parser.symbol(",")?;
                     }
                 }
-                self.symbol(">>")?;
+                parser.symbol(">>")?;
                 set_value(values)
-            }
+            }),
             _ => {
                 self.position = self.position.saturating_sub(1);
                 Err(self.error())
@@ -410,18 +431,20 @@ impl Parser<'_> {
     fn not_condition(&mut self) -> Result<Condition> {
         if self.at_keyword("NOT") {
             self.position += 1;
-            return Ok(Condition::Not(Box::new(self.not_condition()?)));
+            return self.nested(|parser| Ok(Condition::Not(Box::new(parser.not_condition()?))));
+        }
+        // Parentheses are handled here rather than in `primary`, whose large frame then stays off
+        // the stack of nested conditions.
+        if self.at_symbol("(") {
+            self.position += 1;
+            let inner = self.nested(Self::condition)?;
+            self.symbol(")")?;
+            return Ok(inner);
         }
         self.primary()
     }
 
     fn primary(&mut self) -> Result<Condition> {
-        if self.at_symbol("(") {
-            self.position += 1;
-            let inner = self.condition()?;
-            self.symbol(")")?;
-            return Ok(inner);
-        }
         if let Some(Token::Word(name)) = self.peek().cloned()
             && self.tokens.get(self.position + 1) == Some(&Token::Symbol("("))
             && ["begins_with", "contains", "attribute_type", "exists"]
@@ -707,7 +730,7 @@ fn set_value(values: Vec<AttributeValue>) -> Result<AttributeValue> {
 
 fn parse(statement: &str, parameters: &[AttributeValue]) -> Result<Statement> {
     let tokens = lex(statement)?;
-    Parser { tokens, position: 0, parameters, next_parameter: 0 }.statement()
+    Parser { tokens, position: 0, parameters, next_parameter: 0, depth: 0 }.statement()
 }
 
 /// What a statement does, for the client's retries of attempts that may have been applied (any

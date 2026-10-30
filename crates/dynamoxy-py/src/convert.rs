@@ -89,12 +89,29 @@ fn type_name(value: &Bound<'_, PyAny>) -> String {
     value.get_type().name().map(|name| name.to_string()).unwrap_or_else(|_| "?".into())
 }
 
-/// Converts a Python value to an attribute value. `path` names the value in error messages.
-pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
-    to_av(value, &ValuePath::Root(path))
+/// How deep DynamoDB nests documents: a value inside 32 lists or maps is refused. Conversions
+/// stop there, so a deeper value (or one that contains itself) raises `ValidationError` instead
+/// of exhausting the stack.
+const MAX_DEPTH: usize = 32;
+
+/// DynamoDB's message for values nested more than [`MAX_DEPTH`] levels deep.
+fn too_deep(path: &dyn std::fmt::Display) -> PyErr {
+    ValidationError::new_err(format!(
+        "{path}: Nesting Levels have exceeded supported limits: Attributes in the item have nested levels beyond \
+         supported limit"
+    ))
 }
 
-fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeValue> {
+/// Converts a Python value to an attribute value. `path` names the value in error messages.
+pub fn py_to_av(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
+    to_av(value, &ValuePath::Root(path), 1)
+}
+
+/// Converts a value `depth` levels deep (an attribute's value is 1 level deep).
+fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<AttributeValue> {
+    if depth > MAX_DEPTH {
+        return Err(too_deep(path));
+    }
     let py = value.py();
     if value.is_none() {
         return Ok(AttributeValue::Null);
@@ -123,12 +140,12 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeVa
             .map_err(|error| ValidationError::new_err(format!("{path}: {error}")));
     }
     if let Ok(dict) = value.cast::<PyDict>() {
-        return Ok(AttributeValue::M(dict_to_item(dict, path)?));
+        return Ok(AttributeValue::M(dict_to_item(dict, path, depth + 1)?));
     }
     if let Ok(list) = value.cast::<PyList>() {
         let mut values = Vec::with_capacity(list.len());
         for (index, element) in list.iter().enumerate() {
-            values.push(to_av(&element, &ValuePath::Element(path, index))?);
+            values.push(to_av(&element, &ValuePath::Element(path, index), depth + 1)?);
         }
         return Ok(AttributeValue::L(values));
     }
@@ -157,12 +174,12 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeVa
     if let Ok(tuple) = value.cast::<PyTuple>() {
         let mut values = Vec::with_capacity(tuple.len());
         for (index, element) in tuple.iter().enumerate() {
-            values.push(to_av(&element, &ValuePath::Element(path, index))?);
+            values.push(to_av(&element, &ValuePath::Element(path, index), depth + 1)?);
         }
         return Ok(AttributeValue::L(values));
     }
     if value.is_instance_of::<PySet>() || value.is_instance_of::<PyFrozenSet>() {
-        return set_to_av(value, path);
+        return set_to_av(value, path, depth);
     }
     if value.is_instance(mapping_type(py)?)? {
         let dict = PyDict::new(py);
@@ -170,7 +187,7 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeVa
             let (key, element): (Bound<'_, PyAny>, Bound<'_, PyAny>) = pair?.extract()?;
             dict.set_item(key, element)?;
         }
-        return Ok(AttributeValue::M(dict_to_item(&dict, path)?));
+        return Ok(AttributeValue::M(dict_to_item(&dict, path, depth + 1)?));
     }
     Err(ValidationError::new_err(format!(
         "{path}: cannot store a value of type {} in DynamoDB; use str, int, float, Decimal, bytes, bool, None, list, tuple, dict or a set of str/numbers/bytes",
@@ -178,14 +195,14 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeVa
     )))
 }
 
-fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeValue> {
+fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<AttributeValue> {
     let elements: Vec<Bound<'_, PyAny>> = value.try_iter()?.collect::<PyResult<_>>()?;
     if elements.is_empty() {
         return Err(ValidationError::new_err(format!(
             "{path}: DynamoDB does not store empty sets; leave the attribute out (or use None or an empty list)"
         )));
     }
-    let converted = elements.iter().map(|element| to_av(element, path)).collect::<PyResult<Vec<_>>>()?;
+    let converted = elements.iter().map(|element| to_av(element, path, depth + 1)).collect::<PyResult<Vec<_>>>()?;
     match converted[0] {
         AttributeValue::S(_) => converted
             .into_iter()
@@ -234,7 +251,8 @@ fn mixed_set(path: &ValuePath<'_>, value: &AttributeValue) -> PyErr {
     ))
 }
 
-fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>) -> PyResult<Item> {
+/// Converts the members of a map whose values are `depth` levels deep.
+fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>, depth: usize) -> PyResult<Item> {
     let mut item = Item::new();
     for (key, value) in dict.iter() {
         let Ok(name) = key.cast::<PyString>() else {
@@ -244,7 +262,7 @@ fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>) -> PyResult<Item
             )));
         };
         let name = name.to_str()?;
-        let converted = to_av(&value, &ValuePath::Member(path, name))?;
+        let converted = to_av(&value, &ValuePath::Member(path, name), depth)?;
         item.insert(name.to_owned(), converted);
     }
     Ok(item)
@@ -253,7 +271,7 @@ fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>) -> PyResult<Item
 /// Converts a Python mapping (an item or a key) to an [`Item`].
 pub fn py_to_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Item> {
     if let Ok(dict) = value.cast::<PyDict>() {
-        return dict_to_item(dict, &ValuePath::Root(""));
+        return dict_to_item(dict, &ValuePath::Root(""), 1);
     }
     match py_to_av(value, what)? {
         AttributeValue::M(item) => Ok(item),
@@ -453,7 +471,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyValueList {
         value
             .try_iter()?
             .enumerate()
-            .map(|(index, element)| to_av(&element?, &ValuePath::Element(&ValuePath::Root("parameters"), index)))
+            .map(|(index, element)| to_av(&element?, &ValuePath::Element(&ValuePath::Root("parameters"), index), 1))
             .collect::<PyResult<_>>()
             .map(Self)
     }
@@ -739,6 +757,14 @@ fn wire_binary(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Vec<u8>> {
 
 /// Parses an attribute value in DynamoDB's typed JSON shape.
 pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
+    wire_to_av(value, path, 1)
+}
+
+/// Parses a typed value `depth` levels deep (see [`MAX_DEPTH`]).
+fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<AttributeValue> {
+    if depth > MAX_DEPTH {
+        return Err(too_deep(&path));
+    }
     let invalid = || {
         ValidationError::new_err(format!(
             "{path}: expected a typed DynamoDB value such as {{\"S\": \"text\"}} or {{\"N\": \"1\"}}"
@@ -760,10 +786,10 @@ pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeV
             inner
                 .try_iter()?
                 .enumerate()
-                .map(|(index, element)| av_from_wire(&element?, &format!("{path}[{index}]")))
+                .map(|(index, element)| wire_to_av(&element?, &format!("{path}[{index}]"), depth + 1))
                 .collect::<PyResult<_>>()?,
         ),
-        "M" => AttributeValue::M(item_from_wire(&inner, path)?),
+        "M" => AttributeValue::M(wire_to_item(&inner, path, depth + 1)?),
         "SS" => AttributeValue::Ss(inner.extract()?),
         "NS" => AttributeValue::Ns(
             inner
@@ -781,6 +807,11 @@ pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeV
 
 /// Parses an item in DynamoDB's typed JSON shape.
 pub fn item_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Item> {
+    wire_to_item(value, path, 1)
+}
+
+/// Parses the members of a typed map whose values are `depth` levels deep.
+fn wire_to_item(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<Item> {
     let dict = value.cast::<PyDict>().map_err(|_| {
         ValidationError::new_err(format!(
             "{} must be a dict of typed values",
@@ -791,7 +822,7 @@ pub fn item_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Item> {
     for (name, value) in dict.iter() {
         let name: String = name.extract()?;
         let child = if path.is_empty() { name.clone() } else { format!("{path}.{name}") };
-        item.insert(name, av_from_wire(&value, &child)?);
+        item.insert(name, wire_to_av(&value, &child, depth)?);
     }
     Ok(item)
 }

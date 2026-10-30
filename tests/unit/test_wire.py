@@ -83,6 +83,49 @@ def test_invalid_values_are_validation_errors(value: Any, message: str) -> None:
         dynamoxy.to_wire({"value": value})
 
 
+def nested(levels: int, inner: Any = 1) -> Any:
+    value = inner
+    for _ in range(levels):
+        value = [value]
+    return value
+
+
+def wire_nested(levels: int) -> dict[str, Any]:
+    value: dict[str, Any] = {"N": "1"}
+    for _ in range(levels):
+        value = {"L": [value]}
+    return value
+
+
+def test_values_nest_at_most_32_levels_deep() -> None:
+    # Like DynamoDB: an attribute's value is 1 level deep, and one inside 31 lists is 32.
+    assert dynamoxy.from_wire(dynamoxy.to_wire({"v": nested(31)})) == {"v": nested(31)}
+    assert _core.value_from_wire(wire_nested(31)) == nested(31)
+    message = "Nesting Levels have exceeded supported limits"
+    with pytest.raises(dynamoxy.ValidationError, match=message):
+        dynamoxy.to_wire({"v": nested(32)})
+    with pytest.raises(dynamoxy.ValidationError, match=message):
+        dynamoxy.from_wire({"v": wire_nested(32)})
+
+
+def test_deep_and_cyclic_values_raise_instead_of_crashing() -> None:
+    # The conversions stop at DynamoDB's limit: deeper values used to exhaust the stack.
+    cyclic: dict[str, Any] = {"pk": "a"}
+    cyclic["self"] = cyclic
+    loop: list[Any] = []
+    loop.append(loop)
+    deep_tuple: Any = 1
+    for _ in range(1000):
+        deep_tuple = (deep_tuple,)
+    for value in ({"v": nested(100_000)}, cyclic, {"v": loop}, {"v": {deep_tuple}}):
+        with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):
+            dynamoxy.to_wire(value)
+    with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):
+        _core.value_from_wire(wire_nested(100_000))
+    with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):
+        _core._check_expressions(condition="a = :v", values={":v": nested(100_000)})
+
+
 def test_number_sets_deduplicate_equal_numbers() -> None:
     assert dynamoxy.to_wire({"ns": {1, 1.0, Decimal("1.00")}})["ns"] == {"NS": ["1"]}  # noqa: B033
 
