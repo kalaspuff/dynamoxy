@@ -7,7 +7,7 @@ import sys
 import textwrap
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import pytest
 
@@ -206,6 +206,13 @@ def test_schema_errors_are_explained() -> None:
     with pytest.raises(TypeError, match="key attributes must be stored as text, numbers or bytes"):
         schema_of(ListKey)
 
+    class OptionalKey(Model, table="broken"):
+        pk: Attr[str] = partition_key()
+        sk: Attr[datetime | None] = sort_key(codec=dynamoxy.codecs.DateTimeCodec("iso_z"))
+
+    with pytest.raises(TypeError, match=r"OptionalKey\.sk: key attributes cannot be optional"):
+        schema_of(OptionalKey)
+
     class TwoSorts(Model, table="broken"):
         pk: Attr[str] = partition_key()
         a: Attr[str] = sort_key()
@@ -270,6 +277,45 @@ def test_attribute_names_and_custom_codecs() -> None:
     assert Stored.from_item(item).data == {"x": [1, 2]}
     assert str(Stored.name) == "PK"
     assert Stored.key("k") == {"PK": "k"}
+
+
+class Setting(Model, table="settings"):
+    """Optional fields with a codec of their own (``codec=``, ``UseCodec``) or a ``Literal`` of ``None``."""
+
+    setting_id: Attr[str] = partition_key()
+    data: Attr[dict[str, Any] | None] = field(default=None, codec=dynamoxy.codecs.JsonCodec())
+    changed_at: Attr[datetime | None] = field(default=None, codec=dynamoxy.codecs.DateTimeCodec("iso_z"))
+    checked_at: Attr[Annotated[datetime | None, dynamoxy.UseCodec(dynamoxy.codecs.DateTimeCodec("epoch"))]] = field(
+        default=None
+    )
+    state: Attr[Literal["on", "off", None]] = field(default=None)  # noqa: PYI061 - the spelling under test
+    closed_at: Attr[datetime | None] = field(codec=dynamoxy.codecs.DateTimeCodec("epoch_ms"))  # no default
+
+
+def test_fields_with_a_codec_of_their_own_may_be_optional() -> None:
+    setting = Setting(setting_id="s1", closed_at=None)
+    assert (setting.data, setting.changed_at, setting.checked_at, setting.state, setting.closed_at) == (None,) * 5
+    assert setting.to_item() == {"setting_id": "s1"}, "None is not stored"
+    assert Setting.from_item({"setting_id": "s1"}) == setting
+    assert all(spec.optional for name, spec in schema_of(Setting).fields.items() if name != "setting_id")
+    moment = datetime(2026, 10, 13, 8, 48, 47, tzinfo=UTC)
+    setting.data, setting.changed_at, setting.checked_at, setting.closed_at = {"a": [1]}, moment, moment, moment
+    setting.state = "on"
+    item = setting.to_item()
+    assert item == {
+        "setting_id": "s1",
+        "data": '{"a":[1]}',
+        "changed_at": "2026-10-13T08:48:47.000000Z",
+        "checked_at": 1791881327,
+        "state": "on",
+        "closed_at": 1791881327000,
+    }
+    assert Setting.from_item(item) == setting
+    setting.data = None
+    with pytest.raises(dynamoxy.ValidationError, match="expected one of 'on', 'off'"):
+        setting.state = "maybe"  # type: ignore[assignment]
+    with pytest.raises(dynamoxy.ValidationError, match="closed_at: is required"):
+        Setting(setting_id="s1")  # type: ignore[call-arg]
 
 
 def test_fields_must_not_shadow_the_model_api() -> None:
