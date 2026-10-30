@@ -6,17 +6,14 @@ use std::borrow::Cow;
 use std::ops::Bound;
 
 use super::State;
-use super::table::{CapacityMeter, Index, KeyInfo, StoredKey, Table, read_units};
+use super::table::{CapacityMeter, Index, KeyInfo, PageRead, StoredKey, Table};
 use crate::error::{Error, Result};
 use crate::expr::{
     Comparator, Condition, ExpressionInput, Path, Projector, SortKeyCondition, condition_paths, evaluate,
     key_condition, parse_request, sort_key_matches,
 };
 use crate::types::{ProjectionType, QueryInput, QueryOutput, ReturnConsumedCapacity, ScanInput, Select};
-use crate::value::{Item, item_size};
-
-/// Data a page may read before it stops (1 MB).
-const PAGE_SIZE_LIMIT: usize = 1024 * 1024;
+use crate::value::Item;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
@@ -83,6 +80,18 @@ impl<'a> Target<'a> {
     fn capacity_target(&self) -> Option<(&str, bool)> {
         self.index.map(|index| (index.name.as_str(), index.global))
     }
+
+    /// Whether the read evaluates the items of the table rather than the index entries: a local
+    /// index fetches each item when the read returns an attribute the index does not hold
+    /// (`ALL_ATTRIBUTES`, or a projection of one).
+    fn fetches(&self, select: Select, projection: Option<&[Path]>) -> bool {
+        let Some(index) = self.index.filter(|index| !index.global) else { return false };
+        match (select, projection) {
+            (Select::AllAttributes, _) => index.projection.projection_type != ProjectionType::All,
+            (Select::SpecificAttributes, Some(paths)) => index.fetches(paths, &self.table.key),
+            _ => false,
+        }
+    }
 }
 
 /// Resolves `Select` against the projection expression and the target, like DynamoDB.
@@ -129,6 +138,8 @@ struct PageRequest<'a> {
     filter: Option<&'a Condition>,
     projection: Option<Projector>,
     select: Select,
+    /// Whether the read fetches each item from the table ([`Target::fetches`]).
+    fetch: bool,
     limit: Option<u32>,
     consistent: bool,
     return_consumed_capacity: ReturnConsumedCapacity,
@@ -137,19 +148,20 @@ struct PageRequest<'a> {
 /// Evaluates candidates (already positioned after the start key, in order) into one page.
 fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, request: &PageRequest<'_>) -> QueryOutput {
     let mut output = QueryOutput::default();
-    let mut read_bytes = 0usize;
+    let mut read = PageRead::new(request.consistent);
     let mut last: Option<&Item> = None;
     let mut stopped_early = false;
     let mut candidates = candidates.peekable();
     while let Some(item) = candidates.next() {
         let visible = target.visible(item);
-        read_bytes += item_size(&visible);
+        read.entry(&visible);
         output.scanned_count += 1;
         last = Some(item);
-        // Local indexes fetch non-projected attributes from the table.
-        let evaluated = match (request.select, target.index) {
-            (Select::AllAttributes, Some(index)) if !index.global => Cow::Borrowed(item),
-            _ => visible,
+        let evaluated = if request.fetch {
+            read.fetch(item);
+            Cow::Borrowed(item)
+        } else {
+            visible
         };
         if request.filter.is_none_or(|filter| evaluate(filter, &evaluated)) {
             output.count += 1;
@@ -161,7 +173,7 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
             }
         }
         let limit_reached = request.limit.is_some_and(|limit| output.scanned_count >= limit);
-        if limit_reached || read_bytes >= PAGE_SIZE_LIMIT {
+        if limit_reached || read.is_full() {
             stopped_early = limit_reached || candidates.peek().is_some();
             break;
         }
@@ -170,7 +182,7 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
         output.last_evaluated_key = Some(target.last_key(item));
     }
     let mut meter = CapacityMeter::default();
-    meter.read(&target.table.name, target.capacity_target(), read_units(read_bytes, request.consistent));
+    read.charge(&mut meter, &target.table.name, target.capacity_target());
     output.consumed_capacity = meter.table_report(&target.table.name, request.return_consumed_capacity);
     output
 }
@@ -239,6 +251,7 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
         filter: parsed.filter.as_ref(),
         projection: parsed.projection.as_deref().map(Projector::new),
         select,
+        fetch: target.fetches(select, parsed.projection.as_deref()),
         limit: input.limit,
         consistent: input.consistent_read,
         return_consumed_capacity: input.return_consumed_capacity,
@@ -448,6 +461,7 @@ pub fn scan(state: &State, input: &ScanInput) -> Result<QueryOutput> {
         filter: parsed.filter.as_ref(),
         projection: parsed.projection.as_deref().map(Projector::new),
         select,
+        fetch: target.fetches(select, parsed.projection.as_deref()),
         limit: input.limit,
         consistent: input.consistent_read,
         return_consumed_capacity: input.return_consumed_capacity,

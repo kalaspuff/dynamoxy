@@ -429,6 +429,46 @@ async fn local_indexes_sort_by_their_own_key_and_fetch_from_the_table() {
 }
 
 #[tokio::test]
+async fn local_index_projections_fetch_what_the_index_does_not_hold() {
+    // A projection that names an attribute a local index does not hold reads each item from the
+    // table, and the reads of the items are charged to the table; a projection of what the index
+    // holds reads the index alone.
+    let backend = backend_with_table().await;
+    seed_query_data(&backend).await;
+    let input = QueryInput {
+        index_name: Some("by_rank".into()),
+        projection_expression: Some("secret, #r".into()),
+        expression_attribute_names: names(&[("#r", "rank")]),
+        return_consumed_capacity: ReturnConsumedCapacity::Indexes,
+        ..query("pk = :p AND #r < :limit", values(&[(":p", s("p")), (":limit", n(93))]))
+    };
+    let fetched = backend.query(input.clone()).await.unwrap();
+    assert_eq!(fetched.items, [90, 91, 92].map(|rank| item([("secret", s("not projected")), ("rank", n(rank))])));
+    let capacity = fetched.consumed_capacity.unwrap();
+    assert_eq!(capacity.local_secondary_indexes["by_rank"].read_capacity_units, 0.5, "the index entries");
+    assert_eq!(capacity.table.unwrap().read_capacity_units, 1.5, "a read of each item, rounded up on its own");
+    assert_eq!(capacity.capacity_units, 2.0);
+
+    let held = backend.query(QueryInput { projection_expression: Some("sk, #r".into()), ..input }).await.unwrap();
+    assert_eq!(held.items[0], item([("sk", n(10)), ("rank", n(90))]));
+    let capacity = held.consumed_capacity.unwrap();
+    assert_eq!((capacity.capacity_units, capacity.table.unwrap().read_capacity_units), (0.5, 0.0));
+
+    let scanned = backend
+        .scan(ScanInput {
+            table_name: "items".into(),
+            index_name: Some("by_rank".into()),
+            projection_expression: Some("#n".into()),
+            expression_attribute_names: names(&[("#n", "name")]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(scanned.count, 10, "the item without a rank is not in the index");
+    assert!(scanned.items.iter().all(|item| item.contains_key("name")), "scans fetch too: {:?}", scanned.items);
+}
+
+#[tokio::test]
 async fn scans_split_into_segments_and_page() {
     let backend = MemoryBackend::default();
     let mut input = table_input("items");
@@ -476,6 +516,47 @@ async fn pages_stop_after_one_megabyte() {
     let page = backend.query(query("pk = :p", values(&[(":p", s("big"))]))).await.unwrap();
     assert_eq!(page.count, 4, "a page reads at most 1 MB (4 items of 300 KB reach it)");
     assert!(page.last_evaluated_key.is_some());
+}
+
+#[tokio::test]
+async fn local_index_pages_count_the_items_they_fetch() {
+    // A read of a local index that fetches the items from the table stops at 1 MB of the entries
+    // (rounded up to 4 KB) and the fetched items (each rounded up to 4 KB), and is charged a read
+    // of each fetched item on the table besides the read of the entries on the index.
+    let backend = backend_with_table().await;
+    let blob = "x".repeat(255 * 1024);
+    for sort in 0..10 {
+        put(&backend, item([("pk", s("big")), ("sk", n(sort)), ("rank", n(sort)), ("blob", s(&blob))])).await;
+    }
+    let table = backend.query(query("pk = :p", values(&[(":p", s("big"))]))).await.unwrap();
+    assert_eq!(table.count, 5, "4 items of 255 KB stay below 1 MB");
+    let input = QueryInput {
+        index_name: Some("by_rank".into()),
+        select: Some(Select::AllAttributes),
+        consistent_read: true,
+        return_consumed_capacity: ReturnConsumedCapacity::Indexes,
+        ..query("pk = :p", values(&[(":p", s("big"))]))
+    };
+    let page = backend.query(input.clone()).await.unwrap();
+    assert_eq!(page.count, 4, "4 entries (4 KB) and 4 items of 256 KB reach 1 MB");
+    assert!(page.items.iter().all(|item| item.contains_key("blob")));
+    let capacity = page.consumed_capacity.unwrap();
+    assert_eq!(capacity.table.unwrap().read_capacity_units, 4.0 * 64.0, "a read of each item");
+    assert_eq!(capacity.local_secondary_indexes["by_rank"].read_capacity_units, 1.0, "the index entries");
+    let next = backend.query(QueryInput { exclusive_start_key: page.last_evaluated_key, ..input }).await.unwrap();
+    assert_eq!(next.items.first().map(|item| &item["rank"]), Some(&n(4)));
+
+    let projected = backend
+        .scan(ScanInput {
+            table_name: "items".into(),
+            index_name: Some("by_rank".into()),
+            projection_expression: Some("#b".into()),
+            expression_attribute_names: names(&[("#b", "blob")]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(projected.count, 4, "scans and projections that fetch count the items too");
 }
 
 #[tokio::test]
@@ -1089,6 +1170,37 @@ async fn partiql_order_by_runs_one_query_per_partition_key_value() {
         .await
         .unwrap_err();
     assert!(message(&error).starts_with("Statement wasn't well formed"), "{}", message(&error));
+}
+
+#[tokio::test]
+async fn partiql_selects_of_a_local_index_fetch_what_it_does_not_hold() {
+    // Like a query, a SELECT of a local index reads each item from the table when it names an
+    // attribute the index does not hold, and is charged a read of each. The WHERE clause still
+    // reads the index entries: the fetch serves the projection.
+    let backend = backend_with_table().await;
+    seed_query_data(&backend).await;
+    let select = |text: &str| ExecuteStatementInput {
+        statement: text.into(),
+        consistent_read: true,
+        return_consumed_capacity: ReturnConsumedCapacity::Total,
+        ..Default::default()
+    };
+    let fetched =
+        backend.execute_statement(select("SELECT secret, rank FROM items.\"by_rank\" WHERE pk = 'p'")).await.unwrap();
+    assert_eq!(fetched.items.len(), 10);
+    assert_eq!(fetched.items[0], item([("secret", s("not projected")), ("rank", n(90))]));
+    assert_eq!(fetched.consumed_capacity.unwrap().capacity_units, 11.0, "the entries and each of the 10 items");
+    let held =
+        backend.execute_statement(select("SELECT sk, rank FROM items.\"by_rank\" WHERE pk = 'p'")).await.unwrap();
+    assert_eq!(held.items[0], item([("sk", n(10)), ("rank", n(90))]));
+    assert_eq!(held.consumed_capacity.unwrap().capacity_units, 1.0, "the entries");
+    let entries = backend.execute_statement(select("SELECT * FROM items.\"by_rank\" WHERE pk = 'p'")).await.unwrap();
+    assert_eq!(entries.items[0], item([("pk", s("p")), ("sk", n(10)), ("rank", n(90))]), "what the index holds");
+    let filtered = backend
+        .execute_statement(select("SELECT secret FROM items.\"by_rank\" WHERE secret = 'not projected'"))
+        .await
+        .unwrap();
+    assert!(filtered.items.is_empty(), "the entries do not hold secret: {:?}", filtered.items);
 }
 
 #[tokio::test(start_paused = true)]
