@@ -728,7 +728,18 @@ fn set_value(values: Vec<AttributeValue>) -> Result<AttributeValue> {
     }
 }
 
+/// DynamoDB's limit on the length of a statement. It also bounds the conditions that `AND` and
+/// `OR` chain into nested trees without nesting (dropping and evaluating them recurses).
+const MAX_STATEMENT_LENGTH: usize = 8192;
+
 fn parse(statement: &str, parameters: &[AttributeValue]) -> Result<Statement> {
+    // The statement may hold values: the message leaves it out.
+    if statement.chars().count() > MAX_STATEMENT_LENGTH {
+        return Err(invalid(format!(
+            "1 validation error detected: Value at 'statement' failed to satisfy constraint: Member must have length \
+             less than or equal to {MAX_STATEMENT_LENGTH}"
+        )));
+    }
     let tokens = lex(statement)?;
     Parser { tokens, position: 0, parameters, next_parameter: 0, depth: 0 }.statement()
 }
