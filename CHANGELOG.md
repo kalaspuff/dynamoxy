@@ -121,6 +121,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   and stores `["x", "y", "z", "a", "b"]`. Instances updated in a transaction are refreshed with
   the same evaluator, so on AWS too they could differ from the stored item. List elements are
   now set in order of their index.
+- The in-memory DynamoDB answered reads of a local index from its entries alone when a
+  projection named attributes the index does not hold, where DynamoDB reads them from the
+  table: `client.model(Note).query(index="by_kind", owner="ada").project("body", "kind")`
+  returned `[{"kind": "todo"}]`, without the body, and PartiQL `SELECT`s of such attributes
+  did the same. Reads that did fetch the items (`Select=ALL_ATTRIBUTES`, which model reads of
+  such indexes send) counted only the entries towards the 1 MB of a page and the read units:
+  ten items of 300 KB came back in one page for 1 read unit. Such reads now fetch the items,
+  count each, rounded up to 4 KB, towards the page, and charge a read of each to the table, as
+  DynamoDB does.
 - Deletes of models with unique attributes ignored their `condition=` when no item was stored:
   `delete(key, condition=...)` returned `None`, and `tx.delete(...)` was left out of the
   transaction, so a delete used as the guard of a transaction let the rest commit. As for other
