@@ -114,6 +114,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   effect, and an `INSERT` and a `DELETE` of one item left it stored. Such transactions, of reads
   too, now raise `ValidationError` ("Transaction request cannot include multiple operations on
   one item"), as on DynamoDB and as `TransactWriteItems` and `TransactGetItems` do.
+- An update that set several elements past the end of a list, not in the order of their indexes
+  (`Player.history[4].set("b"), Player.history[3].set("a")`, or `SET l[4] = :b, l[3] = :a`),
+  appended them in the order of the actions: on `["x", "y", "z"]` the in-memory backend stored
+  `["x", "y", "z", "a"]` and lost `b`, where DynamoDB sets list elements in order of their index
+  and stores `["x", "y", "z", "a", "b"]`. Instances updated in a transaction are refreshed with
+  the same evaluator, so on AWS too they could differ from the stored item. List elements are
+  now set in order of their index.
 
 ### Security
 
