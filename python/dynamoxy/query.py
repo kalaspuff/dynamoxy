@@ -269,7 +269,7 @@ class _Reader[T]:
         if self._projection:
             paths = self._projection
             if key_names:
-                # Key attributes too, so that a page cut short by a limit gets an exact cursor.
+                # Key attributes too, for cursors, client checks and hydration (see _fetch_page).
                 roots = {path.elements[0] for path in paths}
                 paths += tuple(F(name) for name in key_names if name not in roots)
             params["projection_expression"] = builder.projection(paths)
@@ -315,7 +315,15 @@ class _Reader[T]:
                 "attributes it holds"
             )
         builder = ExpressionBuilder()
-        names = await self._resolve_key_names() if self._projection and self._limit is not None else None
+        checks = self._checks + self._where_checks if self._where is not None else self._checks
+        # A projection reads the key attributes too when a limit may cut the page (its cursor),
+        # when items are checked on the client (the sort key prefix that where() replaced) and
+        # for hydration (the table key); the decoder leaves out what was not asked for.
+        names = (
+            await self._resolve_key_names()
+            if self._projection and (self._limit is not None or checks or self._hydrate)
+            else None
+        )
         params = self._params(builder, start, limit, names)
         segment = segment or self._segment
         if segment is not None:
@@ -324,7 +332,6 @@ class _Reader[T]:
         output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
         entries: list[dict[str, Any]] = output["items"]
         items = entries
-        checks = self._checks + self._where_checks if self._where is not None else self._checks
         if self._hydrate and self._hydrator is not None and entries:
             full = await self._hydrator(entries, self._consistent)
             pairs = [(entry, item) for entry, item in zip(entries, full, strict=True) if item is not None]
