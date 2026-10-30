@@ -17,9 +17,9 @@ dynamoxy-core = { path = "crates/dynamoxy-core", version = "0.3.0" }
 async-trait = "0.1"
 aws-config = { version = "1.12", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.3", features = ["hardcoded-credentials"] }
-# The default features without `rustls`: it builds the SDK's legacy hyper 0.14 client, whose
-# rustls 0.21 and rustls-webpki 0.101 get no security fixes, although `BehaviorVersion::latest()`
-# uses the hyper 1.x client of `default-https-client`.
+# The default features without `rustls`, which builds the SDK's legacy hyper 0.14 client with
+# rustls 0.21 and rustls-webpki 0.101 (no security fixes). `BehaviorVersion::latest()` uses the
+# hyper 1.x client of `default-https-client` anyway.
 aws-sdk-dynamodb = { version = "1.130", default-features = false, features = [
     "behavior-version-latest",
     "default-https-client",
