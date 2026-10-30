@@ -99,6 +99,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
   not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+- A field with a codec of its own refused `None` although its annotation allowed it:
+  `Attr[datetime | None] = field(default=None, codec=DateTimeCodec("iso_z"))` and
+  `Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())` failed on construction
+  with their own default ("must not be None"), and so did `Literal["on", "off", None]`; a
+  pydantic `Annotated[datetime | None, UseCodec(...)] = None` validated, but `create()` and
+  `save()` raised "is required". Such fields are optional now, as `X | None` fields are: `None`
+  is not stored (the codec never sees it), a missing attribute reads as `None`, and `remove()`
+  works. A key field annotated `X | None` raises `TypeError` with a codec too ("key attributes
+  cannot be optional"), as it did without one.
 - An update that set several elements past the end of a list, not in the order of their indexes
   (`Player.history[4].set("b"), Player.history[3].set("a")`, or `SET l[4] = :b, l[3] = :a`),
   appended them in the order of the actions: on `["x", "y", "z"]` the in-memory backend stored
