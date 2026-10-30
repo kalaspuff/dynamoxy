@@ -103,9 +103,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `delete(key, condition=...)` returned `None`, and `tx.delete(...)` was left out of the
   transaction, so a delete used as the guard of a transaction let the rest commit. As for other
   models, the condition now applies to the missing item, as in DynamoDB: one that does not hold
-  for it raises `ConditionalCheckFailedError` or cancels the transaction. Such a delete of a
-  missing item also runs its `after_delete` hooks and leaves the instance unloaded, as for other
-  models.
+  for it raises `ConditionalCheckFailedError` or cancels the transaction. A delete of a missing
+  item, with or without a condition, now also runs its `after_delete` hooks and leaves the
+  instance unloaded, as for other models.
 - Deletes and updates of loaded instances of unversioned models with unique attributes raised an
   unexplained `ConditionalCheckFailedError` ("the condition of delete failed", without a
   condition) when another writer had changed a unique value since the instance was loaded, and
