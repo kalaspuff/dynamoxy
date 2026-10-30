@@ -10,7 +10,7 @@ import pytest
 
 import dynamoxy
 from dynamoxy import Attr, Model, partition_key
-from tests.models import Article, Customer, Event, Order, User
+from tests.models import Article, Customer, Event, Order, Player, User
 
 ANNOUNCED: list[str] = []
 
@@ -52,6 +52,21 @@ async def test_commit_applies_everything(client_with_tables: dynamoxy.Client) ->
     assert user.is_loaded
     assert (await client.model(User).get_or_raise("u1")).visits == 5
     assert await client.table("events").get({"stream": "s", "seq": 1}) == {"stream": "s", "seq": 1, "kind": "raw"}
+
+
+async def test_instances_are_refreshed_with_list_elements_set_in_index_order(
+    client: dynamoxy.Client, backend: str
+) -> None:
+    # A transaction returns no item, so the update is evaluated locally, like DynamoDB: list
+    # elements are set in order of their index, and those past the end append in that order.
+    await client.create_tables(Player)
+    players = client.model(Player)
+    player = await players.create(Player(player_id="p1", name="Ada", history=["x", "y", "z"]))
+    async with client.transaction() as tx:
+        tx.update(player, Player.history[4].set("b"), Player.history[3].set("a"))
+    assert player.history == ["x", "y", "z", "a", "b"]
+    if backend == "memory":  # MiniStack sets them in the order of the actions and stores ["x", "y", "z", "a"]
+        assert (await players.get_or_raise("p1")).history == player.history
 
 
 async def test_canceled_transactions_explain_every_operation(client_with_tables: dynamoxy.Client) -> None:
