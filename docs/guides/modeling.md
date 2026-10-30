@@ -80,9 +80,9 @@ fails on constraints (stored data may predate them), only on values of the wrong
 
 Key values you give, to reads and to writes by key, are validated like the stored values:
 those of `get()`, `get_or_raise()`, `exists()`, `query()` (the partition and sort key arguments,
-of the table or of an index), `User.key(...)` and `dynamoxy.Get(...)`, and keys given as values
-(`"u1"`, `("c1", "o1")`) to `batch_get()`, `update()`, `delete()` and transactions. A validator
-that normalizes (`field(validators=(str.lower,))`) finds what it stored, so
+of the table or of an index), `User.key(...)` and `dynamoxy.Get(...)`, the keys that
+`batch_get()`, `delete()` and transactions take as values (`"u1"`, `("c1", "o1")`), and those
+that `update()` takes as field values (`{"device_id": device_uuid}`). A validator that normalizes (`field(validators=(str.lower,))`) finds what it stored, so
 `query(index=User.by_email, email="Ada@Example.com")` returns the item stored with
 `ada@example.com`, and a value the field refuses (or `None`) raises `ValueError` before any
 request. Conditions (`where()`, `filter()`, `condition=`) compare with the value you give: they
