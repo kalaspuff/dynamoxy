@@ -57,6 +57,8 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         wire = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except RecursionError:  # JSON nested too deeply for the parser: no cursor dynamoxy encoded
+        raise ValueError("invalid cursor: it does not hold a key that dynamoxy encoded") from None
     except ValueError as error:
         raise ValueError(f"invalid cursor: {error}") from None
     if not isinstance(wire, dict):

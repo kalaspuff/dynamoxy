@@ -100,6 +100,8 @@ def test_values_nest_at_most_32_levels_deep() -> None:
     # Like DynamoDB: an attribute's value is 1 level deep, and one inside 31 lists is 32.
     assert dynamoxy.from_wire(dynamoxy.to_wire({"v": nested(31)})) == {"v": nested(31)}
     assert _core.value_from_wire(wire_nested(31)) == nested(31)
+    # The elements of a set are no level of their own.
+    assert dynamoxy.from_wire(dynamoxy.to_wire({"v": nested(31, {"a"})})) == {"v": nested(31, {"a"})}
     message = "Nesting Levels have exceeded supported limits"
     with pytest.raises(dynamoxy.ValidationError, match=message):
         dynamoxy.to_wire({"v": nested(32)})
@@ -114,7 +116,8 @@ def test_deep_and_cyclic_values_raise_instead_of_crashing() -> None:
     loop: list[Any] = []
     loop.append(loop)
     deep_tuple = nested(1000, wrap=lambda value: (value,))
-    for value in ({"v": nested(100_000)}, cyclic, {"v": loop}, {"v": {deep_tuple}}):
+    deep_set = nested(1000, wrap=lambda value: frozenset({value}))
+    for value in ({"v": nested(100_000)}, cyclic, {"v": loop}, {"v": {deep_tuple}}, {"v": deep_set}):
         with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):
             dynamoxy.to_wire(value)
     with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):

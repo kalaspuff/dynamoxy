@@ -58,8 +58,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   few thousand nested parentheses, which crashed AWS clients too, since dynamoxy parses
   statements and update expressions to decide whether a retry is safe. Values nested more than
   32 levels deep (DynamoDB's limit) now raise `ValidationError` before any request, and the
-  in-memory DynamoDB refuses expressions and statements nested more than 100 levels deep with
-  a `ValidationException`.
+  in-memory DynamoDB refuses expressions and statements nested more than 100 levels deep, and
+  statements longer than DynamoDB's 8,192 characters, with a `ValidationException`.
 - A character outside ASCII in an expression (`größe > :v`, or a non-breaking space pasted into
   `a = :v`) panicked the expression lexer: calls raised an internal error, and
   `dynamoxy._core._apply_update()` a `PanicException`, which `except Exception` does not catch.

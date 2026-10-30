@@ -202,7 +202,15 @@ fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> Py
             "{path}: DynamoDB does not store empty sets; leave the attribute out (or use None or an empty list)"
         )));
     }
-    let converted = elements.iter().map(|element| to_av(element, path, depth + 1)).collect::<PyResult<Vec<_>>>()?;
+    // Elements are no level of their own, as in DynamoDB; a set in a set (which DynamoDB refuses)
+    // is converted one level deeper, so that frozensets nested in frozensets stay bounded too.
+    let converted = elements
+        .iter()
+        .map(|element| {
+            let nested = element.is_instance_of::<PySet>() || element.is_instance_of::<PyFrozenSet>();
+            to_av(element, path, if nested { depth + 1 } else { depth })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     match converted[0] {
         AttributeValue::S(_) => converted
             .into_iter()
