@@ -201,10 +201,11 @@ after the model's own and suit cross-cutting concerns such as auditing.
 
 ## Names to avoid
 
-Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `validate`, `copy`,
-`to_dict`, `to_item`, `from_item`, `create`, `get`, `query` and the instance methods `save`,
-`delete`, `update`, `add`, `increment`, `decrement`, `refresh`. Use another Python name and keep
-the stored name with `attribute_name=`:
+Field names cannot shadow the model API, in native and [pydantic](pydantic.md#existing-models)
+models alike: `key`, `primary_key`, `is_loaded`, `validate`, `copy`, `to_dict`, `to_item`,
+`from_item`, `create`, `get`, `query` and the instance methods `save`, `delete`, `update`,
+`add`, `increment`, `decrement`, `refresh`. Use another Python name and keep the stored name
+with `attribute_name=`:
 
 ```python
 class Search(dynamoxy.Model, table="searches"):

@@ -245,6 +245,15 @@ class PydanticModel(BaseModel, _Persistence):
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
+        # A field's path replaces the class attribute of its name: refuse the names of the model API
+        # (as native models do), where pydantic only warns and the method would be gone.
+        taken = sorted(_MODEL_API.intersection(cls.model_fields))
+        if taken:
+            name = taken[0]
+            raise TypeError(
+                f"{cls.__name__}.{name}: the name is part of the model API ({name}); name the field differently "
+                f"and keep the stored name with Annotated[..., dynamoxy.AttributeName({name!r})]"
+            )
         for name, info in cls.model_fields.items():
             path = FieldPath(**{key: value for key, value in _field_options(info).items() if key == "attribute_name"})
             type.__setattr__(cls, name, path)
@@ -293,3 +302,10 @@ class PydanticModel(BaseModel, _Persistence):
         """Whether this instance was read from or written to DynamoDB."""
         state = self.__dict__.get(_STATE)
         return state is not None and state.loaded
+
+
+#: Names of the model API (methods and properties of ``PydanticModel``), which fields cannot take.
+#: Pydantic's own names (``model_*``) are pydantic's to protect.
+_MODEL_API = frozenset(
+    name for klass in (PydanticModel, _Persistence) for name in vars(klass) if not name.startswith(("_", "model_"))
+)
