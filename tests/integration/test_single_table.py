@@ -178,6 +178,43 @@ async def test_first_and_limits_read_what_they_return(app: dynamoxy.Client) -> N
     assert limits == [1, 3], "the entity filter dynamoxy adds does not make limits read whole pages"
 
 
+class Memo(Model, table="memos"):
+    """No entity type: where() on the templated sort key leaves its prefix to a client check."""
+
+    pk: Attr[str] = partition_key(template="USER#{user_id}")
+    sk: Attr[str] = sort_key(template="MEMO#{memo_id}")
+    user_id: Attr[str]
+    memo_id: Attr[str]
+
+
+async def test_limits_grow_but_stay_bounded(client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pages whose items dynamoxy's own filters or checks removed make the next request ask for
+    # more. Without a bound, about 16 such pages (16 MB of other items) asked for more than a
+    # request can say, and the read raised OverflowError; a larger growth gets there at once.
+    monkeypatch.setattr("dynamoxy.query._GROWTH", 2**32)
+    await client.create_tables(Memo)
+    await Memo.create(client, user_id="u1", memo_id="m1")
+    await client.table("memos").put({"pk": "USER#u1", "sk": "ZZZ"})  # another item, after the memos
+    limits: list[int | None] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        limits.append(request.params.get("limit"))
+        return await call_next(request)
+
+    client.use(record)
+    memo = await Memo.query(client, user_id="u1").where(Memo.sk >= "MEMO#").descending().first()
+    assert memo is not None
+    assert memo.memo_id == "m1"
+    assert limits == [1, 2**20], "the other item came first, then a bounded request"
+    # Limits and page sizes larger than a request can say are bounded too.
+    limits.clear()
+    memos = Memo.query(client, user_id="u1")
+    assert len((await memos.limit(2**33).page()).items) == 1
+    assert len((await memos.page_size(2**33).page()).items) == 1
+    assert [memo.memo_id for memo in await memos.limit(2**33).all()] == ["m1"]
+    assert all(limit == 2**20 for limit in limits), limits
+
+
 async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> None:
     await client.create_tables(Payment, Refund)
     gsi1 = (await client.table("ledger").describe()).indexes["gsi1"]

@@ -81,6 +81,11 @@ type ItemCheck = Callable[[dict[str, Any]], bool]
 #: client) removed items from a page: a few requests then find what a limit asks for.
 _GROWTH = 4
 
+#: The largest ``Limit`` a request asks for: more items than a 1 MB page holds, so the page size
+#: bounds such requests, and the number still fits the request (an unsigned 32-bit integer), which
+#: about 16 growing pages exceeded, and so could a large ``limit()`` or ``page_size()``.
+_MAX_REQUEST_LIMIT = 1 << 20
+
 
 class _Reader[T]:
     """Shared behaviour of :class:`Query` and :class:`Scan`."""
@@ -278,7 +283,8 @@ class _Reader[T]:
         elif self._select_all and not self._hydrate:
             params["select"] = "ALL_ATTRIBUTES"
         if limit is not None:
-            params["limit"] = limit
+            # Also for a page_size() or limit() above it: no page holds that many items anyway.
+            params["limit"] = min(limit, _MAX_REQUEST_LIMIT)
         if start is not None:
             params["exclusive_start_key"] = start
         return params
@@ -288,7 +294,7 @@ class _Reader[T]:
         if remaining is None or self._filter is not None:
             # The caller's filters may remove most items: read DynamoDB's pages and stop at the limit.
             return self._page_size
-        wanted = remaining * growth
+        wanted = min(remaining * growth, _MAX_REQUEST_LIMIT)
         return wanted if self._page_size is None else min(self._page_size, wanted)
 
     async def _resolve_key_names(self) -> tuple[str, ...] | None:
@@ -409,7 +415,7 @@ class _Reader[T]:
             if page.last_evaluated_key is None:
                 return
             if len(page.items) < page.scanned_count:
-                growth *= _GROWTH
+                growth = min(growth * _GROWTH, _MAX_REQUEST_LIMIT)
             start = page.last_evaluated_key
 
     async def __aiter__(self) -> AsyncGenerator[T]:
