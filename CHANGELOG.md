@@ -8,6 +8,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Security
+
+- The native extension bundles rustls 0.23.46 and rustls-webpki 0.103.16. rustls 0.23.46 fixes
+  GHSA-h2v8-394m-p7vv, GHSA-c8m5-c952-6cm4, GHSA-w44r-93j7-qv28 and GHSA-vp88-798v-h67f. The
+  extension no longer contains the AWS SDK's legacy HTTP client, which dynamoxy never used, or
+  its rustls 0.21 and rustls-webpki 0.101, which get no fixes for these advisories or for
+  GHSA-82j2-j2ch-gfr8, GHSA-xgp8-3hg3-c2mh and GHSA-965h-392x-2mh5.
+
 ## [0.3.0] - 2026-10-17
 
 ### Features
