@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 import pydantic
 import pytest
 
 import dynamoxy
 from dynamoxy import F, schema_of
+from dynamoxy.codecs import DateTimeCodec, JsonCodec
 from dynamoxy.expressions import ExpressionBuilder
 from tests.models import Account, Contact, ContactRecord
 
@@ -222,3 +223,26 @@ def test_datetime_format_of_a_pydantic_model() -> None:
         created: Annotated[datetime | None, dynamoxy.CreatedAt("iso_z")] = None
 
     assert schema_of(Stamped).fields["created"].codec.encode(moment) == zulu
+
+
+class Reminder(dynamoxy.PydanticModel, table="reminders"):
+    """Optional fields with a codec of their own (``UseCodec``) or a ``Literal`` of ``None``."""
+
+    reminder_id: Annotated[str, dynamoxy.PartitionKey()]
+    due: Annotated[datetime | None, dynamoxy.UseCodec(DateTimeCodec("iso_z"))] = None
+    data: Annotated[dict[str, Any] | None, dynamoxy.UseCodec(JsonCodec())] = None
+    state: Literal["on", "off", None] = None  # noqa: PYI061 - the spelling under test
+
+
+def test_fields_with_a_codec_of_their_own_may_be_optional() -> None:
+    reminder = Reminder(reminder_id="r1")
+    schema = schema_of(Reminder)
+    schema.validate(reminder)  # what every write checks
+    assert all(spec.optional for name, spec in schema.fields.items() if name != "reminder_id")
+    assert reminder.to_item() == {"reminder_id": "r1"}, "None is not stored"
+    assert Reminder.from_item({"reminder_id": "r1"}) == reminder
+    moment = datetime(2026, 10, 13, 8, 48, 47, tzinfo=UTC)
+    filled = Reminder(reminder_id="r1", due=moment, data={"a": [1]}, state="on")
+    item = filled.to_item()
+    assert item == {"reminder_id": "r1", "due": "2026-10-13T08:48:47.000000Z", "data": '{"a":[1]}', "state": "on"}
+    assert Reminder.from_item(item) == filled

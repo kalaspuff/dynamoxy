@@ -33,6 +33,8 @@ A model chooses the format of all its ``datetime`` fields with the ``datetime_fo
 keyword (see :class:`DateTimeCodec`). Use ``codec=`` on a field (or
 ``Annotated[X, dynamoxy.UseCodec(...)]``) for anything else, for example :class:`JsonCodec` to
 store a structure as one JSON string. A codec is any object with the :class:`Codec` interface.
+It stores the values of ``X``: a field of ``X | None`` (or ``Literal[..., None]``) stays optional
+and stores nothing for ``None``, whatever its codec.
 """
 
 from __future__ import annotations
@@ -1022,7 +1024,11 @@ class DocumentCodec(Codec[Any]):
 
 
 class UseCodec:
-    """``Annotated`` marker choosing the codec of an attribute: ``Annotated[Money, UseCodec(MoneyCodec())]``."""
+    """``Annotated`` marker choosing the codec of an attribute: ``Annotated[Money, UseCodec(MoneyCodec())]``.
+
+    The codec stores the values of the type: ``Annotated[Money | None, UseCodec(MoneyCodec())]``
+    is optional, and ``None`` is not stored.
+    """
 
     __slots__ = ("codec",)
 
@@ -1054,6 +1060,41 @@ def _is_model(annotation: Any) -> bool:
     return any(base.__module__.startswith("pydantic") and base.__name__ == "BaseModel" for base in annotation.__mro__)
 
 
+def _allows_none(annotation: Any) -> bool:
+    """Whether a type annotation allows ``None``: ``X | None``, ``Optional[X]``, ``Literal[..., None]``.
+
+    Also through ``Annotated`` and type aliases. ``Any`` does not count: its fields are required
+    like other fields.
+    """
+    if annotation is None or annotation is type(None):
+        return True
+    if isinstance(annotation, typing.TypeAliasType):
+        return _allows_none(annotation.__value__)
+    origin = typing.get_origin(annotation)
+    if origin is typing.Annotated:
+        return _allows_none(typing.get_args(annotation)[0])
+    if origin is Literal:
+        return any(value is None for value in typing.get_args(annotation))
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_allows_none(argument) for argument in typing.get_args(annotation))
+    return False
+
+
+def _optional(codec: Codec[Any]) -> Codec[Any]:
+    """``codec``, allowing ``None`` too (an :class:`OptionalCodec`, never one inside another)."""
+    return codec if isinstance(codec, OptionalCodec) else OptionalCodec(codec)
+
+
+def _given_codec(codec: Codec[Any], annotation: Any) -> Codec[Any]:
+    """The codec of an attribute that chooses ``codec`` (``codec=``, ``UseCodec``) for ``annotation``.
+
+    The codec stores the values of the type. When the annotation allows ``None`` too
+    (``X | None``, ``Literal[..., None]``), so does the attribute, which then stores nothing for
+    ``None``, as ``X | None`` attributes do.
+    """
+    return _optional(codec) if _allows_none(annotation) else codec
+
+
 def resolve_codec(annotation: Any, *, where: str = "attribute", datetime_format: DateTimeFormat = "iso") -> Codec[Any]:
     """The codec for a type annotation.
 
@@ -1071,7 +1112,7 @@ def resolve_codec(annotation: Any, *, where: str = "attribute", datetime_format:
         base, *metadata = typing.get_args(annotation)
         for marker in metadata:
             if isinstance(marker, UseCodec):
-                return marker.codec
+                return _given_codec(marker.codec, base)
         return resolve_codec(base, where=where, datetime_format=datetime_format)
     if annotation is Any or annotation is object:
         return AnyCodec()
@@ -1090,9 +1131,12 @@ def resolve_codec(annotation: Any, *, where: str = "attribute", datetime_format:
                 f"{where}: cannot store the union {annotation}; use one type, Any, or pass codec=... "
                 "(see dynamoxy.codecs)"
             )
-        return OptionalCodec(inner) if optional else inner
+        return _optional(inner) if optional else inner
     if origin is Literal:
-        return LiteralCodec(typing.get_args(annotation))
+        values = typing.get_args(annotation)
+        literal = LiteralCodec([value for value in values if value is not None])
+        # `Literal["a", None]` is `Literal["a"] | None`: None is not stored.
+        return _optional(literal) if len(literal.values) < len(values) else literal
     if origin in (list, Sequence, typing.Sequence):
         (element,) = typing.get_args(annotation) or (Any,)
         return ListCodec(resolve_codec(element, where=where, datetime_format=datetime_format))

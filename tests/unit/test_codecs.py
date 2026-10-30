@@ -46,6 +46,8 @@ def round_trip(annotation: Any, value: Any) -> Any:
         (Color, Color.BLUE),
         (Level, Level.HIGH),
         (Literal["a", "b"], "b"),
+        (Literal["a", None], "a"),  # noqa: PYI061 - the spelling under test
+        (Literal["a", None], None),  # noqa: PYI061
         (list[int], [1, 2, 3]),
         (tuple[str, ...], ("a", "b")),
         (set[str], {"a", "b"}),
@@ -324,6 +326,39 @@ def test_annotated_use_codec_wins() -> None:
     codec = codecs.JsonCodec()
     assert resolve_codec(Annotated[dict[str, Any], codecs.UseCodec(codec)]) is codec
     assert isinstance(resolve_codec(Annotated[int, "ignored metadata"]), codecs.IntCodec)
+
+
+type OptionalJson = Annotated[dict[str, Any] | None, codecs.UseCodec(codecs.JsonCodec())]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Annotated[dict[str, Any] | None, codecs.UseCodec(codecs.JsonCodec())],
+        Annotated[dict[str, Any], codecs.UseCodec(codecs.JsonCodec())] | None,
+        OptionalJson,
+        OptionalJson | None,
+    ],
+)
+def test_a_codec_given_for_an_optional_type_allows_none(annotation: Any) -> None:
+    codec = resolve_codec(annotation)
+    assert isinstance(codec, codecs.OptionalCodec)
+    assert isinstance(codec.inner, codecs.JsonCodec), "an optional codec is not wrapped again"
+    assert codec.validate(None) is None
+    assert codec.encode(None) is None, "None is not stored"
+    assert codec.decode(codec.encode({"a": [1]})) == {"a": [1]}
+
+
+def test_literals_that_name_none_are_optional() -> None:
+    codec = resolve_codec(Literal["on", "off", None])  # noqa: PYI061 - the spelling under test
+    assert isinstance(codec, codecs.OptionalCodec)
+    assert codec.validate(None) is None
+    assert codec.validate("on") == "on"
+    with pytest.raises(ValueError, match="expected one of 'on', 'off'"):
+        codec.validate("maybe")
+    assert codec.describe() == "Literal['on', 'off'] | None"
+    assert codec.key_type() == "S", "a sparse index can use it"
+    assert resolve_codec(Literal[1, None] | None).describe() == "Literal[1] | None"  # noqa: PYI061
 
 
 def test_unsupported_types_suggest_a_codec() -> None:
