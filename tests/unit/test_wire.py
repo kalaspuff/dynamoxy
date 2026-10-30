@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
@@ -83,18 +84,16 @@ def test_invalid_values_are_validation_errors(value: Any, message: str) -> None:
         dynamoxy.to_wire({"value": value})
 
 
-def nested(levels: int, inner: Any = 1) -> Any:
+def nested(levels: int, inner: Any = 1, wrap: Callable[[Any], Any] = lambda value: [value]) -> Any:
+    """``inner`` inside ``levels`` lists (or what ``wrap`` builds)."""
     value = inner
     for _ in range(levels):
-        value = [value]
+        value = wrap(value)
     return value
 
 
 def wire_nested(levels: int) -> dict[str, Any]:
-    value: dict[str, Any] = {"N": "1"}
-    for _ in range(levels):
-        value = {"L": [value]}
-    return value
+    return nested(levels, {"N": "1"}, lambda value: {"L": [value]})
 
 
 def test_values_nest_at_most_32_levels_deep() -> None:
@@ -114,9 +113,7 @@ def test_deep_and_cyclic_values_raise_instead_of_crashing() -> None:
     cyclic["self"] = cyclic
     loop: list[Any] = []
     loop.append(loop)
-    deep_tuple: Any = 1
-    for _ in range(1000):
-        deep_tuple = (deep_tuple,)
+    deep_tuple = nested(1000, wrap=lambda value: (value,))
     for value in ({"v": nested(100_000)}, cyclic, {"v": loop}, {"v": {deep_tuple}}):
         with pytest.raises(dynamoxy.ValidationError, match="Nesting Levels"):
             dynamoxy.to_wire(value)
