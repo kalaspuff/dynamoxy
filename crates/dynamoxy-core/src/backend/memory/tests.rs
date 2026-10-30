@@ -1005,6 +1005,65 @@ async fn partiql_statements() {
 }
 
 #[tokio::test]
+async fn partiql_transactions_refuse_two_statements_on_one_item() {
+    // Like TransactWriteItems and TransactGetItems, DynamoDB refuses a transaction that names an
+    // item twice (whatever the key's order, number form or parameters) before it runs any of it.
+    let backend = backend_with_table().await;
+    backend.create_table(table_input("other")).await.unwrap();
+    put(&backend, item([("pk", s("x")), ("sk", n(1)), ("a", n(0)), ("b", n(0))])).await;
+    let transaction = |statements: &[(&str, Vec<AttributeValue>)]| ExecuteTransactionInput {
+        transact_statements: statements
+            .iter()
+            .map(|(statement, parameters)| ParameterizedStatement {
+                statement: (*statement).into(),
+                parameters: parameters.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        client_request_token: Some("token-1".into()),
+        ..Default::default()
+    };
+    let set_a = ("UPDATE items SET a = 1 WHERE pk = 'x' AND sk = 1", vec![]);
+    for statements in [
+        vec![set_a.clone(), ("UPDATE items SET b = 2 WHERE pk = 'x' AND sk = 1", vec![])],
+        vec![
+            ("INSERT INTO items VALUE {'pk': 'y', 'sk': 1}", vec![]),
+            ("DELETE FROM items WHERE pk = 'y' AND sk = 1", vec![]),
+        ],
+        vec![set_a.clone(), ("DELETE FROM items WHERE sk = 1.0 AND pk = ?", vec![s("x")])],
+        vec![
+            ("SELECT * FROM items WHERE pk = 'x' AND sk = 1", vec![]),
+            ("SELECT a FROM items WHERE pk = ? AND sk = ?", vec![s("x"), n(1)]),
+        ],
+    ] {
+        let error = backend.execute_transaction(transaction(&statements)).await.unwrap_err();
+        assert_eq!(code(&error), "ValidationException", "{statements:?}");
+        assert_eq!(message(&error), "Transaction request cannot include multiple operations on one item");
+    }
+    let key = |pk: &str, sk: i64| GetItemInput {
+        table_name: "items".into(),
+        key: item([("pk", s(pk)), ("sk", n(sk))]),
+        ..Default::default()
+    };
+    let stored = backend.get_item(key("x", 1)).await.unwrap().item;
+    assert_eq!(stored, Some(item([("pk", s("x")), ("sk", n(1)), ("a", n(0)), ("b", n(0))])), "nothing is written");
+    assert!(backend.get_item(key("y", 1)).await.unwrap().item.is_none());
+
+    // Other items of the partition, and the key in another table, are other items; the refused
+    // transactions did not take the token.
+    backend
+        .execute_transaction(transaction(&[
+            set_a,
+            ("INSERT INTO items VALUE {'pk': 'x', 'sk': 2}", vec![]),
+            ("INSERT INTO other VALUE {'pk': 'x', 'sk': 1}", vec![]),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(backend.get_item(key("x", 1)).await.unwrap().item.unwrap()["a"], n(1));
+    assert!(backend.get_item(key("x", 2)).await.unwrap().item.is_some());
+}
+
+#[tokio::test]
 async fn partiql_order_by_runs_one_query_per_partition_key_value() {
     // The rules and messages of DynamoDB (and DynamoDB Local): the WHERE clause names the
     // partition key values, ORDER BY names key attributes of the table or index.
