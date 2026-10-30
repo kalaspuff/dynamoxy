@@ -388,7 +388,8 @@ class FieldSpec:
         attribute: The DynamoDB attribute name.
         codec: Converts values to and from their stored form.
         annotation: The resolved type annotation.
-        default: The default value, or ``MISSING``.
+        default: The default value, or ``MISSING``: of new instances, and of stored items without
+            the attribute, unless the field stores a value as no attribute (see :meth:`empty`).
         default_factory: Creates the default value, or ``None``.
         role: ``"partition"`` or ``"sort"`` for primary key fields.
         template: Builds the value from other fields (derived fields are not set by hand).
@@ -451,6 +452,21 @@ class FieldSpec:
         if default.__class__ in _SHARED_DEFAULTS or isinstance(default, enum.Enum):
             return default
         return copy.deepcopy(default)
+
+    def empty(self) -> Any:
+        """The value that this field stores as no attribute, or ``MISSING`` when there is none.
+
+        ``None`` for fields that can be ``None``, and an empty set for set fields, since DynamoDB
+        has no empty sets. A missing attribute reads back as this value, so that reads return
+        what was written; fields without one read a missing attribute as their default (items
+        written before the field existed). A set field that can be ``None`` stores ``None`` and
+        an empty set alike, and reads both back as ``None``.
+        """
+        if self.optional or self.auto is not None or self.template is not None:
+            return None
+        if self.codec.dynamo_type in ("SS", "NS", "BS"):
+            return self.codec.decode(None)
+        return MISSING
 
     def validate(self, value: Any) -> Any:
         """Checks a value for this field: type (codec), constraints and validators.
@@ -852,6 +868,9 @@ class ModelSchema:
     def decode(self, item: Mapping[str, Any]) -> Any:
         """An instance from a stored item.
 
+        A missing attribute reads as ``None`` or an empty set, which are stored as no attribute
+        (see :meth:`FieldSpec.empty`), and as the default in fields that can hold neither.
+
         Raises:
             ItemDecodeError: The item does not fit the model.
         """
@@ -886,15 +905,15 @@ class ModelSchema:
             for name, _, _, spec in self._encoders:
                 if name in values:
                     continue
-                initial = spec.initial()
-                if initial is not MISSING:
-                    values[name] = initial
-                elif spec.optional or spec.auto is not None or spec.template is not None:
-                    values[name] = None
-                elif spec.codec.dynamo_type in ("SS", "NS", "BS"):
-                    values[name] = spec.codec.decode(None)
-                else:
-                    errors.append(FieldError(name, f"the stored item has no {spec.attribute!r} attribute"))
+                # None and empty sets are stored as no attribute, and read back as written; other
+                # fields read their default (items written before the field existed).
+                value = spec.empty()
+                if value is MISSING:
+                    value = spec.initial()
+                    if value is MISSING:
+                        errors.append(FieldError(name, f"the stored item has no {spec.attribute!r} attribute"))
+                        continue
+                values[name] = value
         if errors:
             key = self.key_values(item) if self.is_table else None
             error = ItemDecodeError(

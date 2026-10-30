@@ -129,6 +129,9 @@ the key), of derived (templated) and `immutable` fields, and of unique fields wi
 removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another writer stored
 reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
 `NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
+Empty sets are no attribute too (DynamoDB has none, and a `NULL` would make later `add()` and
+`delete()` of the set fail): `User.tags.set(set())` and `User.tags.remove()` empty a set field,
+and `User.tags == set()` compares like `== None`.
 
 `increment()`, `decrement()` and arithmetic (`User.score + 5`) check their operand against the
 field: an `int` field takes integers (`User.visits.increment(0.5)` raises `ValidationError`), a

@@ -353,6 +353,14 @@ class Path[T](Operand):
         """Whether ``None`` means "no attribute" here (model fields), rather than DynamoDB's ``NULL``."""
         return False
 
+    def _stores_nothing(self, operand: Operand) -> bool:
+        """Whether ``operand`` is stored as no attribute here: ``None`` or an empty set of a model field.
+
+        Such values are never stored as DynamoDB's ``NULL``, on which later ``ADD`` and ``DELETE``
+        actions fail.
+        """
+        return isinstance(operand, Value) and operand.value is None and self._none_is_missing()
+
     def _amount(self, amount: Any, *, negate: bool) -> Operand:
         """The value ``increment()`` (``negate=False``) or ``decrement()`` adds."""
         return Value(-amount if negate else amount)
@@ -374,10 +382,11 @@ class Path[T](Operand):
     @overload
     def __eq__(self, other: T | Operand) -> Condition: ...
     def __eq__(self, other: object) -> Condition:  # type: ignore[override]
-        if other is None and self._none_is_missing():
-            # A NULL that another writer stored reads as None too.
+        operand = self._value(other)
+        if self._stores_nothing(operand):
+            # None or an empty set; a NULL that another writer stored reads as None too.
             return Function("attribute_not_exists", self, None) | self.is_type("NULL")
-        return Compare(self, "=", self._value(other))
+        return Compare(self, "=", operand)
 
     @overload
     def __ne__(  # type: ignore[override]
@@ -386,9 +395,10 @@ class Path[T](Operand):
     @overload
     def __ne__(self, other: T | Operand) -> Condition: ...
     def __ne__(self, other: object) -> Condition:  # type: ignore[override]
-        if other is None and self._none_is_missing():
+        operand = self._value(other)
+        if self._stores_nothing(operand):
             return Function("attribute_exists", self, None) & ~self.is_type("NULL")
-        return Compare(self, "<>", self._value(other))
+        return Compare(self, "<>", operand)
 
     @overload
     def __lt__(self: Path[Decimal] | Path[Decimal | None], other: Decimal | int | Operand) -> Condition: ...
@@ -472,12 +482,14 @@ class Path[T](Operand):
     def set(self, value: Any) -> UpdateAction:
         """``SET path = value`` (a value, another path or arithmetic such as ``path + 1``).
 
-        For model fields, ``set(None)`` removes the attribute: a field that is ``None`` is not
-        stored (as ``put()`` and ``save()`` do), never stored as DynamoDB's ``NULL``.
+        For model fields, ``set(None)`` and ``set(set())`` remove the attribute: ``None`` and
+        empty sets are not stored (as ``put()`` and ``save()`` do), never stored as DynamoDB's
+        ``NULL``, and a missing attribute reads back as them.
         """
-        if value is None and self._none_is_missing():
+        operand = self._value(value)
+        if self._stores_nothing(operand):
             return UpdateAction("REMOVE", self, None)
-        return UpdateAction("SET", self, self._value(value))
+        return UpdateAction("SET", self, operand)
 
     @overload
     def set_if_not_exists(self: Path[Decimal] | Path[Decimal | None], value: Decimal | int) -> UpdateAction: ...
@@ -485,9 +497,11 @@ class Path[T](Operand):
     def set_if_not_exists(self, value: T) -> UpdateAction: ...
     def set_if_not_exists(self, value: Any) -> UpdateAction:
         """``SET path = if_not_exists(path, value)``: set only when missing."""
-        if value is None and self._none_is_missing():
-            raise ValueError(f"{self}.set_if_not_exists(None) would store nothing: give a value")
-        return UpdateAction("SET", self, IfNotExists(self, self._value(value)))
+        operand = self._value(value)
+        if self._stores_nothing(operand):
+            what = "None" if value is None else "an empty set"
+            raise ValueError(f"{self}.set_if_not_exists() of {what} would store nothing: give a value")
+        return UpdateAction("SET", self, IfNotExists(self, operand))
 
     @overload
     def if_not_exists(self: Path[Decimal] | Path[Decimal | None], default: Decimal | int) -> Operand: ...

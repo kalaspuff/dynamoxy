@@ -49,6 +49,27 @@ def test_mutable_defaults_of_decoded_items_are_copies() -> None:
     assert (Mailbox(mailbox_id="c").address.city, Mailbox(mailbox_id="c").folders) == ("Oslo", ["inbox"])
 
 
+class Preferences(pydantic.BaseModel):
+    theme: str | None = "light"
+
+
+class Settings(dynamoxy.PydanticModel, table="settings"):
+    settings_id: Annotated[str, dynamoxy.PartitionKey()]
+    nickname: str | None = "anon"
+    roles: set[str] = pydantic.Field(default_factory=lambda: {"member"})
+    preferences: Preferences = Preferences()
+
+
+def test_none_and_empty_sets_read_back_as_written() -> None:
+    settings = Settings(settings_id="s1", nickname=None, roles=set(), preferences=Preferences(theme=None))
+    item = settings.to_item()
+    assert item == {"settings_id": "s1", "preferences": {}}, "None and empty sets are stored as nothing"
+    assert Settings.from_item(item) == settings, "and nothing reads as them, not as the defaults"
+    # Items without the attributes read the same; a required field reads its default.
+    old = Settings.from_item({"settings_id": "s2"})
+    assert (old.nickname, old.roles, old.preferences.theme) == (None, set(), "light")
+
+
 def test_markers_configure_the_schema() -> None:
     schema = schema_of(Profile)
     assert schema.partition_key is not None

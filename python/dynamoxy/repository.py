@@ -921,10 +921,12 @@ class Repository[M]:
             touched[spec.name] = spec
             if len(elements) == 1:
                 is_literal, value = action.literal()
-                if is_literal:
-                    literals[spec.name] = spec.codec.decode(value) if value is not None else None
-                elif action.kind == "REMOVE":
-                    literals[spec.name] = None
+                if is_literal and value is not None:
+                    literals[spec.name] = spec.codec.decode(value)
+                elif is_literal or action.kind == "REMOVE":
+                    # No attribute: None, or an empty set for set fields (see FieldSpec.empty).
+                    empty = spec.empty()
+                    literals[spec.name] = None if empty is MISSING else empty
                 else:
                     continue
                 # Values set outright must satisfy the field like a constructor argument would
@@ -939,7 +941,12 @@ class Repository[M]:
                     ) from None
                 if checked is not None and checked != literals[spec.name]:  # a validator normalized it
                     literals[spec.name] = checked
-                    actions_list[position] = UpdateAction("SET", action.path, Value(spec.codec.encode(checked)))
+                    encoded = spec.codec.encode(checked)
+                    actions_list[position] = (
+                        UpdateAction("SET", action.path, Value(encoded))
+                        if encoded is not None
+                        else UpdateAction("REMOVE", action.path, None)  # an empty set
+                    )
         assert schema.partition_key is not None
         parts: list[Condition] = []
         if not upsert:
