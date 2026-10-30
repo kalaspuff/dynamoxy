@@ -390,6 +390,8 @@ class Repository[M]:
     async def refresh(self, instance: M, *, consistent: bool = True) -> M:
         """Reloads ``instance`` in place from DynamoDB.
 
+        A loaded instance reloads the item it was loaded from, also when a key field changed.
+
         Raises:
             ItemNotFoundError: The item no longer exists.
         """
@@ -1183,9 +1185,10 @@ class Repository[M]:
             VersionConflictError: The instance's version is stale.
             ConditionalCheckFailedError: ``condition`` did not hold.
             UniqueConstraintError: A new unique value is taken.
-            ValueError: An action targets a key, immutable or derived attribute, a unique
-                attribute is set with something other than a plain value, or an upsert leaves a
-                required field without a value.
+            ValueError: An action targets a key, immutable or derived attribute (or a field a
+                key template uses), a unique attribute is set with something other than a plain
+                value, an upsert leaves a required field without a value, or the instance was
+                loaded and its key changed since.
         """
         write = await self._plan_update(target, actions, condition, upsert, standalone=True)
         attributes = await write.execute()
@@ -1261,6 +1264,7 @@ class Repository[M]:
         Raises:
             VersionConflictError: The instance's version is stale.
             ConditionalCheckFailedError: ``condition`` did not hold.
+            ValueError: The instance was loaded and its key changed since.
         """
         write = await self._plan_delete(target, condition)
         if write is None:
