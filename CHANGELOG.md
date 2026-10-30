@@ -60,6 +60,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   32 levels deep (DynamoDB's limit) now raise `ValidationError` before any request, and the
   in-memory DynamoDB refuses expressions and statements nested more than 100 levels deep with
   a `ValidationException`.
+- A character outside ASCII in an expression (`größe > :v`, or a non-breaking space pasted into
+  `a = :v`) panicked the expression lexer: calls raised an internal error, and
+  `dynamoxy._core._apply_update()` a `PanicException`, which `except Exception` does not catch.
+  AWS clients failed the same way before sending an `UpdateItem`, whose expression dynamoxy
+  parses to decide whether a retry is safe. Such expressions are now syntax errors
+  (`ValidationException`), and AWS clients send them to DynamoDB.
 
 ### Security
 

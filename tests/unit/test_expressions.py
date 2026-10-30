@@ -233,6 +233,26 @@ def test_messages_leave_values_out() -> None:
     assert "ada@example.com" not in str(caught.value)
 
 
+async def test_characters_outside_ascii_are_syntax_errors() -> None:
+    # They used to panic the lexer: an internal error, or a PanicException that `except Exception` misses.
+    for expressions in ({"condition": "größe > :v", "values": {":v": 1}}, {"projection": "a, ñ"}):
+        with pytest.raises(dynamoxy.ValidationError, match="Syntax error"):
+            check(**expressions)
+    with pytest.raises(dynamoxy.ValidationError, match="Syntax error"):
+        _core._apply_update({"a": 1}, "SET a = :v, ü = :v", values={":v": 2})
+    async with dynamoxy.testing.memory_client() as client:
+        await client.table("texts").create(partition_key=("pk", "S"))
+        with pytest.raises(dynamoxy.ValidationError, match="Syntax error"):
+            await client.call(
+                "update_item",
+                "UpdateItem",
+                table_name=client.table_name("texts"),
+                key={"pk": "a"},
+                update_expression="SET größe = :v",
+                expression_attribute_values={":v": 1},
+            )
+
+
 # ---- property: every expression the builder produces is valid DynamoDB grammar ---------------
 
 attribute_names = st.sampled_from(["a", "b", "status", "name", "with-dash", "1st", "select", "x.y"])
