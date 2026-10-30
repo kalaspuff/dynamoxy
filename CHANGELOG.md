@@ -108,6 +108,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   is not stored (the codec never sees it), a missing attribute reads as `None`, and `remove()`
   works. A key field annotated `X | None` raises `TypeError` with a codec too ("key attributes
   cannot be optional"), as it did without one.
+- The in-memory DynamoDB ran PartiQL transactions (`execute_transaction()`) that named an item
+  more than once, and lost writes: each statement saw the item as it was before the transaction,
+  so of `UPDATE ... SET a = 1` and `UPDATE ... SET b = 2` on one item only the second took
+  effect, and an `INSERT` and a `DELETE` of one item left it stored. Such transactions, of reads
+  too, now raise `ValidationError` ("Transaction request cannot include multiple operations on
+  one item"), as on DynamoDB and as `TransactWriteItems` and `TransactGetItems` do.
 
 ### Security
 
