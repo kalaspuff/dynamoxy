@@ -532,7 +532,8 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
   changed value. Batch writes are refused for them.
 - When another writer changed the unique values of a loaded instance, `put()`, and `save()`,
   `update()` and `delete()` of unversioned models without a `condition=`, read the stored item
-  and write again; in a transaction, such a write cancels it (`refresh()` the instance and retry).
+  and write again. In a transaction, or for an upsert (`update(..., upsert=True)`), such a write
+  raises `ConditionalCheckFailedError` instead: `refresh()` the instance and retry.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
 - Writing such items with other tools bypasses the guards: route writes through dynamoxy.
 

@@ -41,7 +41,9 @@ replaces what is stored and moves the guards with it, as it promises, and `updat
 writer deleted the item, they behave as for other models: `put()` and `save()` store it again,
 `delete()` returns `None` and `update()` raises `ItemNotFoundError`. A transaction cannot read
 again: such a write cancels it with a `ConditionalCheckFailedError` that says to `refresh()` the
-instance and retry.
+instance and retry. Upserts (`update(..., upsert=True)`) raise that error too instead of writing
+again: had another writer deleted the item, an upsert planned again would create it without the
+unique values that its actions do not set.
 
 **Costs and requirements.**
 

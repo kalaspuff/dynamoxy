@@ -112,9 +112,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `delete()` failed the same way when another writer had deleted the item, where other models
   return `None`. Like `put()`, they now read the stored item and write again: `update()` moves
   the guards of the values stored now, and `delete()` deletes the item with them or returns
-  `None`. In transactions, which cannot read again, the error says to `refresh()` the instance
-  and retry. `delete()` of an instance without unique values set whose item another writer had
-  deleted returned the item as loaded instead of `None`.
+  `None`. In transactions, which cannot read again, and for upserts, which planned again after a
+  delete elsewhere would create the item without the unique values their actions do not set, the
+  error says to `refresh()` the instance and retry. `delete()` of an instance without unique
+  values set whose item another writer had deleted returned the item as loaded instead of
+  `None`.
 
 ### Security
 

@@ -1065,11 +1065,7 @@ class Repository[M]:
         if user_condition is not None:
             parts.append(user_condition)
         # Guards of the values the instance was loaded with, and no version or caller's condition.
-        # Not upserts: planned again after another writer deleted the item, one would create it
-        # without the unique values that the instance had and the actions do not set.
-        stale = (
-            bool(unique_touched) and loaded is not None and expected is None and user_condition is None and not upsert
-        )
+        stale = bool(unique_touched) and loaded is not None and expected is None and user_condition is None
         write_id = new_write_id() if standalone and schema.write_ids else None
         if write_id is not None:
             actions_list.append(F(WRITE_ID_ATTRIBUTE).set(write_id))
@@ -1249,7 +1245,10 @@ class Repository[M]:
         try:
             attributes = await write.execute()
         except ConditionalCheckFailedError as error:
-            if type(error) is not ConditionalCheckFailedError or not write.outdated(error.item):
+            # Not upserts, whose error says to refresh the instance: planned again after another
+            # writer deleted the item, one would create it without the unique values that the
+            # instance had and the actions do not set.
+            if type(error) is not ConditionalCheckFailedError or upsert or not write.outdated(error.item):
                 raise
             # Another writer changed the unique values since the instance was loaded: plan the
             # update again from the item as stored now.

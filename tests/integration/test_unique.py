@@ -347,6 +347,22 @@ async def test_updates_of_instances_whose_unique_values_changed_meanwhile(client
     assert await profiles.table.scan(consistent=True).all() == []
 
 
+async def test_upserts_of_instances_whose_unique_values_changed_meanwhile_say_so(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one", seat=Decimal(1)))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("two"))
+    # Not written again: had another writer deleted the item, the upsert would create it without
+    # the seat, which its actions do not set.
+    with pytest.raises(dynamoxy.ConditionalCheckFailedError, match=r"loaded: refresh\(\) it and retry") as caught:
+        await profiles.update(stale, Profile.handle.set("three"), upsert=True)
+    assert type(caught.value) is dynamoxy.ConditionalCheckFailedError
+    assert (await profiles.get_or_raise("p1")).handle == "two"
+    await stale.refresh()
+    await profiles.update(stale, Profile.handle.set("three"), upsert=True)
+    assert await guards(profiles) == ["_unique#Profile#handle#three", "_unique#Profile#seat#1"]
+
+
 async def test_transactions_explain_stale_unique_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Profile)
     profiles = client.model(Profile)
