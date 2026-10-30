@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -60,3 +61,16 @@ def test_python_errors_keep_their_attributes() -> None:
     for error in errors:
         copy = round_trip(error)
         assert (type(copy), str(copy), vars(copy)) == (type(error), str(error), vars(error))
+
+
+def test_validation_errors_leave_out_values_that_do_not_pickle() -> None:
+    with pytest.raises(dynamoxy.ValidationError) as caught:
+        User(user_id="u1", email=lambda: 1, name="", age=-1)  # type: ignore[arg-type]
+    copy = round_trip(caught.value)
+    assert type(copy) is dynamoxy.ValidationError
+    assert [(error.path, error.message) for error in copy.errors] == [
+        (error.path, error.message) for error in caught.value.errors
+    ]
+    values = {error.path: error.value for error in copy.errors}
+    assert values == {"email": None, "name": "", "age": -1}, "the function is left out"
+    assert {error.path: error.value for error in deepcopy(caught.value.errors)}["email"] is not None

@@ -30,6 +30,8 @@ DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.m
 
 from __future__ import annotations
 
+import copy
+import pickle
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -117,6 +119,23 @@ class FieldError:
 
     def __str__(self) -> str:
         return f"{self.path}: {self.message}"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A validation error crosses process boundaries (multiprocessing, task queues) with its
+        # field errors also when a value that failed validation does not pickle (a function, a
+        # lock): the pickle leaves such a value out.
+        value = self.value
+        try:
+            pickle.dumps(value)
+        except Exception:  # noqa: BLE001 - whatever does not pickle
+            value = None
+        return (FieldError, (self.path, self.message, value))
+
+    def __copy__(self) -> FieldError:
+        return self  # immutable
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> FieldError:
+        return FieldError(self.path, self.message, copy.deepcopy(self.value, memo))
 
 
 def validation_error(message: str, errors: Sequence[FieldError] = ()) -> ValidationError:
