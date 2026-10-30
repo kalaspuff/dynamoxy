@@ -2,7 +2,8 @@
 //!
 //! All right-hand sides are evaluated against the item *before* the update (so
 //! `SET a = b, b = a` swaps two attributes), then `SET`, `REMOVE`, `ADD` and `DELETE` are applied.
-//! `REMOVE` of list elements uses the original indexes.
+//! `SET` of list elements goes in order of their index (`SET l[4] = :b, l[3] = :a` past the end
+//! appends `a`, then `b`), and `REMOVE` of list elements uses the original indexes.
 
 use super::ast::{Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
 use super::eval::resolve;
@@ -303,8 +304,12 @@ fn delete(item: &mut Item, path: &Path, value: &AttributeValue) -> Result<()> {
 pub fn apply_update(update: &UpdateExpression, item: &Item) -> Result<Item> {
     // Evaluate every SET value against the original item first.
     let values = update.set.iter().map(|(_, value)| evaluate_set_value(value, item)).collect::<Result<Vec<_>>>()?;
+    // Assign in path order, which sets the elements of each list in order of their index: those
+    // past the end append in that order, whatever the order of the actions.
+    let mut assignments: Vec<(&Path, AttributeValue)> = update.set.iter().map(|(path, _)| path).zip(values).collect();
+    assignments.sort_by(|left, right| left.0.cmp(right.0));
     let mut result = item.clone();
-    for ((path, _), value) in update.set.iter().zip(values) {
+    for (path, value) in assignments {
         assign(&mut result, path, value)?;
     }
     // REMOVE list elements by their original indexes: paths in descending order remove the
@@ -421,6 +426,37 @@ mod tests {
         assert_eq!(after["l"], list(&[0, 3]));
         let after = run("SET l[10] = :v", &[(":v", AttributeValue::n(9))], before).unwrap();
         assert_eq!(after["l"], list(&[0, 1, 2, 3, 9]));
+    }
+
+    #[test]
+    fn list_elements_are_set_in_index_order() {
+        // "If you add multiple elements in a single SET operation, the elements are sorted in order
+        // by element number" (the update expressions guide), whatever their order in the expression.
+        let list = |values: &[&str]| AttributeValue::L(values.iter().copied().map(AttributeValue::s).collect());
+        let values = [(":a", AttributeValue::s("a")), (":b", AttributeValue::s("b")), (":c", AttributeValue::s("c"))];
+        let before = item([
+            ("l", list(&["x", "y", "z"])),
+            ("m", AttributeValue::M(item([("l", list(&["x"]))]))),
+            ("n", AttributeValue::L(vec![list(&["x"])])),
+        ]);
+        for (expression, expected) in [
+            ("SET l[4] = :b, l[3] = :a", &["x", "y", "z", "a", "b"][..]),
+            ("SET l[9] = :b, l[5] = :a", &["x", "y", "z", "a", "b"]),
+            ("SET l[5] = :c, l[1] = :a, l[3] = :b", &["x", "a", "z", "b", "c"]),
+        ] {
+            let after = run(expression, &values, before.clone()).unwrap();
+            assert_eq!(after["l"], list(expected), "{expression}");
+        }
+        // Lists in maps and in lists too.
+        let after = run("SET m.l[7] = :b, n[0][7] = :b, m.l[5] = :a, n[0][5] = :a", &values, before.clone()).unwrap();
+        assert_eq!(after["m"], AttributeValue::M(item([("l", list(&["x", "a", "b"]))])));
+        assert_eq!(after["n"], AttributeValue::L(vec![list(&["x", "a", "b"])]));
+        // A path through an element past the end is invalid, even when the update appends one there.
+        let values = [(":a", AttributeValue::s("a")), (":m", AttributeValue::M(Item::new()))];
+        for expression in ["SET l[4] = :m, l[3].k = :a", "SET l[3].k = :a, l[4] = :m"] {
+            let error = run(expression, &values, before.clone()).expect_err(expression);
+            assert!(error.to_string().contains("document path provided in the update expression is invalid"));
+        }
     }
 
     #[test]
