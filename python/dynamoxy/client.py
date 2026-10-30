@@ -253,6 +253,7 @@ class Client:
         self._core_client: CoreClient | None = None
         self._connect_lock = LoopLocal(asyncio.Lock)
         self._key_attribute_cache: dict[tuple[str, str | None], tuple[str, ...]] = {}
+        self._models: dict[type, Repository[Any]] = {}
         self._pump_task: asyncio.Task[None] | None = None
         self._entered = 0
         self._closed = False
@@ -346,6 +347,7 @@ class Client:
         if core is not None:
             self._dispatch_buffered(core)
             core.close()
+        self._models.clear()
         self.events.emit(EventKind.CLIENT_CLOSED, "client closed")
         await self.events.drain()
 
@@ -640,7 +642,9 @@ class Client:
         ``client.model(User)`` reads, queries and writes ``User`` items: ``get``, ``query``,
         ``create``, ``save``, ``update``, ``delete``, ... It is a plain
         :class:`dynamoxy.Repository`; subclass ``Repository[User]`` to add domain queries.
-        Building one does no I/O and is cheap: call it where you need it, or keep it.
+        The client builds it on first use, without I/O, and returns the same one afterwards, so
+        calling it where you need it costs a dictionary lookup. ``User.create(client, ...)``,
+        ``User.get(client, ...)`` and ``User.query(client, ...)`` go through it.
 
         Example::
 
@@ -649,12 +653,27 @@ class Client:
             orders = await client.model(Order).query(customer_id="c1").all()
 
         Raises:
-            TypeError: ``model`` is not a dynamoxy model, or not one stored in a table (abstract,
-                or no ``table=``).
+            TypeError: ``model`` is not a dynamoxy model class, or not one stored in a table
+                (abstract, or no ``table=``).
         """
+        try:
+            return self._models[model]
+        except (KeyError, TypeError):  # not built yet, or not a class (instances are unhashable)
+            pass
+        return self._build_model(model)  # outside the handler: its errors carry no KeyError context
+
+    def _build_model[M](self, model: type[M]) -> Repository[M]:
+        if not isinstance(model, type):
+            raise TypeError(
+                f"client.model() takes a model class, such as client.model(User), got an instance of "
+                f"{type(model).__name__}"
+            )
         from dynamoxy.repository import Repository
 
-        return Repository(self, model)
+        repository = Repository(self, model)
+        if not self._closed:  # a closed client keeps nothing (its calls raise ShutdownError)
+            self._models[model] = repository
+        return repository
 
     @deprecated(
         "Client.repository() is deprecated and will be removed in dynamoxy 0.5: "

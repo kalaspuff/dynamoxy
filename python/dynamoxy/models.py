@@ -28,11 +28,14 @@
 
 Models validate on construction and on assignment. Persistence goes through a
 :class:`dynamoxy.Repository` (``client.model(User)``); model classes hold no client, so
-several clients can use the same models. ``Model.create(client, ...)`` builds and writes a new
-item, and an instance that a repository read or wrote remembers that repository and can
-persist itself through it::
+several clients can use the same models. ``Model.create(client, ...)``,
+``Model.get(client, ...)`` and ``Model.query(client, ...)`` create and read items, and an
+instance that a repository read or wrote remembers that repository and can persist itself
+through it::
 
     user = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+    same = await User.get(client, "u1")
+    found = await User.query(client, index=User.by_email, email="ada@example.com").first()
     user.name = "Ada Lovelace"
     await user.save()  # users.save(user), where users = client.model(User)
     await user.increment(User.visits)  # users.update(user, User.visits.increment())
@@ -81,7 +84,9 @@ if TYPE_CHECKING:
 
     from dynamoxy.codecs import Codec, DateTimeFormat
     from dynamoxy.expressions import Condition
+    from dynamoxy.query import Query
     from dynamoxy.repository import Repository
+    from dynamoxy.schema import GlobalIndex, LocalIndex
 
 __all__ = [
     "Document",
@@ -465,13 +470,14 @@ type _Condition = Condition | bool | None
 class _Persistence:
     """Persistence methods of models (:class:`Model` and ``PydanticModel``).
 
-    ``Model.create(client, ...)`` writes a new item through ``client.model(Model)``. An
-    instance remembers the repository that last read or wrote it, next to the stored copy; the
-    instance methods call that repository's public methods (``save``, ``update``, ``delete``,
-    ``refresh``), so they behave exactly like them (validation, hooks, versions, unique
-    guards, automatic and derived fields) and go through the overrides of repository
-    subclasses. Instances no repository read or wrote (new ones, ``copy()``, unpickled ones)
-    are not bound: their methods raise ``RuntimeError`` before any I/O.
+    ``Model.create(client, ...)``, ``Model.get(client, ...)`` and ``Model.query(client, ...)``
+    go through ``client.model(Model)``. An instance remembers the repository that last read or
+    wrote it, next to the stored copy; the instance methods call that repository's public
+    methods (``save``, ``update``, ``delete``, ``refresh``), so they behave exactly like them
+    (validation, hooks, versions, unique guards, automatic and derived fields) and go through
+    the overrides of repository subclasses. Instances no repository read or wrote (new ones,
+    ``copy()``, unpickled ones) are not bound: their methods raise ``RuntimeError`` before any
+    I/O.
     """
 
     __slots__ = ()
@@ -503,19 +509,63 @@ class _Persistence:
                 positional or not a settable field, or the model is not stored in a table.
         """
         model: Any = cls
-        if not isinstance(client, Client) or args:
-            name = model.__name__
-            problem = (
-                f"takes field values as keyword arguments, got {len(args)} positional"
-                if isinstance(client, Client)
-                else f"takes a dynamoxy.Client first, got {type(client).__name__}"
-            )
+        repository = _model_on(model, client, "create")
+        if args:
             raise TypeError(
-                f"{name}.create() {problem}: `await {name}.create(client, field=value, ...)`; "
-                f"to write an instance, `await client.model({name}).create(instance)`"
+                f"{model.__name__}.create() takes field values as keyword arguments, got {len(args)} positional: "
+                + _usage(model, "create")
             )
-        repository = client.model(model)
         return await repository.create(model(**kwargs))
+
+    @classmethod
+    async def get(cls, client: Client, /, *key: Any, consistent: bool = False, **key_values: Any) -> Self | None:
+        """The item with this key, or ``None`` (``client.model(Model).get``).
+
+        The key is given as for ``Repository.get``: positional partition (and sort) values, key
+        field names, or the fields their templates use. ``consistent=True`` reads with strong
+        consistency. The instance returned is bound to ``client.model(Model)``, so its
+        ``save()``, ``update()``, ``delete()``, ... work.
+
+        Example::
+
+            user = await User.get(client, "u1")
+            order = await Order.get(client, customer_id="c1", order_id="o1", consistent=True)
+
+        Raises:
+            ValueError: The key arguments are incomplete or invalid, before any I/O.
+            TypeError: ``client`` is not a ``dynamoxy.Client``, or the model is not stored in a
+                table, before any I/O.
+        """
+        return await _model_on(cls, client, "get").get(*key, consistent=consistent, **key_values)
+
+    @classmethod
+    def query(
+        cls,
+        client: Client,
+        /,
+        *,
+        index: str | GlobalIndex | LocalIndex | None = None,
+        consistent: bool = False,
+        **key_values: Any,
+    ) -> Query[Self]:
+        """Items of one partition of the table or of an index (``client.model(Model).query``).
+
+        It returns the immutable :class:`dynamoxy.Query` of ``Repository.query``, and reads
+        nothing yet: refine it with ``where()``, ``filter()``, ``descending()``, ``limit()``, ...
+        and read it with ``async for``, ``all()``, ``first()``, ``page()``, ... The instances it
+        reads are bound to ``client.model(Model)``.
+
+        Example::
+
+            recent = await Order.query(client, customer_id="c1").descending().limit(10).all()
+            ada = await User.query(client, index=User.by_email, email="ada@example.com").first()
+
+        Raises:
+            ValueError: The index or the key arguments are unknown or incomplete.
+            TypeError: ``client`` is not a ``dynamoxy.Client``, or the model is not stored in a
+                table.
+        """
+        return _model_on(cls, client, "query").query(index=index, consistent=consistent, **key_values)
 
     async def save(self, *, condition: Condition | bool | None = None) -> Self:
         """Writes the instance: creates the item, or replaces the stored one (``repository.save``).
@@ -701,6 +751,33 @@ class _Persistence:
             RuntimeError: The instance is not bound to a repository.
         """
         return await _repository_of(self, "refresh", "refresh").refresh(self, consistent=consistent)
+
+
+#: How the classmethods of models are called, for the messages of wrong calls.
+_USAGE = {
+    "create": "`await {name}.create(client, field=value, ...)`; "
+    "to write an instance, `await client.model({name}).create(instance)`",
+    "get": "`await {name}.get(client, <key values>)`",
+    "query": "`{name}.query(client, <partition key field>=value, ...)`",
+}
+
+
+def _usage(model: type, method: str) -> str:
+    return _USAGE[method].format(name=model.__name__)
+
+
+def _model_on[M](model: type[M], client: Any, method: str) -> Repository[M]:
+    """``client.model(model)``, for the classmethod ``method`` of ``model``.
+
+    Raises:
+        TypeError: ``client`` is not a ``dynamoxy.Client``, or the model is not stored in a table.
+    """
+    if not isinstance(client, Client):
+        raise TypeError(
+            f"{model.__name__}.{method}() takes a dynamoxy.Client first, got {type(client).__name__}: "
+            + _usage(model, method)
+        )
+    return client.model(model)
 
 
 def _repository_of(instance: Any, method: str, repository_method: str) -> Repository[Any]:

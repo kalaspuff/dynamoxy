@@ -10,11 +10,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Changed
 
-- [**breaking**] `create` is a model method now: `await User.create(client, user_id="u1", ...)`
-  builds and writes a new item
-  ([ADR 0017](docs/adr/0017-models-create-items-with-an-explicit-client.md)). `Model` fields can
-  no longer be named `create`: rename the field and keep the stored name with
-  `attribute_name="create"`.
+- [**breaking**] `create`, `get` and `query` are model methods now:
+  `await User.create(client, user_id="u1", ...)` builds and writes a new item, and
+  `await User.get(client, "u1")` and `User.query(client, ...)` read like `client.model(User)`
+  ([ADR 0017](docs/adr/0017-models-create-items-with-an-explicit-client.md),
+  [ADR 0018](docs/adr/0018-models-read-items-with-an-explicit-client.md)). `Model` fields can no
+  longer use these names: rename the field and keep the stored name with
+  `attribute_name="query"`.
+- `client.model(User)` returns the same repository on every call (built on first use), so the
+  model's classmethods and inline `client.model(User).get(...)` calls cost a dictionary lookup.
 
 ### Deprecated
 

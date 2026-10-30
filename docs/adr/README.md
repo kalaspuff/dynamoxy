@@ -26,4 +26,5 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |
 | [0015](0015-stored-values-decode-exactly.md) | Stored values decode exactly to their declared type, or raise `ItemDecodeError` | Accepted |
 | [0016](0016-writes-store-a-write-id.md) | Model writes store a random write id (`_wid`), so a retry recognises its own earlier attempt | Accepted |
-| [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted |
+| [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted, amended by 0018 |
+| [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted |

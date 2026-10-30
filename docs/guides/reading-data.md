@@ -1,5 +1,24 @@
 # Reading data
 
+## From the model or its repository
+
+Models read their own items, with the client as the first argument:
+
+```python
+user = await User.get(client, "u1")                           # None when missing
+order = await Order.get(client, customer_id="c1", order_id="o1", consistent=True)
+recent = await Order.query(client, customer_id="c1").descending().limit(10).all()
+ada = await User.query(client, index=User.by_email, email="ada@example.com").first()
+```
+
+`User.get(client, ...)` is `client.model(User).get(...)` and `User.query(client, ...)` is
+`client.model(User).query(...)`: the same arguments, the same results, and instances bound to
+`client.model(User)`, so their `save()`, `update()` and `delete()` work. Type checkers know the
+results: `User | None` and `Query[User]`. Everything else on this page (`get_or_raise`,
+`batch_get`, `scan`, `count`, ...) is a method of the repository, `users = client.model(User)`,
+or of your own repository subclass. `client.model(User)` returns the same repository every time,
+so calling it where you need it costs a dictionary lookup.
+
 ## Single items
 
 ```python
