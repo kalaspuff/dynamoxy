@@ -271,6 +271,7 @@ def field(
         init: Ignored at runtime (type checkers read it); derived fields are not in ``__init__``.
         attribute_name: The DynamoDB attribute name (default: the field name).
         codec: How the value is stored (default: from the annotation, see ``dynamoxy.codecs``).
+            With an ``X | None`` annotation the field stays optional: ``None`` is not stored.
         unique: No two items may have the same value (enforced with guard items in
             transactions; see the constraints guide).
         min_length: Minimum length of strings, lists, sets and maps.

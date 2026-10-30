@@ -40,7 +40,8 @@ the important rules:
   `datetime_format="iso_z"`), so string order is time order and sort keys and `BETWEEN` work.
   Epoch seconds or milliseconds are possible too (see [timestamp formats](#timestamp-formats)).
 - Empty sets are not stored (DynamoDB has no empty sets) and read back as empty sets.
-- `X | None` fields store nothing for `None`; `REMOVE` and `None` are the same.
+- `X | None` fields (and `Literal["a", None]`) store nothing for `None`, also with a codec of
+  their own; `REMOVE` and `None` are the same.
 - Enums store their value; `Literal["a", "b"]` restricts strings (or numbers). A `str`, `int`
   or `Literal` field holds a plain `str` or `int`: a member of a `(str, Enum)` or `(int, Enum)`
   becomes its value, so keys, templates and unique values render what DynamoDB stores.
@@ -48,7 +49,9 @@ the important rules:
 
 Custom storage: pass `codec=` (or `Annotated[T, dynamoxy.UseCodec(codec)]`). `JsonCodec` stores
 any JSON-compatible structure as one string. A codec implements `encode`, `decode`, `validate`
-and `key_type` (see `dynamoxy.codecs.Codec`).
+and `key_type` (see `dynamoxy.codecs.Codec`). It stores the values of `T`: a field annotated
+`T | None` stays optional (`Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())`),
+and its codec never sees `None`.
 
 ## Constraints and validators
 

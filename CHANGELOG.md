@@ -99,6 +99,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
   not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+- A field with a codec of its own refused `None` although its annotation allowed it:
+  `Attr[datetime | None] = field(default=None, codec=DateTimeCodec("iso_z"))` and
+  `Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())` failed on construction
+  with their own default ("must not be None"), and so did `Literal["on", "off", None]`; a
+  pydantic `Annotated[datetime | None, UseCodec(...)] = None` validated, but `create()` and
+  `save()` raised "is required". Such fields are optional now, as `X | None` fields are: `None`
+  is not stored (the codec never sees it), a missing attribute reads as `None`, and `remove()`
+  works. A key field annotated `X | None` raises `TypeError` with a codec too ("key attributes
+  cannot be optional"), as it did without one.
 - Fields that a subclass inherits encoded expression values in the `datetime_format` of the
   class that declared them, while the subclass stored them in its own. With an abstract
   `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,
