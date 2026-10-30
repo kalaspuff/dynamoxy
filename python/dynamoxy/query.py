@@ -81,9 +81,9 @@ type ItemCheck = Callable[[dict[str, Any]], bool]
 #: client) removed items from a page: a few requests then find what a limit asks for.
 _GROWTH = 4
 
-#: The largest ``Limit`` a request asks for while it grows: more items than a 1 MB page holds, so
-#: the page size bounds such requests, and the number still fits the request (an unsigned 32-bit
-#: integer), which about 16 growing pages exceeded.
+#: The largest ``Limit`` a request asks for: more items than a 1 MB page holds, so the page size
+#: bounds such requests, and the number still fits the request (an unsigned 32-bit integer), which
+#: about 16 growing pages exceeded, and so could a large ``limit()`` or ``page_size()``.
 _MAX_REQUEST_LIMIT = 1 << 20
 
 
@@ -283,7 +283,8 @@ class _Reader[T]:
         elif self._select_all and not self._hydrate:
             params["select"] = "ALL_ATTRIBUTES"
         if limit is not None:
-            params["limit"] = limit
+            # Also for a page_size() or limit() above it: no page holds that many items anyway.
+            params["limit"] = min(limit, _MAX_REQUEST_LIMIT)
         if start is not None:
             params["exclusive_start_key"] = start
         return params
