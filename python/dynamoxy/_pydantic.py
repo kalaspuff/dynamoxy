@@ -205,10 +205,10 @@ class PydanticModel(BaseModel, _Persistence):
 
     Indexes are class attributes (``by_email = dynamoxy.GlobalIndex(partition_key="email")``).
     Instances compare like any pydantic model: an instance read from DynamoDB equals a new one
-    with the same values. Like native models, instances that a repository read or wrote can
-    persist themselves: ``save()``, ``delete()``, ``update(...)``, ``add(...)``,
-    ``increment(...)``, ``decrement(...)`` and ``refresh()`` (paths as ``dynamoxy.attr(Model.field)``
-    for static typing).
+    with the same values. Like native models, ``Model.create(client, ...)`` builds and writes a
+    new item, and instances that a repository read or wrote can persist themselves: ``save()``,
+    ``delete()``, ``update(...)``, ``add(...)``, ``increment(...)``, ``decrement(...)`` and
+    ``refresh()`` (paths as ``dynamoxy.attr(Model.field)`` for static typing).
     """
 
     model_config = ConfigDict(ignored_types=(_IndexDeclaration,), validate_assignment=True)

@@ -31,18 +31,18 @@ class User(dynamoxy.Model, table="users"):
 async def main() -> None:
     async with dynamoxy.Client(region="eu-west-1") as client:  # or dynamoxy.testing.memory_client()
         await client.ensure_tables(User)
-        users = client.model(User)
 
-        ada = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+        ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
         await ada.increment(User.visits)  # atomic; `ada` is refreshed in place
         ada.name = "Ada Lovelace"
         await ada.save()  # only if nobody changed it meanwhile (version)
 
         try:
-            await users.create(User(user_id="u2", email="ada@example.com", name="Imposter"))
+            await User.create(client, user_id="u2", email="ada@example.com", name="Imposter")
         except dynamoxy.UniqueConstraintError as error:
             print(f"{error.field} is taken")
 
+        users = client.model(User)  # get, query, update, delete, ... of User items
         found = await users.query(index=User.by_email, email="ada@example.com").first()
         print(found)
 

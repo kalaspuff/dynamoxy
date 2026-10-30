@@ -1,4 +1,4 @@
-"""Persistence methods of model instances (``save``, ``delete``, ``add``, ...) on every backend."""
+"""Persistence methods of models (``Model.create``) and instances (``save``, ``delete``, ...) on every backend."""
 
 from __future__ import annotations
 
@@ -6,14 +6,15 @@ import copy
 import pickle
 import re
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, assert_type, override
 
+import pydantic
 import pytest
 
 import dynamoxy
 from dynamoxy import Attr, F, field, partition_key, testing
 from tests.conftest import ClientFactory
-from tests.models import Account, Customer, Event, Order, Player
+from tests.models import Account, ContactRecord, Customer, Event, Order, Player, User
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -59,6 +60,104 @@ async def test_instances_are_bound_once_a_repository_wrote_them(players: dynamox
     player.name = "Bo"
     await player.save()
     assert (await players.get_or_raise("p1")).name == "Bo"
+
+
+async def test_models_create_items_from_field_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(User)
+    with dynamoxy.collect() as usage:
+        user = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+    assert_type(user, User)
+    assert usage.calls == 1, "the item and its unique guard, in one transaction"
+    assert user.is_loaded
+    assert (user.version, user.visits) == (1, 0)
+    assert user.created_at is not None
+    assert await client.model(User).get_or_raise("u1") == user
+    await user.increment(User.visits)  # bound to client.model(User)
+    assert (user.visits, user.version) == (1, 2)
+    with pytest.raises(dynamoxy.ItemAlreadyExistsError):
+        await User.create(client, user_id="u1", email="bo@example.com", name="Bo")
+    with pytest.raises(dynamoxy.UniqueConstraintError) as caught:
+        await User.create(client, user_id="u2", email="ada@example.com", name="Bo")
+    assert caught.value.field == "email"
+    assert await client.model(User).count() == 1
+
+
+async def test_create_refuses_bad_arguments_before_any_io(client: dynamoxy.Client) -> None:
+    class Base(dynamoxy.Model, abstract=True):
+        pk: Attr[str] = partition_key()
+
+    await client.create_tables(User)
+    user = User(user_id="u1", email="ada@example.com", name="Ada")
+    with dynamoxy.collect() as usage:
+        with pytest.raises(dynamoxy.ValidationError, match=r"User is invalid: name"):
+            await User.create(client, user_id="u1", email="ada@example.com", name="")
+        with pytest.raises(TypeError, match="unexpected keyword argument 'nmae'"):
+            await User.create(client, user_id="u1", email="ada@example.com", nmae="Ada")  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match=r"User\.version is set automatically"):
+            await User.create(client, user_id="u1", email="ada@example.com", name="Ada", version=3)  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match=r"User\.create\(\) takes a dynamoxy\.Client first, got User: "):
+            await User.create(user)  # type: ignore[arg-type,call-arg]
+        with pytest.raises(
+            TypeError, match=r"takes field values as keyword arguments, got 1 positional: .*client\.model"
+        ):
+            await User.create(client, user)  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match="Base is not stored in a table"):
+            await Base.create(client, pk="b1")
+    assert usage.calls == 0
+    assert await client.model(User).count() == 0
+
+
+async def test_create_runs_save_hooks(client: dynamoxy.Client) -> None:
+    calls: list[str] = []
+
+    class Note(dynamoxy.Model, table="notes"):
+        note_id: Attr[str] = partition_key()
+        text: Attr[str]
+
+        @dynamoxy.before_save
+        def strip(self) -> None:
+            calls.append(f"before_save {self.text!r}")
+            self.text = self.text.strip()
+
+        @dynamoxy.after_save
+        def saved(self) -> None:
+            calls.append("after_save")
+
+    @client.hook("before_save", Note)
+    def audit(note: Note, context: dynamoxy.HookContext) -> None:
+        calls.append(f"client before_save ({context.operation})")
+
+    await client.create_tables(Note)
+    note = await Note.create(client, note_id="n1", text=" hi ")
+    assert note.text == "hi"
+    assert (await client.model(Note).get_or_raise("n1")).text == "hi"
+    assert calls == ["before_save ' hi '", "client before_save (create)", "after_save"]
+
+
+async def test_create_takes_the_client_first_so_a_field_may_be_named_client(client: dynamoxy.Client) -> None:
+    class Invoice(dynamoxy.Model, table="invoices"):
+        invoice_id: Attr[str] = partition_key()
+        client: Attr[str]
+
+    await client.create_tables(Invoice)
+    invoice = await Invoice.create(client, invoice_id="i1", client="ACME")
+    assert (await client.model(Invoice).get_or_raise("i1")).client == invoice.client == "ACME"
+
+
+async def test_pydantic_models_create_items(client: dynamoxy.Client) -> None:
+    await client.create_tables(Account, ContactRecord)
+    account = await Account.create(client, account_id="a1", owner="Ada", handle="ada")
+    assert_type(account, Account)
+    assert (account.version, account.is_loaded) == (1, True)
+    await account.increment(dynamoxy.attr(Account.balance), 5)
+    assert (await client.model(Account).get_or_raise("a1")).balance == 5
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await Account.create(client, account_id="a2", owner="Bo", handle="ada")
+    contact = await ContactRecord.create(client, contact_id="c1", email="ada@example.com", name=" Ada ")
+    assert contact.name == "Ada", "pydantic validators ran"
+    with dynamoxy.collect() as usage, pytest.raises(pydantic.ValidationError, match="name"):
+        await ContactRecord.create(client, contact_id="c2", email="bo@example.com", name="")
+    assert usage.calls == 0
 
 
 async def test_save_checks_versions_and_conditions(players: dynamoxy.Repository[Player]) -> None:

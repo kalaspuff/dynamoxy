@@ -202,7 +202,7 @@ after the model's own and suit cross-cutting concerns such as auditing.
 ## Names to avoid
 
 Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `validate`, `copy`,
-`to_dict`, `to_item`, `from_item` and the instance methods `save`, `delete`, `update`, `add`,
-`increment`, `decrement`, `refresh`. Use another Python name and `attribute_name="key"` to keep
-the stored name. Documents only reserve `validate`, `copy`, `to_dict`, `to_item` and
+`to_dict`, `to_item`, `from_item`, `create` and the instance methods `save`, `delete`, `update`,
+`add`, `increment`, `decrement`, `refresh`. Use another Python name and `attribute_name="key"`
+to keep the stored name. Documents only reserve `validate`, `copy`, `to_dict`, `to_item` and
 `from_item`. DynamoDB reserved words (`name`, `status`, `data`, ...) are fine.

@@ -1,6 +1,7 @@
 # 0011: Model instances remember the repository that read or wrote them
 
-Status: Accepted (amends [0007](0007-repositories-over-active-record.md))
+Status: Accepted (amends [0007](0007-repositories-over-active-record.md)), amended by
+[0017](0017-models-create-items-with-an-explicit-client.md) (`Model.create(client, ...)`)
 
 ## Context
 

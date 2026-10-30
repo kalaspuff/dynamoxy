@@ -8,6 +8,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] `create` is a model method now: `await User.create(client, user_id="u1", ...)`
+  builds and writes a new item
+  ([ADR 0017](docs/adr/0017-models-create-items-with-an-explicit-client.md)). `Model` fields can
+  no longer be named `create`: rename the field and keep the stored name with
+  `attribute_name="create"`.
+
 ### Deprecated
 
 - `client.repository(User)` is now `client.model(User)`, which returns the same `Repository`: the

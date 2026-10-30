@@ -18,8 +18,7 @@ Quick start::
     async def main() -> None:
         async with dynamoxy.Client(region="eu-west-1") as client:
             await client.ensure_tables(User)
-            users = client.model(User)
-            user = await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))
+            user = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
             await user.increment(User.visits)  # atomic, through the repository that wrote it
             user.name = "Ada Lovelace"
             await user.save()
