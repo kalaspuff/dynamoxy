@@ -40,6 +40,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `pk="CUSTOMER#{customer_id}"`) were accepted and left the item's key and fields disagreeing,
   so the instance's later writes went to another item: they now raise `ValueError` like
   updates of the key itself.
+- Instances shared a mutable default given with `default=` (`field(default=[])`, a document
+  instance, or a pydantic model's default model): appending to one instance's list, or changing
+  one instance's document, changed it for every instance created or read later. Each instance
+  now gets its own copy, as in pydantic.
 
 ### Security
 

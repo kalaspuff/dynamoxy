@@ -35,6 +35,20 @@ class Profile(dynamoxy.PydanticModel, table="profiles", entity="Profile"):
     by_email = dynamoxy.GlobalIndex(partition_key="status_key")
 
 
+class Mailbox(dynamoxy.PydanticModel, table="mailboxes"):
+    mailbox_id: Annotated[str, dynamoxy.PartitionKey()]
+    address: Address = Address(street="Main")
+    folders: list[str] = ["inbox"]  # noqa: RUF012 - a field: pydantic copies its default per instance
+
+
+def test_mutable_defaults_of_decoded_items_are_copies() -> None:
+    read = [Mailbox.from_item({"mailbox_id": mailbox_id}) for mailbox_id in ("a", "b")]
+    read[0].address.city = "Bergen"
+    read[0].folders.append("spam")
+    assert (read[1].address.city, read[1].folders) == ("Oslo", ["inbox"])
+    assert (Mailbox(mailbox_id="c").address.city, Mailbox(mailbox_id="c").folders) == ("Oslo", ["inbox"])
+
+
 def test_markers_configure_the_schema() -> None:
     schema = schema_of(Profile)
     assert schema.partition_key is not None

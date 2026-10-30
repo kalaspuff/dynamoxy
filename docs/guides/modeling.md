@@ -65,6 +65,10 @@ class Product(dynamoxy.Model, table="products"):
             raise ValueError("the name cannot be a tag")
 ```
 
+Defaults apply to new instances and to stored items without the attribute (written before the
+field existed). A mutable default (`field(default=[])`, a document) is copied for each instance,
+as in pydantic; `default_factory=` works too.
+
 Invalid values raise `dynamoxy.ValidationError`; `.errors` lists every `FieldError` (`path`,
 `message`, `value`). Validation runs on construction, on attribute assignment, and before every
 write, so nothing invalid reaches DynamoDB. Values set by `update()` are validated the same way

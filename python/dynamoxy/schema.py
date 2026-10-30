@@ -11,15 +11,17 @@ Schemas are built lazily, on first use, so models can refer to classes defined l
 from __future__ import annotations
 
 import copy
+import enum
 import functools
 import operator
 import re
 import string
 import typing
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
+from uuid import UUID
 
 from dynamoxy._utils import MISSING, number_text
 from dynamoxy.codecs import (
@@ -371,6 +373,12 @@ class Constraints:
         return None
 
 
+# Classes of default values that never change, so that instances can share them (and MISSING).
+_SHARED_DEFAULTS: frozenset[type] = frozenset(
+    {type(None), type(MISSING), bool, int, float, str, bytes, Decimal, datetime, date, time, timedelta, UUID}
+)
+
+
 @dataclass(eq=False)
 class FieldSpec:
     """One field of a model, resolved.
@@ -432,12 +440,17 @@ class FieldSpec:
         return self.template is None and self.auto not in ("created_at", "updated_at", "version")
 
     def initial(self) -> Any:
-        """The default value (a new one per call for factories)."""
+        """The default value: a new one per call for factories, and a copy of a mutable default.
+
+        Instances never share a mutable default (``field(default=[])``, a document), as in
+        pydantic: changing the value of one instance would change it for all of them.
+        """
         if self.default_factory is not None:
             return self.default_factory()
-        if self.default is not MISSING:
-            return self.default
-        return MISSING
+        default = self.default
+        if default.__class__ in _SHARED_DEFAULTS or isinstance(default, enum.Enum):
+            return default
+        return copy.deepcopy(default)
 
     def validate(self, value: Any) -> Any:
         """Checks a value for this field: type (codec), constraints and validators.

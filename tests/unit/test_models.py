@@ -54,6 +54,29 @@ def test_construction_defaults_and_repr() -> None:
         hash(user)
 
 
+class Shelf(Model, table="shelves"):
+    """Mutable defaults (a list, a dict and a document) given with ``default=``."""
+
+    shelf_id: Attr[str] = partition_key()
+    labels: Attr[list[str]] = field(default=[])
+    sizes: Attr[dict[str, int]] = field(default={"width": 1})
+    line: Attr[LineItem] = field(default=LineItem(sku="none", quantity=1, price=Decimal(0)))
+
+
+def test_mutable_defaults_are_copied_for_each_instance() -> None:
+    first, second = Shelf(shelf_id="a"), Shelf(shelf_id="b")
+    first.labels.append("x")
+    first.sizes["width"] = 2
+    first.line.quantity = 5
+    assert (second.labels, second.sizes, second.line.quantity) == ([], {"width": 1}, 1)
+    # Items without the attributes (written before the fields existed) decode with copies too.
+    read = [Shelf.from_item({"shelf_id": shelf_id}) for shelf_id in ("c", "d")]
+    read[0].labels.append("y")
+    read[0].line.sku = "changed"
+    assert (read[1].labels, read[1].line.sku, Shelf(shelf_id="e").labels) == ([], "none", [])
+    assert schema_of(Shelf).fields["line"].default.quantity == 1, "the declared default is unchanged"
+
+
 def test_validation_collects_every_field_error() -> None:
     with pytest.raises(dynamoxy.ValidationError) as caught:
         User(user_id="u1", email="not-an-email", name="", age=-1)  # type: ignore[call-arg]
