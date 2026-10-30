@@ -242,12 +242,20 @@ fn syntax_error(kind: ExpressionKind, text: &str, token: &str, start: usize, end
 const CONDITION_FUNCTIONS: [&str; 5] =
     ["attribute_exists", "attribute_not_exists", "attribute_type", "begins_with", "contains"];
 
+/// How deep parentheses, `NOT` and functions may nest. DynamoDB refuses redundant parentheses,
+/// so each level holds operators (300 at most per expression), and only contrived expressions
+/// nest this deep. The parser refuses deeper ones before its recursion could exhaust the stack of
+/// the thread it runs on (2 MiB for runtime threads), which would kill the process.
+pub(super) const MAX_NESTING: usize = 100;
+
 struct Parser<'p, 'a> {
     kind: ExpressionKind,
     text: &'p str,
     tokens: Vec<Spanned<'p>>,
     position: usize,
     placeholders: &'p mut Placeholders<'a>,
+    /// How many parentheses, `NOT`s and functions enclose the current position.
+    depth: usize,
 }
 
 impl<'p, 'a> Parser<'p, 'a> {
@@ -266,7 +274,20 @@ impl<'p, 'a> Parser<'p, 'a> {
             )));
         }
         let tokens = lex(kind, text)?;
-        Ok(Self { kind, text, tokens, position: 0, placeholders })
+        Ok(Self { kind, text, tokens, position: 0, placeholders, depth: 0 })
+    }
+
+    /// Runs `parse` one nesting level deeper (see [`MAX_NESTING`]).
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth == MAX_NESTING {
+            return Err(self.error(format!(
+                "The expression nests parentheses, NOT and functions more than {MAX_NESTING} levels deep"
+            )));
+        }
+        self.depth += 1;
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
     }
 
     fn error(&self, message: impl std::fmt::Display) -> Error {
@@ -432,18 +453,20 @@ impl<'p, 'a> Parser<'p, 'a> {
     fn not_condition(&mut self) -> Result<Condition> {
         if self.at_keyword("NOT") {
             self.position += 1;
-            return Ok(Condition::Not(Box::new(self.not_condition()?)));
+            return self.nested(|parser| Ok(Condition::Not(Box::new(parser.not_condition()?))));
+        }
+        // Parentheses are handled here rather than in `primary_condition`, whose large frame then
+        // stays off the stack of nested conditions.
+        if self.peek() == Some(Token::LParen) {
+            self.position += 1;
+            let inner = self.nested(Self::condition)?;
+            self.expect(Token::RParen)?;
+            return Ok(inner);
         }
         self.primary_condition()
     }
 
     fn primary_condition(&mut self) -> Result<Condition> {
-        if self.peek() == Some(Token::LParen) {
-            self.position += 1;
-            let inner = self.condition()?;
-            self.expect(Token::RParen)?;
-            return Ok(inner);
-        }
         if let Some(Token::Ident(name)) = self.peek()
             && self.peek_at(1) == Some(Token::LParen)
             && name != "size"
@@ -596,19 +619,19 @@ impl<'p, 'a> Parser<'p, 'a> {
             }
             Some(Token::Ident(name)) if self.peek_at(1) == Some(Token::LParen) => {
                 self.position += 2;
-                let operand = match name {
+                let operand = self.nested(|parser| match name {
                     "if_not_exists" => {
-                        let path = self.path()?;
-                        self.expect(Token::Comma)?;
-                        UpdateOperand::IfNotExists(path, Box::new(self.update_operand()?))
+                        let path = parser.path()?;
+                        parser.expect(Token::Comma)?;
+                        Ok(UpdateOperand::IfNotExists(path, Box::new(parser.update_operand()?)))
                     }
                     "list_append" => {
-                        let first = self.update_operand()?;
-                        self.expect(Token::Comma)?;
-                        UpdateOperand::ListAppend(Box::new(first), Box::new(self.update_operand()?))
+                        let first = parser.update_operand()?;
+                        parser.expect(Token::Comma)?;
+                        Ok(UpdateOperand::ListAppend(Box::new(first), Box::new(parser.update_operand()?)))
                     }
-                    _ => return Err(self.error(format!("Invalid function name; function: {name}"))),
-                };
+                    _ => Err(parser.error(format!("Invalid function name; function: {name}"))),
+                })?;
                 self.expect(Token::RParen)?;
                 Ok(operand)
             }

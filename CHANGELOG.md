@@ -51,6 +51,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   checked on each item; and `.project(...).hydrate()` failed with `ValidationException`, because
   the entries lacked the table key. Such reads now ask for the key attributes too, and the
   dicts still hold only what was projected.
+- Deeply nested input crashed the whole process with a stack overflow (`SIGSEGV`) instead of
+  raising an error: values with thousands of nested lists or maps, or that contain themselves
+  (`item["self"] = item`), in items, expression values, `to_wire()` and PartiQL parameters; a
+  crafted pagination cursor passed to `after()`; and PartiQL statements or expressions with a
+  few thousand nested parentheses, which crashed AWS clients too, since dynamoxy parses
+  statements and update expressions to decide whether a retry is safe. Values nested more than
+  32 levels deep (DynamoDB's limit) now raise `ValidationError` before any request, and the
+  in-memory DynamoDB refuses expressions and statements nested more than 100 levels deep, and
+  statements longer than DynamoDB's 8,192 characters, with a `ValidationException`.
 
 ### Security
 

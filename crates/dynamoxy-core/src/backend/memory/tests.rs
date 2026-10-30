@@ -784,6 +784,56 @@ async fn update_table_adds_and_backfills_global_indexes() {
     assert!(description.attribute_definitions.iter().all(|definition| definition.name != "email"));
 }
 
+/// Statements are parsed on the threads of the runtime (2 MiB stacks), for every backend
+/// (`partiql::effect`): nesting is bounded, so that a deep recursion cannot kill the process.
+#[tokio::test]
+async fn deeply_nested_partiql_statements_are_refused() {
+    let backend = backend_with_table().await;
+    let run = |text: String| {
+        let input = ExecuteStatementInput { statement: text, ..Default::default() };
+        backend.execute_statement(input)
+    };
+    let condition =
+        |levels: usize| format!("SELECT * FROM items WHERE {}pk = 'a'{}", "(".repeat(levels), ")".repeat(levels));
+    run(condition(100)).await.unwrap();
+    let value = |levels: usize| {
+        format!("INSERT INTO items VALUE {{'pk': 'a', 'sk': 1, 'v': {}1{}}}", "[".repeat(levels), "]".repeat(levels))
+    };
+    for text in [
+        condition(101),
+        condition(4000),
+        value(4000),
+        format!("SELECT * FROM items WHERE {}pk = 'a'", "NOT ".repeat(2000)),
+    ] {
+        let error = run(text).await.unwrap_err();
+        assert_eq!(
+            message(&error),
+            "Statement wasn't well formed, can't be processed: it nests more than 100 levels deep"
+        );
+    }
+    let deep = format!("UPDATE items SET v = 1 WHERE {}pk = 'a'{}", "(".repeat(4000), ")".repeat(4000));
+    assert_eq!(super::partiql::effect(&deep, &[]), super::partiql::Effect::Once, "not known: sent once");
+
+    // DynamoDB's 8,192 characters per statement also bound AND and OR chains, which form nested
+    // trees without any parentheses: the longest one runs, and longer statements are refused.
+    let chain = |statement: &str, terms: usize| format!("{statement} WHERE pk = 'a'{}", " AND sk = 1".repeat(terms));
+    let longest = chain("SELECT * FROM items", 740);
+    assert!(longest.len() <= 8192);
+    run(longest).await.unwrap();
+    let error = run(chain("SELECT * FROM items", 20_000)).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Value at 'statement' failed to satisfy constraint: Member must have length less \
+         than or equal to 8192"
+    );
+    let update = chain("UPDATE items SET v = 1", 20_000);
+    assert_eq!(
+        super::partiql::effect(&update, &[]),
+        super::partiql::Effect::Once,
+        "sent to DynamoDB, which refuses it"
+    );
+}
+
 #[tokio::test]
 async fn partiql_statements() {
     let backend = backend_with_table().await;

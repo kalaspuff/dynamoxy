@@ -96,6 +96,7 @@ note that unique guard items live under `_unique#...` partition keys.
 | Transaction | 100 operations, 4 MB, each item once |
 | BatchWriteItem / BatchGetItem | 25 / 100 per request (dynamoxy chunks) |
 | Numbers | 38 significant digits, magnitude 1E-130 to 1E+126 |
+| Nested values (lists and maps) | 32 levels (deeper values raise `ValidationError` before any request) |
 | Expressions | 4 KB per expression, 300 operators/functions |
 | Local index item collection | 10 GB per partition key value |
 | Partition throughput | about 3000 RCU and 1000 WCU per second |

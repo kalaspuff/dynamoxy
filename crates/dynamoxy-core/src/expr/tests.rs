@@ -1,3 +1,4 @@
+use super::parser::MAX_NESTING;
 use super::*;
 use crate::value::{Item, ValueType, item};
 
@@ -219,4 +220,44 @@ fn update_and_projection_parse_through_parse_request() {
     let update = parsed.update.unwrap();
     assert_eq!((update.set.len(), update.remove.len(), update.add.len(), update.delete.len()), (1, 1, 1, 1));
     assert_eq!(parsed.projection.unwrap().len(), 2);
+}
+
+/// Parses on a thread with the stack of the runtime's threads, where a deep recursion would
+/// overflow and kill the process.
+fn on_runtime_stack<T: Send + 'static>(parse: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(parse).unwrap().join().unwrap()
+}
+
+#[test]
+fn deeply_nested_expressions_are_refused_without_exhausting_the_stack() {
+    let parse = |text: String| {
+        on_runtime_stack(move || {
+            let values = values(&[(":v", AttributeValue::n(1))]);
+            condition(&text, &Names::new(), &values).map(|_| ()).map_err(|error| error.to_string())
+        })
+    };
+    let parenthesized = |levels: usize| format!("{}a = :v{}", "(".repeat(levels), ")".repeat(levels));
+    let negated = |levels: usize| format!("{}a = :v", "NOT ".repeat(levels));
+    assert_eq!(parse(parenthesized(MAX_NESTING)), Ok(()));
+    assert_eq!(parse(negated(MAX_NESTING)), Ok(()));
+    // 2,000 parentheses fit in the 4 KB of an expression; they used to overflow the stack.
+    for text in [parenthesized(MAX_NESTING + 1), negated(MAX_NESTING + 1), parenthesized(2000)] {
+        let error = parse(text).unwrap_err();
+        assert_eq!(
+            error,
+            "ValidationException: Invalid ConditionExpression: The expression nests parentheses, NOT and functions \
+             more than 100 levels deep"
+        );
+    }
+
+    let update = |levels: usize| {
+        on_runtime_stack(move || {
+            let (names, values) = (Names::new(), values(&[(":v", AttributeValue::L(vec![]))]));
+            let mut placeholders = Placeholders::new(&names, &values);
+            let text = format!("SET l = {}l{}", "list_append(".repeat(levels), ", :v)".repeat(levels));
+            parse_update(&text, &mut placeholders).map(|_| ()).map_err(|error| error.to_string())
+        })
+    };
+    assert_eq!(update(MAX_NESTING), Ok(()));
+    assert!(update(MAX_NESTING + 1).unwrap_err().contains("more than 100 levels deep"));
 }

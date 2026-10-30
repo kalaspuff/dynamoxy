@@ -52,3 +52,13 @@ def test_invalid_cursors_do_not_quote_their_contents() -> None:
     with pytest.raises(ValueError, match="invalid cursor") as caught:
         decode_cursor(cursor)
     assert "ada@example.com" not in str(caught.value)
+
+
+@pytest.mark.parametrize("levels", [500, 20_000])
+def test_crafted_deep_cursors_are_invalid(levels: int) -> None:
+    # Cursors come back from API clients: a deeply nested one used to exhaust the stack, and one
+    # nested deeper than the JSON parser goes raised RecursionError.
+    text = '{"pk": ' + '{"L": [' * levels + '{"S": "x"}' + "]}" * levels + "}"
+    cursor = base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+    with pytest.raises(ValueError, match="invalid cursor"):
+        decode_cursor(cursor)
