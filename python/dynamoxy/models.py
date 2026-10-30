@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import copy as _copy
 import dataclasses
+import sys
 from collections.abc import Hashable
 from collections.abc import Set as AbstractSet
 from decimal import Decimal
@@ -408,13 +409,13 @@ def own_annotations(cls: type) -> dict[str, Any]:
 
     Python 3.14 evaluates annotations lazily (PEP 649); forward references must not fail here.
     """
-    try:
+    if sys.version_info >= (3, 14):
         import annotationlib
-    except ImportError:
-        import inspect
 
-        return dict(inspect.get_annotations(cls))
-    return dict(annotationlib.get_annotations(cls, format=annotationlib.Format.FORWARDREF))  # pyrefly: ignore[missing-attribute]
+        return dict(annotationlib.get_annotations(cls, format=annotationlib.Format.FORWARDREF))
+    import inspect
+
+    return dict(inspect.get_annotations(cls))
 
 
 def _is_class_var(annotation: Any) -> bool:

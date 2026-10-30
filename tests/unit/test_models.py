@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import sys
+import textwrap
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -211,6 +213,28 @@ def test_inheritance_and_abstract_models() -> None:
     thing = Thing(thing_id="t1")
     assert thing.to_item() == {"thing_id": "t1", "created": "now"}
     assert not schema_of(Base).is_table
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="Python 3.14 evaluates annotations lazily (PEP 649)")
+def test_lazy_annotations_may_refer_to_classes_declared_later() -> None:
+    # This module's annotations are strings (`from __future__ import annotations`); compile the
+    # models without inheriting that flag, so that theirs are evaluated lazily.
+    source = textwrap.dedent(
+        """
+        from dynamoxy import Attr, Document, Model, field, partition_key
+
+        class Shipment(Model, table="shipments"):
+            shipment_id: Attr[str] = partition_key()
+            address: Attr[Address | None] = field(default=None)
+
+        class Address(Document):
+            city: Attr[str]
+        """
+    )
+    namespace: dict[str, Any] = {}
+    exec(compile(source, "<lazy annotations>", "exec", dont_inherit=True), namespace)
+    shipment = namespace["Shipment"](shipment_id="s1", address=namespace["Address"](city="Lund"))
+    assert shipment.to_item() == {"shipment_id": "s1", "address": {"city": "Lund"}}
 
 
 def test_attribute_names_and_custom_codecs() -> None:
