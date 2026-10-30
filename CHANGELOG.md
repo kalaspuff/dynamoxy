@@ -93,6 +93,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   in a row held only items that dynamoxy's own filters remove (16 MB of other entities, in a
   shared table): each such page made the next request ask for four times as many items, without
   a bound. Requests now ask for at most 1,048,576 items, more than a 1 MB page holds.
+- dynamoxy's errors could not cross process boundaries. The native ones (`ValidationError`,
+  `ConditionalCheckFailedError`, `ThrottlingError`, ...) named `_core` as their module, so
+  pickling one failed with `PicklingError`: an error raised in a `ProcessPoolExecutor` worker,
+  multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
+  and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
+  not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
 
 ### Security
 

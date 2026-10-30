@@ -266,9 +266,11 @@ class UnprocessedItemsError(DynamoxyError):
 
     retryable = True
 
-    def __init__(self, message: str, *, unprocessed: list[tuple[str, dict[str, Any]]]) -> None:
+    def __init__(self, message: str, *, unprocessed: list[tuple[str, dict[str, Any]]] | None = None) -> None:
         super().__init__(message)
-        self.unprocessed = unprocessed
+        # Unpickling (multiprocessing, task queues) calls the class with the message only, then
+        # restores the attributes.
+        self.unprocessed = unprocessed if unprocessed is not None else []
         self.message = message
 
 
