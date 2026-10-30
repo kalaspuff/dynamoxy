@@ -133,8 +133,10 @@ Entries of an index with a `KEYS_ONLY` or `INCLUDE` projection hold only some at
   `.hydrate()` (the full items, with `BatchGetItem`) or `.project(...)` (dicts of the attributes
   the index holds): an instance made from an entry would show defaults instead of the stored
   values, and writing it would store them. `count()` and `exists()` need neither.
-- Model reads of such a *local* index ask DynamoDB for every attribute (`Select=ALL_ATTRIBUTES`:
-  it reads the rest from the table, at the cost of reading the items).
+- Model reads of such a *local* index ask DynamoDB for every attribute (`Select=ALL_ATTRIBUTES`),
+  and its `.project(...)` may name attributes the index does not hold: DynamoDB reads the rest
+  from the table, at the cost of a read of each item besides the index entries (a 1 MB page
+  holds fewer items too).
 - A filter on an attribute a global index does not hold raises `ValueError`: DynamoDB filters the
   index entries, so it would never match. Filter the hydrated items in Python instead, or project
   the attribute into the index.

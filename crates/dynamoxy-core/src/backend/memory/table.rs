@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{Error, Result};
+use crate::expr::Path;
 use crate::types::{
     AttributeDefinition, BillingMode, Capacity, ConsumedCapacity, IndexDescription, IndexStatus, ItemCollectionMetrics,
     KeySchema, OnDemandThroughput, Projection, ProjectionType, ProvisionedThroughput, ReturnConsumedCapacity,
@@ -311,16 +312,28 @@ impl Index {
             ProjectionType::All => Cow::Borrowed(item),
             ProjectionType::KeysOnly | ProjectionType::Include => Cow::Owned(
                 item.iter()
-                    .filter(|(name, _)| {
-                        table_key.has(name)
-                            || self.key.has(name)
-                            || (self.projection.projection_type == ProjectionType::Include
-                                && self.projection.non_key_attributes.iter().any(|attribute| attribute == *name))
-                    })
+                    .filter(|(name, _)| self.holds(name, table_key))
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect(),
             ),
         }
+    }
+
+    /// Whether the entries of this index hold the attribute `name`: the table and index keys,
+    /// and what the projection copies.
+    pub fn holds(&self, name: &str, table_key: &KeyInfo) -> bool {
+        let projection = &self.projection;
+        projection.projection_type == ProjectionType::All
+            || table_key.has(name)
+            || self.key.has(name)
+            || (projection.projection_type == ProjectionType::Include
+                && projection.non_key_attributes.iter().any(|attribute| attribute == name))
+    }
+
+    /// Whether a read of this index that returns `paths` reads its items from the table: a local
+    /// index fetches the attributes its entries do not hold (a global index cannot).
+    pub fn fetches(&self, paths: &[Path], table_key: &KeyInfo) -> bool {
+        !self.global && paths.iter().any(|path| !self.holds(path.root(), table_key))
     }
 
     /// Describes the index.
@@ -612,6 +625,56 @@ impl CapacityMeter {
     /// Reports for every table touched, in table name order.
     pub fn reports(&self, mode: ReturnConsumedCapacity) -> Vec<ConsumedCapacity> {
         self.tables.keys().filter_map(|table| self.table_report(table, mode)).collect()
+    }
+}
+
+/// Data a page of a `Query`, `Scan` or PartiQL `SELECT` may read before it stops (1 MB).
+const PAGE_SIZE_LIMIT: usize = 1024 * 1024;
+
+/// What one page of a `Query`, `Scan` or PartiQL `SELECT` has read, for its size and read units.
+#[derive(Debug)]
+pub struct PageRead {
+    consistent: bool,
+    /// Size of the items, or index entries, read.
+    entries: usize,
+    /// Size of the items a read of a local index fetched from the table, each rounded up to 4 KB.
+    fetched: usize,
+    /// Read units of the fetched items, each charged like a read of that item alone.
+    fetched_units: f64,
+}
+
+impl PageRead {
+    /// An empty page of a strongly consistent read or not.
+    pub fn new(consistent: bool) -> Self {
+        Self { consistent, entries: 0, fetched: 0, fetched_units: 0.0 }
+    }
+
+    /// Records an item, or index entry, read.
+    pub fn entry(&mut self, entry: &Item) {
+        self.entries += item_size(entry);
+    }
+
+    /// Records an item a read of a local index fetched from the table.
+    pub fn fetch(&mut self, item: &Item) {
+        let size = item_size(item);
+        self.fetched += size.next_multiple_of(4096);
+        self.fetched_units += read_units(size, self.consistent);
+    }
+
+    /// Whether the page has read its 1 MB: the entries, and once it fetched items, the entries
+    /// rounded up to 4 KB and the fetched items, each rounded up to 4 KB.
+    pub fn is_full(&self) -> bool {
+        let size = if self.fetched == 0 { self.entries } else { self.entries.next_multiple_of(4096) + self.fetched };
+        size >= PAGE_SIZE_LIMIT
+    }
+
+    /// Records the read units on `meter`: the entries on the table or index read, the fetched
+    /// items on the table.
+    pub fn charge(&self, meter: &mut CapacityMeter, table: &str, index: Option<(&str, bool)>) {
+        meter.read(table, index, read_units(self.entries, self.consistent));
+        if self.fetched > 0 {
+            meter.read(table, None, self.fetched_units);
+        }
     }
 }
 

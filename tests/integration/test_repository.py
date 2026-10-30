@@ -925,5 +925,7 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     expires = datetime(2030, 1, 1, tzinfo=UTC)
     await events.put(Event(stream="x", seq=1, kind="k", payload={"a": 1}, expires_at=expires))
     local = await events.query(index="by_kind_local", stream="x").all()
-    if backend == "memory":  # MiniStack ignores Select=ALL_ATTRIBUTES on local indexes; DynamoDB reads the table
+    projected = await events.query(index="by_kind_local", stream="x").project("kind", "expires_at").all()
+    if backend == "memory":  # MiniStack never reads the table for local indexes; DynamoDB does
         assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"
+        assert projected == [{"kind": "k", "expires_at": expires}], "also for a projection"
