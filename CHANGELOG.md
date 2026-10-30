@@ -88,6 +88,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `KIND#Kind.BOOK#s1`, so reads by the value missed it and `save()` of the loaded instance
   raised `ValueError` (key changed), and a unique value written as `"book"` was not taken. Such
   fields now hold the plain value.
+- `first()`, `exists()`, `limit()` and the iteration of reads with an entity type, unique
+  attributes or a `where()` on a templated sort key raised `OverflowError` once about 16 pages
+  in a row held only items that dynamoxy's own filters remove (16 MB of other entities, in a
+  shared table): each such page made the next request ask for four times as many items, without
+  a bound. Requests now ask for at most 1,048,576 items, more than a 1 MB page holds.
 
 ### Security
 
