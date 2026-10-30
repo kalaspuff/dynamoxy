@@ -128,6 +128,42 @@ def test_existing_models_are_stored_through_a_subclass() -> None:
         ContactRecord(contact_id="c2", email="b@c.d", name="")
 
 
+@pytest.mark.parametrize("name", ["key", "to_item", "is_loaded", "create", "get", "query", "save", "update", "delete"])
+def test_fields_cannot_take_the_names_of_the_model_api(name: str) -> None:
+    # As in native models: a field's path would replace the method (pydantic only warns).
+    namespace = {"__annotations__": {"pk": Annotated[str, dynamoxy.PartitionKey()], name: str}}
+    message = rf"Shadow\.{name}: the name is part of the model API \({name}\); .*dynamoxy\.AttributeName\('{name}'\)"
+    with pytest.warns(UserWarning, match="shadows an attribute"), pytest.raises(TypeError, match=message):
+        type("Shadow", (dynamoxy.PydanticModel,), namespace, table="shadow")
+
+
+def test_existing_models_keep_api_names_through_aliases() -> None:
+    class SearchRequest(pydantic.BaseModel):  # an API schema, with a field named like a model method
+        search_id: str
+        query: str
+
+    with pytest.raises(TypeError, match=r"SearchRecord\.query: the name is part of the model API"):
+
+        class SearchRecord(SearchRequest, dynamoxy.PydanticModel, table="searches"):
+            search_id: Annotated[str, dynamoxy.PartitionKey()]
+
+    class AliasedRequest(pydantic.BaseModel):  # the same schema: `query` in input and output
+        model_config = pydantic.ConfigDict(populate_by_name=True)
+
+        search_id: str
+        search_query: str = pydantic.Field(alias="query")
+
+    class AliasedRecord(AliasedRequest, dynamoxy.PydanticModel, table="searches"):
+        search_id: Annotated[str, dynamoxy.PartitionKey()]
+        search_query: Annotated[str, dynamoxy.AttributeName("query")] = pydantic.Field(alias="query")
+
+    record = AliasedRecord.model_validate({"search_id": "s1", "query": "dynamodb"})
+    assert record.model_dump(by_alias=True) == {"search_id": "s1", "query": "dynamodb"}
+    assert record.to_item() == {"search_id": "s1", "query": "dynamodb"}
+    assert AliasedRecord.from_item(record.to_item()) == record
+    assert ExpressionBuilder().condition(dynamoxy.attr(AliasedRecord.search_query) == "x") == "#a0 = :v0"
+
+
 def test_plain_pydantic_models_nest_in_native_models() -> None:
     class Holder(dynamoxy.Model, table="holders"):
         pk: dynamoxy.Attr[str] = dynamoxy.partition_key()

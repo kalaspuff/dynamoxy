@@ -201,8 +201,20 @@ after the model's own and suit cross-cutting concerns such as auditing.
 
 ## Names to avoid
 
-Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `validate`, `copy`,
-`to_dict`, `to_item`, `from_item`, `create` and the instance methods `save`, `delete`, `update`,
-`add`, `increment`, `decrement`, `refresh`. Use another Python name and `attribute_name="key"`
-to keep the stored name. Documents only reserve `validate`, `copy`, `to_dict`, `to_item` and
-`from_item`. DynamoDB reserved words (`name`, `status`, `data`, ...) are fine.
+Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `to_item`,
+`from_item`, `create`, `get`, `query` and the instance methods `save`, `delete`, `update`, `add`,
+`increment`, `decrement`, `refresh`, in native and [pydantic](pydantic.md#existing-models)
+models alike. Native models also reserve `validate`, `copy` and `to_dict`; in pydantic models,
+pydantic's own names (`copy`, `validate`, ...) follow pydantic's rules. Use another Python name
+and keep the stored name with `attribute_name=`:
+
+```python
+class Search(dynamoxy.Model, table="searches"):
+    search_id: Attr[str] = partition_key()
+    search_query: Attr[str] = field(attribute_name="query")  # stored as `query`
+```
+
+Pydantic models use `Annotated[str, dynamoxy.AttributeName("query")]`. Queries, conditions and
+updates name the field (`Search.search_query == "x"`), and the dict-level API sees `query`.
+Documents only reserve `validate`, `copy`, `to_dict`, `to_item` and `from_item`. DynamoDB
+reserved words (`name`, `status`, `data`, ...) are fine.

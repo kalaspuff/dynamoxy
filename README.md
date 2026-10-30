@@ -42,8 +42,7 @@ async def main() -> None:
         except dynamoxy.UniqueConstraintError as error:
             print(f"{error.field} is taken")
 
-        users = client.model(User)  # get, query, update, delete, ... of User items
-        found = await users.query(index=User.by_email, email="ada@example.com").first()
+        found = await User.query(client, index=User.by_email, email="ada@example.com").first()
         print(found)
 
 
@@ -72,7 +71,7 @@ asyncio.run(main())
   ```python
   dynamoxy.testing.inject_fault(client, operation="GetItem", error="throttling", times=2)
   with dynamoxy.collect() as usage:
-      user = await users.get("u1")  # throttled twice, retried
+      user = await User.get(client, "u1")  # throttled twice, retried
   assert usage.retries == 2
   ```
 

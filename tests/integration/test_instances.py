@@ -5,16 +5,17 @@ from __future__ import annotations
 import copy
 import pickle
 import re
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, assert_type, override
+from typing import TYPE_CHECKING, Annotated, Any, assert_type, override
 
 import pydantic
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, F, field, partition_key, testing
+from dynamoxy import Attr, AttributeName, F, PartitionKey, field, partition_key, testing
 from tests.conftest import ClientFactory
-from tests.models import Account, ContactRecord, Customer, Event, Order, Player, User
+from tests.models import Account, ContactRecord, Customer, Event, Order, OrderStatus, Player, User
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -158,6 +159,111 @@ async def test_pydantic_models_create_items(client: dynamoxy.Client) -> None:
     with dynamoxy.collect() as usage, pytest.raises(pydantic.ValidationError, match="name"):
         await ContactRecord.create(client, contact_id="c2", email="bo@example.com", name="")
     assert usage.calls == 0
+
+
+async def test_models_read_items_by_key_and_by_partition(client: dynamoxy.Client) -> None:
+    await client.create_tables(Order, User)
+    placed_at = datetime(2026, 10, 30, tzinfo=UTC)
+    orders = [
+        await Order.create(client, customer_id="c1", order_id=f"o{n}", placed_at=placed_at, total=Decimal(n))
+        for n in range(3)
+    ]
+    found = await Order.get(client, customer_id="c1", order_id="o1")
+    assert_type(found, Order | None)
+    assert found is not None
+    assert found == orders[1]
+    assert found.is_loaded
+    assert await Order.get(client, customer_id="c1", order_id="o9") is None
+    assert await Order.get(client, customer_id="c1", order_id="o2", consistent=True) == orders[2]
+    query = Order.query(client, customer_id="c1")
+    assert_type(query, dynamoxy.Query[Order])
+    assert [order.order_id for order in await query.descending().all()] == ["o2", "o1", "o0"]
+    assert await Order.query(client, customer_id="c1", consistent=True).count() == 3
+    await found.update(Order.status.set(OrderStatus.PAID))  # bound to client.model(Order)
+    paid = await Order.query(client, index=Order.by_status, status=OrderStatus.PAID).all()
+    assert [order.order_id for order in paid] == ["o1"]
+
+    ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+    assert await User.get(client, "u1") == ada
+    by_email = await User.query(client, index=User.by_email, email="ada@example.com").first()
+    assert by_email is not None
+    assert by_email.user_id == "u1"
+    by_email.name = "Ada Lovelace"
+    await by_email.save()  # the version check of a loaded instance
+    assert (await User.get(client, "u1", consistent=True)).name == "Ada Lovelace"  # type: ignore[union-attr]
+    assert client.model(User) is client.model(User), "one repository per model and client"
+
+
+async def test_reads_from_the_model_refuse_bad_arguments_before_any_io(client: dynamoxy.Client) -> None:
+    class Base(dynamoxy.Model, abstract=True):
+        pk: Attr[str] = partition_key()
+
+    await client.create_tables(User)
+    with dynamoxy.collect() as usage:
+        with pytest.raises(
+            TypeError, match=r"User\.get\(\) takes a dynamoxy\.Client first, got str: .*User\.get\(client"
+        ):
+            await User.get("u1")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match=r"User\.query\(\) takes a dynamoxy\.Client first, got str"):
+            User.query("u1")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match=r"User: the key needs user_id=\.\.\."):
+            await User.get(client)
+        with pytest.raises(ValueError, match=r"User: the key needs user_id=\.\.\."):
+            User.query(client)
+        with pytest.raises(ValueError, match="User has no index 'by_nothing'"):
+            User.query(client, index="by_nothing", email="ada@example.com")
+        with pytest.raises(TypeError, match="Base is not stored in a table"):
+            await Base.get(client, "b1")
+        with pytest.raises(TypeError, match="Base is not stored in a table"):
+            Base.query(client, pk="b1")
+    assert usage.calls == 0
+
+
+async def test_pydantic_models_read_items(client: dynamoxy.Client) -> None:
+    await client.create_tables(Account)
+    account = await Account.create(client, account_id="a1", owner="Ada", handle="ada")
+    found = await Account.get(client, "a1")
+    assert_type(found, Account | None)
+    assert found == account
+    accounts = await Account.query(client, account_id="a1").all()
+    assert_type(accounts, list[Account])
+    assert accounts == [account]
+    assert await Account.get(client, "a2") is None
+
+
+async def test_model_api_names_can_still_be_stored_attributes(client: dynamoxy.Client) -> None:
+    # `query` and `get` are model methods, so fields take other Python names; the stored names stay.
+    class Search(dynamoxy.Model, table="searches"):
+        search_id: Attr[str] = partition_key()
+        search_query: Attr[str] = field(attribute_name="query")
+        fetched: Attr[int] = field(default=0, attribute_name="get")
+
+        by_query = dynamoxy.GlobalIndex(partition_key=search_query)
+
+    class SearchRecord(dynamoxy.PydanticModel, table="search_records"):
+        record_id: Annotated[str, PartitionKey()]
+        search_query: Annotated[str, AttributeName("query")]
+
+    await client.create_tables(Search, SearchRecord)
+    search = await Search.create(client, search_id="s1", search_query="dynamodb")
+    await search.increment(Search.fetched)
+    stored = await client.table("searches").get({"search_id": "s1"})
+    assert stored is not None
+    assert {name: value for name, value in stored.items() if name != "_wid"} == {
+        "search_id": "s1",
+        "query": "dynamodb",
+        "get": 1,
+    }
+    found = await Search.query(client, index=Search.by_query, search_query="dynamodb").first()
+    assert found is not None
+    assert (found.search_id, found.fetched) == ("s1", 1)
+    filtered = await Search.query(client, search_id="s1").filter(Search.search_query.begins_with("dyn")).all()
+    assert filtered == [found]
+    await found.update(Search.search_query.set("rust"))
+    assert (await Search.get(client, "s1")).search_query == "rust"  # type: ignore[union-attr]
+    await SearchRecord.create(client, record_id="r1", search_query="dynamodb")
+    assert (await client.table("search_records").get({"record_id": "r1"}) or {}).get("query") == "dynamodb"
+    assert (await SearchRecord.get(client, "r1")).search_query == "dynamodb"  # type: ignore[union-attr]
 
 
 async def test_save_checks_versions_and_conditions(players: dynamoxy.Repository[Player]) -> None:

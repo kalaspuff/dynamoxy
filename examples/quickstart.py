@@ -29,7 +29,6 @@ async def main(client: dynamoxy.Client | None = None) -> User:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(User)
-        users = db.model(User)  # the typed operations of User on this client
 
         ada = await User.create(db, user_id="u1", email="ada@example.com", name="Ada")  # a new item
         print(f"created {ada.user_id} (version {ada.version}) at {ada.created_at:%Y-%m-%d %H:%M}")
@@ -41,7 +40,7 @@ async def main(client: dynamoxy.Client | None = None) -> User:
         await ada.save()  # replaces the item, if nobody changed it meanwhile (version check)
         print(f"after updates: visits={ada.visits} tags={sorted(ada.tags)} version={ada.version}")
 
-        found = await users.query(index=User.by_email, email="ada@example.com").first()
+        found = await User.query(db, index=User.by_email, email="ada@example.com").first()
         assert found is not None
         print(f"found by email: {found.name}")
         return found

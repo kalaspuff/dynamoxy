@@ -63,6 +63,25 @@ record = await contacts.get("c1")  # a ContactRecord, and therefore a Contact
 
 A re-declared field replaces the inherited one, so repeat its type and its default.
 
+Fields cannot take the names of the model API (`key`, `to_item`, `create`, `get`, `query`,
+`save`, `update`, `delete`, ... as in [native models](modeling.md#names-to-avoid)): the class
+raises `TypeError` when it is defined. When an existing model has such a field, give it another
+Python name and keep its name in pydantic's input and output with an alias, and in DynamoDB with
+`AttributeName`:
+
+```python
+class SearchRequest(BaseModel):  # an API schema whose JSON has a "query" field
+    model_config = ConfigDict(populate_by_name=True)  # dynamoxy fills fields by name
+
+    search_id: str
+    search_query: str = Field(alias="query")
+
+
+class SearchRecord(SearchRequest, dynamoxy.PydanticModel, table="searches"):
+    search_id: Annotated[str, dynamoxy.PartitionKey()]
+    search_query: Annotated[str, dynamoxy.AttributeName("query")] = Field(alias="query")
+```
+
 ## Markers
 
 | Marker | Meaning |

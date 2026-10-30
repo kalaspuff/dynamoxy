@@ -256,7 +256,9 @@ def test_fields_must_not_shadow_the_model_api() -> None:
             key: Attr[str] = partition_key()  # pyrefly: ignore[bad-override]
 
 
-@pytest.mark.parametrize("name", ["create", "save", "delete", "update", "add", "increment", "decrement", "refresh"])
+@pytest.mark.parametrize(
+    "name", ["create", "get", "query", "save", "delete", "update", "add", "increment", "decrement", "refresh"]
+)
 def test_persistence_methods_are_part_of_the_model_api(name: str) -> None:
     namespace = {"__annotations__": {"pk": Attr[str], name: Attr[int]}, "pk": partition_key()}
     with pytest.raises(TypeError, match=rf"Shadow\.{name}: the name is part of the model API"):

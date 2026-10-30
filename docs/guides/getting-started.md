@@ -71,23 +71,23 @@ how to get the definitions).
 ## Read and write
 
 ```python
-users = client.model(User)
-
 ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
 await ada.increment(User.visits)                     # atomic, refreshes `ada` in place
 ada.name = "Ada Lovelace"
 await ada.save()                                     # writes the changed instance
-same = await users.get("u1")
-by_email = await users.query(index=User.by_email, email="ada@example.com").first()
+same = await User.get(client, "u1")
+by_email = await User.query(client, index=User.by_email, email="ada@example.com").first()
 await ada.delete()
 ```
 
 `User.create(client, ...)` builds a `User` and writes it as a new item; type checkers check its
-arguments like the constructor's. `client.model(User)` gives the typed operations of a model on
-this client, a `dynamoxy.Repository[User]`. An instance remembers the repository that read or
-wrote it, so `ada.save()` is `users.save(ada)` and `ada.increment(User.visits)` is
-`users.update(ada, User.visits.add(1))`. The repository does the same by key, without an
-instance: `await users.update(User.key("u1"), User.visits.add(1))`.
+arguments like the constructor's. `User.get(client, ...)` reads one item by key, and
+`User.query(client, ...)` the items of a partition. They all go through `client.model(User)`,
+the typed operations of a model on this client (a `dynamoxy.Repository[User]`), which also
+has `get_or_raise`, `scan`, `count`, batches and more. An instance remembers the repository that
+read or wrote it, so with `users = client.model(User)`, `ada.save()` is `users.save(ada)` and
+`ada.increment(User.visits)` is `users.update(ada, User.visits.add(1))`. The repository does the
+same by key, without an instance: `await users.update(User.key("u1"), User.visits.add(1))`.
 
 ## Next steps
 

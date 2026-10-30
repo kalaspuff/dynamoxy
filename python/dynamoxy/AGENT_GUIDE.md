@@ -17,12 +17,12 @@ optimistic locking · transactions · single-table design · tables · the dict-
 1. **Create one `dynamoxy.Client` per process and share it.** It holds the connection pool,
    retries and metrics. Create it after `fork()` (worker processes create their own) and close it
    at shutdown (`async with client:` or `await client.close()`).
-2. **Reach models through the client.** `client.model(User)` gives typed `get`, `query`,
-   `create`, `update`, ... (a `dynamoxy.Repository[User]`), and
-   `await User.create(client, user_id="u1", ...)` builds and writes a new item. Collect the
-   queries of an aggregate in a subclass of `dynamoxy.Repository` instead of scattering raw
-   calls. Instances a repository read or wrote write themselves through it:
-   `await user.save()`, `await user.increment(User.visits)`, `await user.delete()`.
+2. **Reach models through the client.** `User.create(client, ...)`, `User.get(client, ...)`
+   and `User.query(client, ...)` create, read and query items; `client.model(User)` gives
+   every typed operation (a `dynamoxy.Repository[User]`). Collect the queries of an aggregate
+   in a subclass of `dynamoxy.Repository` instead of scattering raw calls. Instances a
+   repository read or wrote write themselves through it: `await user.save()`,
+   `await user.increment(User.visits)`, `await user.delete()`.
 3. **Pick the write that states your intent.** `create()` fails if the key exists, `save()`
    checks the version (optimistic locking), `put()` overwrites, and `update()` changes attributes
    in place without reading. Prefer `update()` with atomic actions (`User.visits.add(1)`) over
@@ -77,12 +77,11 @@ async def main() -> None:
     # Region and credentials come from the standard AWS configuration unless given.
     async with dynamoxy.Client(region="eu-west-1") as client:
         await client.ensure_tables(User)  # creates missing tables and indexes; deletes nothing
-        users = client.model(User)
 
         ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
-        await users.update(ada, User.visits.add(1), User.tags.add({"admin"}))
+        await ada.update(User.visits.add(1), User.tags.add({"admin"}))
 
-        found = await users.query(index=User.by_email, email="ada@example.com").first()
+        found = await User.query(client, index=User.by_email, email="ada@example.com").first()
         assert found is not None and found.visits == 1
 
 
@@ -199,9 +198,13 @@ Rules that are easy to miss:
 
 - Assigning a field validates it immediately (`user.age = -1` raises `ValidationError`), and so
   does the constructor. `ValidationError.errors` lists every `FieldError`.
-- Field names cannot shadow the model API (`key`, `primary_key`, `validate`, `to_item`,
-  `copy`, `create`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`,
-  ...). Name the field differently and keep the stored name with `attribute_name=`.
+- Field names cannot shadow the model API (`key`, `primary_key`, `to_item`, `create`, `get`,
+  `query`, `save`, `delete`, `update`, `add`, `increment`, `decrement`, `refresh`, ...), in
+  pydantic models too; native models also reserve `validate`, `copy` and `to_dict`. Name the
+  field differently and keep the stored name with `attribute_name=`
+  (`search_query: Attr[str] = field(attribute_name="query")`; pydantic:
+  `Annotated[str, dynamoxy.AttributeName("query")]`, plus `Field(alias="query")` to keep the
+  name in pydantic's input and output).
 - A field annotated without a specifier (`kind: Attr[str]`) has no class attribute while the
   class body runs. Refer to it by name in index declarations: `GlobalIndex(partition_key="kind")`.
 - `item.copy(**changes)` is a new, unsaved instance: its automatic fields (`created_at`,
@@ -321,9 +324,11 @@ inherited, and loaded records are instances of the original model.
 ## 4. Reading
 
 ```python
-users = client.model(User)
+user = await User.get(client, "u1")  # None when missing; User | None for type checkers
+orders = await Order.query(client, customer_id="c1").descending().limit(10).all()
 
-user = await users.get("u1")  # None when missing
+users = client.model(User)  # the same repository on every call: every read of the model
+user = await users.get("u1")  # what User.get(client, "u1") calls
 user = await users.get_or_raise("u1")  # ItemNotFoundError when missing
 user = await users.get("u1", consistent=True)  # strongly consistent read
 present = await users.exists("u1")
@@ -333,7 +338,8 @@ many = await users.batch_get(["u1", "u2", "u3"])  # any number of keys; missing 
 
 Keys are given positionally (partition, then sort), by key field name, or by the fields a key
 template uses: `orders.get(customer_id="c1", order_id="o1")`. `User.key("u1")` builds a stored
-key for APIs that take one.
+key for APIs that take one. `User.get(client, ...)` and `User.query(client, ...)` take the same
+arguments as the repository's `get` and `query`, after the client.
 
 ### Queries
 

@@ -82,10 +82,23 @@ def test_model_gives_the_operations_of_a_model_without_io() -> None:
     assert repr(events) == "<Repository Event @ dev-events>"
     assert collected.calls == 0
     assert not client.closed
+    assert client.model(User) is users, "built once per model, then looked up"
     with pytest.raises(TypeError, match=r"LineItem is not stored in a table; declare table='\.\.\.' on the class"):
         client.model(LineItem)
     with pytest.raises(TypeError, match="is not a dynamoxy model"):
         client.model(int)
+    with pytest.raises(TypeError, match=r"takes a model class, such as client\.model\(User\), got an instance of User"):
+        client.model(User(user_id="u1", email="ada@example.com", name="Ada"))  # type: ignore[arg-type]
+
+
+async def test_closed_clients_let_go_of_their_repositories() -> None:
+    client = testing.memory_client()
+    users = client.model(User)
+    await client.close()
+    assert client.model(User) is not users
+    assert client.model(User) is not client.model(User), "nothing is kept once closed"
+    with pytest.raises(dynamoxy.ShutdownError):
+        await client.model(User).get("u1")
 
 
 def test_repository_is_a_deprecated_alias_of_model() -> None:
@@ -98,8 +111,7 @@ def test_repository_is_a_deprecated_alias_of_model() -> None:
         "use client.model(), which returns the same Repository"
     )
     assert caught[0].filename == __file__, "the warning points at the caller"
-    assert type(users) is dynamoxy.Repository
-    assert (users.client, users.model_class, users.table_name) == (client, User, client.model(User).table_name)
+    assert users is client.model(User)
     assert "removed in dynamoxy 0.5" in getattr(dynamoxy.Client.repository, "__deprecated__", "")  # PEP 702
     assert dynamoxy.Client.repository.__name__ == "repository"
     assert "Deprecated alias of" in (dynamoxy.Client.repository.__doc__ or "")
