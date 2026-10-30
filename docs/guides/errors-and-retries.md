@@ -30,7 +30,9 @@ async def register(user_id: str, email: str, name: str) -> Response:
 
 All dynamoxy errors derive from `DynamoxyError` and say whether retrying may help
 (`.retryable`). Service errors keep DynamoDB's `.code`, `.message` and `.request_id` (quote it in
-support cases).
+support cases). Errors pickle with their attributes, so they reach the caller of a worker process
+or task queue as themselves (a `FieldError.value` that does not pickle, such as a function, is
+left out).
 
 Messages are safe to log: they name models, fields and types, never keys or values, which may be
 personal data. The errors carry those as attributes, and the messages say where: `User does not
