@@ -101,9 +101,10 @@ it when an update was not sent again. If the item holds this write's id, the wri
 deletes, for the dict-level API, and for models declared with `write_ids=False`.
 
 `WriteOutcomeUnknownError` is a `TransportError` and never a `ConditionalCheckFailedError`, so
-code that handles lost races does not mistake a write that happened for one. Reads have no
-outcome to lose: they raise the last attempt's error. It is not `.retryable`: read the item to find out what happened, and repeat
-only writes that apply once. Each one emits `request.outcome_unknown`.
+code that handles lost races does not mistake a write that happened for one. It is not
+`.retryable`: read the item to find out what happened, and repeat only writes that apply once.
+Each one emits `request.outcome_unknown`. Reads have no outcome to lose: they raise the last
+attempt's error.
 
 A write that must apply exactly once even when the application repeats it (a payment, a stock
 count) can go alone into a transaction with a token of your own, such as the idempotency key of
