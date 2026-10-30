@@ -222,3 +222,24 @@ def test_datetime_format_of_a_pydantic_model() -> None:
         created: Annotated[datetime | None, dynamoxy.CreatedAt("iso_z")] = None
 
     assert schema_of(Stamped).fields["created"].codec.encode(moment) == zulu
+
+
+class Sighted(dynamoxy.PydanticModel, abstract=True):
+    seen_at: datetime | None = None
+
+
+class Bird(Sighted, table="pydantic-birds", datetime_format="iso_z"):
+    bird_id: Annotated[str, dynamoxy.PartitionKey()]
+
+
+def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    builder = ExpressionBuilder()
+    builder.condition(dynamoxy.attr(Bird.seen_at) == moment)
+    builder.update([dynamoxy.attr(Bird.seen_at).set(moment)])
+    builder.condition(dynamoxy.attr(Sighted.seen_at) == moment)
+    assert builder.values == {
+        ":v0": "2026-01-01T00:00:00.000000Z",
+        ":v1": "2026-01-01T00:00:00.000000Z",
+        ":v2": "2026-01-01T00:00:00.000000+00:00",  # the base class keeps its format
+    }

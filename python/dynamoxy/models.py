@@ -255,6 +255,14 @@ class Document:
                 setattr(cls, name, attribute)
                 attribute.__set_name__(cls, name)
             fields[name] = attribute
+        for name, attribute in list(fields.items()):
+            if name not in cls.__dict__:
+                # An inherited field gets a path of this class: a path encodes values with the schema
+                # of its class, and a subclass may store them differently (datetime_format).
+                inherited = type(attribute)(**attribute._options)
+                setattr(cls, name, inherited)
+                inherited.__set_name__(cls, name)
+                fields[name] = inherited
         cls.__dynamoxy_fields__ = fields
 
     @classmethod

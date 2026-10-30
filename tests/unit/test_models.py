@@ -556,6 +556,58 @@ def test_datetime_format_is_inherited_and_overridable() -> None:
     assert schema_of(Order).fields["placed_at"].codec.encode(moment) == "2026-01-01T00:00:00.000000+00:00"
 
 
+class Sighted(Model, abstract=True):
+    seen_at: Attr[datetime | None] = field(default=None)
+    history: Attr[list[datetime]] = field(default_factory=list)
+
+
+class Bird(Sighted, table="birds", datetime_format="iso_z"):
+    bird_id: Attr[str] = partition_key()
+
+
+class Owl(Bird, table="owls"):
+    """Inherits the fields and the format of ``Bird``."""
+
+
+def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    zulu = "2026-01-01T00:00:00.000000Z"
+    for model in (Bird, Owl):
+        # Each class has paths of its own, resolved with its own schema.
+        assert model.seen_at is not Sighted.seen_at
+        assert (model.seen_at.model, model.seen_at.spec) == (model, schema_of(model).fields["seen_at"])
+        assert repr(model.history) == f"<attribute {model.__name__}.history>"
+        builder = ExpressionBuilder()
+        builder.condition(
+            (model.seen_at == moment) & model.seen_at.between(moment, moment) & (model.history[0] == moment)
+        )
+        builder.update([model.seen_at.set(moment), model.history.append([moment])])
+        assert list(builder.values.values()) == [zulu, zulu, zulu, zulu, zulu, [zulu]]
+    builder = ExpressionBuilder()
+    builder.condition(Sighted.seen_at == moment)
+    assert builder.values == {":v0": "2026-01-01T00:00:00.000000+00:00"}, "the base class keeps its format"
+    with pytest.raises(dynamoxy.ValidationError, match=r"^Bird\.seen_at: expected datetime"):
+        Bird.seen_at.set("yesterday")  # pyrefly: ignore[no-matching-overload]
+
+
+def test_inherited_fields_do_not_need_the_schema_of_the_base_class() -> None:
+    class Keyed(Model, abstract=True):
+        pk: Attr[str] = partition_key(template="ITEM#{item_id}")
+        status: Attr[str] = field(default="new")
+
+    class Item(Keyed, table="items"):
+        item_id: Attr[str]
+
+    with pytest.raises(TypeError, match="refers to 'item_id', which is not a field"):
+        schema_of(Keyed)
+    item = Item(item_id="i1")
+    item.status = "done"
+    assert item.to_item() == {"pk": "ITEM#i1", "status": "done", "item_id": "i1"}
+    builder = ExpressionBuilder()
+    builder.condition(Item.status == "done")
+    assert builder.values == {":v0": "done"}
+
+
 def test_invalid_datetime_formats_fail_on_declaration() -> None:
     expected = "datetime_format must be one of 'iso', 'iso_z', 'epoch', 'epoch_ms', got 'weekly'"
     with pytest.raises(ValueError, match=expected):

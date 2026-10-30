@@ -1,4 +1,6 @@
-"""Models shared by the tests: a plain table, an event log, a single-table design, counters and pydantic."""
+"""Models shared by the tests: a plain table, an event log, a single-table design, counters, inherited
+timestamps and pydantic.
+"""
 
 from __future__ import annotations
 
@@ -117,6 +119,19 @@ class Player(Model, table="players"):
     version: Attr[int] = version()
 
     by_rank = GlobalIndex(partition_key=board, sort_key=rank)
+
+
+class Timestamped(Model, abstract=True):
+    """Timestamps declared once; each subclass stores them in its own ``datetime_format``."""
+
+    published_at: Attr[datetime] = sort_key()
+    seen_at: Attr[datetime | None] = field(default=None)
+
+
+class Article(Timestamped, table="articles", datetime_format="iso_z"):
+    """Inherits its timestamps and stores them with a ``Z`` suffix."""
+
+    article_id: Attr[str] = partition_key()
 
 
 class Account(PydanticModel, table="accounts"):

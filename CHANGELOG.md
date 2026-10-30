@@ -99,6 +99,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
   not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+- Fields that a subclass inherits encoded expression values in the `datetime_format` of the
+  class that declared them, while the subclass stored them in its own. With an abstract
+  `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,
+  `filter(Article.seen_at == at)` compared `...+00:00` with the stored `...Z` and found nothing,
+  conditions on writes failed, and `update(Article.seen_at.set(at))` stored `...+00:00` among
+  `...Z` values (text among numbers with an epoch format). Transactions took the declaring class
+  as the model of updates by key (`TypeError: Timestamped is not stored in a table`), and
+  assigning or comparing such a field raised `TypeError` when the base class's key template
+  names a field of the subclass. A subclass now has attributes of its own for the fields it
+  inherits; those of the base class keep its format.
 
 ### Security
 

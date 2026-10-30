@@ -122,6 +122,11 @@ class Reading(Base, table="readings"):
   `field(codec=DateTimeCodec("iso"))` or
   `Attr[Annotated[datetime, dynamoxy.UseCodec(DateTimeCodec("iso_z"))]]` (`DateTimeCodec` is in
   `dynamoxy.codecs`). TTL attributes are always epoch seconds.
+- A subclass can choose another format
+  (`class Legacy(Base, table="legacy", datetime_format="iso")`). It stores the fields it inherits
+  in that format, and its class attributes encode values in it too (`Legacy.created_at >= moment`).
+  The attributes of the base class keep the base's format, so build conditions and updates from
+  the class you read or write.
 - A nested `Document` has its own format: declare it there too
   (`class Address(dynamoxy.Document, datetime_format="iso_z")`). Plain pydantic models nested in a
   model use the `Annotated` form.
