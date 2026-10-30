@@ -6,7 +6,7 @@ import asyncio
 import enum
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import pytest
 
@@ -512,6 +512,43 @@ async def test_members_of_mixin_enums_are_stored_as_their_values(client: dynamox
         "KIND#book#s1",
         "_unique#Product#label#book",
     }
+
+
+class Preference(Model, table="preferences"):
+    """Optional fields with a codec of their own (``codec=``, ``UseCodec``) or a ``Literal`` of ``None``."""
+
+    preference_id: Attr[str] = partition_key()
+    data: Attr[dict[str, Any] | None] = field(default=None, codec=dynamoxy.codecs.JsonCodec())
+    changed_at: Attr[datetime | None] = field(default=None, codec=dynamoxy.codecs.DateTimeCodec("iso_z"))
+    checked_at: Attr[Annotated[datetime | None, dynamoxy.UseCodec(dynamoxy.codecs.DateTimeCodec("epoch"))]] = field(
+        default=None
+    )
+    state: Attr[Literal["on", "off", None]] = field(default=None)  # noqa: PYI061 - the spelling under test
+
+
+async def test_fields_with_a_codec_of_their_own_may_be_optional(client: dynamoxy.Client) -> None:
+    await client.create_tables(Preference)
+    preferences = client.model(Preference)
+    fields = ("data", "changed_at", "checked_at", "state")
+    created = await Preference.create(client, preference_id="p1")
+    assert [getattr(created, name) for name in fields] == [None] * 4
+    moment = datetime(2026, 10, 13, 8, 48, 47, tzinfo=UTC)
+    await created.update(
+        Preference.data.set({"a": [1]}),
+        Preference.changed_at.set(moment),
+        Preference.checked_at.set(moment),
+        Preference.state.set("on"),
+    )
+    loaded = await Preference.get(client, "p1", consistent=True)
+    assert loaded is not None
+    assert [getattr(loaded, name) for name in fields] == [{"a": [1]}, moment, moment, "on"]
+    await loaded.update(Preference.data.remove(), Preference.changed_at.set(None))
+    loaded.checked_at = loaded.state = None
+    await loaded.save()
+    stored = await preferences.table.get({"preference_id": "p1"}, consistent=True)
+    assert stored is not None
+    assert not set(fields) & set(stored), "None is not stored"
+    assert await Preference.get(client, "p1", consistent=True) == loaded
 
 
 async def test_projections_read_what_checks_and_hydration_need(client: dynamoxy.Client) -> None:
