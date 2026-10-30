@@ -41,7 +41,9 @@ the important rules:
   Epoch seconds or milliseconds are possible too (see [timestamp formats](#timestamp-formats)).
 - Empty sets are not stored (DynamoDB has no empty sets) and read back as empty sets.
 - `X | None` fields store nothing for `None`; `REMOVE` and `None` are the same.
-- Enums store their value; `Literal["a", "b"]` restricts strings (or numbers).
+- Enums store their value; `Literal["a", "b"]` restricts strings (or numbers). A `str`, `int`
+  or `Literal` field holds a plain `str` or `int`: a member of a `(str, Enum)` or `(int, Enum)`
+  becomes its value, so keys, templates and unique values render what DynamoDB stores.
 - Nested `Document`s and pydantic models are maps; `list[Document]` works too.
 
 Custom storage: pass `codec=` (or `Annotated[T, dynamoxy.UseCodec(codec)]`). `JsonCodec` stores
