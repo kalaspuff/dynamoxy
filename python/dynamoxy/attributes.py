@@ -259,7 +259,8 @@ def field(
     """Configures a field of a :class:`dynamoxy.Model`.
 
     Args:
-        default: Value used when none is given.
+        default: Value used when none is given; each instance gets its own copy of a mutable
+            one (a list, a dict, a document).
         default_factory: Creates the value when none is given (``list``, ``uuid4``, ...).
         template: Derive the value from other fields (``"STATUS#{status}"``); such fields are
             not passed to the constructor and are recomputed on every write. Typical for
