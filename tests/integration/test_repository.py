@@ -903,6 +903,16 @@ async def test_reads_validate_key_values_like_writes(client: dynamoxy.Client) ->
     assert collected.calls == 0, "refused before any request"
 
 
+async def test_stored_keys_reach_items_stored_before_a_validator(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member)
+    members = client.model(Member)
+    legacy = {"handle": "Bob", "email": "bob@example.com", "team": "core"}  # before `handle` had validators
+    await client.table("members").put(legacy)
+    assert await members.get("Bob") is None, "get() looks up 'bob'"
+    assert [member.handle for member in await members.batch_get([{"handle": "Bob"}])] == ["Bob"]
+    assert await client.table("members").get({"handle": "Bob"}) == legacy
+
+
 async def test_writes_by_key_validate_key_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Member)
     members = client.model(Member)

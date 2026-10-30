@@ -107,9 +107,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `"ada"`. Key values given to `get()`, `exists()`, `batch_get()`, `query()` (table and index
   keys), collection queries, `Model.key()`, `Get()` and writes by key are now validated like
   stored values. A value the field refuses raises `ValueError` before any request, where such
-  reads found nothing, and so does `None`, which templated keys sent to DynamoDB. Stored-key
-  dicts are used as they are, and conditions compare with the value as given. Pydantic models
-  still check key values against the field's type only.
+  reads found nothing (an item whose key predates the rule is still read with a stored key:
+  `batch_get([{"user_id": ...}])`), and so does `None`, which templated keys sent to DynamoDB.
+  Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
+  they are, and conditions compare with the value as given. Pydantic models still check key
+  values against the field's type only.
 
 ### Security
 

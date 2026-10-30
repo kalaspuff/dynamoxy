@@ -172,6 +172,18 @@ def test_keys_from_values_and_instances() -> None:
     assert make_user().primary_key() == {"user_id": "u1"}
 
 
+def test_keys_from_values_refuse_none() -> None:
+    # Templated keys accept None as their stored value (`pk` is derived), which a key never is.
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(None, "ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(pk=None, sk="ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.customer_id: must not be None"):
+        Order.key(customer_id=None, order_id="o1")
+    with pytest.raises(ValueError, match=r"User\.user_id: must not be None"):
+        User.key(None)
+
+
 def _one_word(value: str) -> str:
     if " " in value.strip():
         raise ValueError("must be one word")
@@ -195,8 +207,6 @@ def test_keys_from_values_are_validated_like_stored_values() -> None:
         Handle.key("a", "intro")
     with pytest.raises(ValueError, match=r"Handle\.slug: must be one word"):
         Handle.key(handle="ada", slug="two words")
-    with pytest.raises(ValueError, match=r"Handle\.handle: must not be None"):
-        Handle.key(None, "intro")
 
 
 def test_schema_describes_the_model() -> None:
