@@ -99,6 +99,17 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
   not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+- Reads by key and index queries skipped the field's validators and constraints, which writes
+  run, so a validator that normalizes made items unreachable: with
+  `email = field(unique=True, validators=(str.lower,))` and `GlobalIndex(partition_key=email)`,
+  `query(index=User.by_email, email="Ada@Example.com")` returned nothing for the item stored with
+  `ada@example.com`, and `get("Ada")` missed the item whose partition key a validator stored as
+  `"ada"`. Key values given to `get()`, `exists()`, `batch_get()`, `query()` (table and index
+  keys), collection queries, `Model.key()`, `Get()` and writes by key are now validated like
+  stored values. A value the field refuses raises `ValueError` before any request, where such
+  reads found nothing, and so does `None`, which templated keys sent to DynamoDB. Stored-key
+  dicts are used as they are, and conditions compare with the value as given. Pydantic models
+  still check key values against the field's type only.
 
 ### Security
 

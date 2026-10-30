@@ -78,6 +78,18 @@ write, so nothing invalid reaches DynamoDB. Values set by `update()` are validat
 fails on constraints (stored data may predate them), only on values of the wrong type
 (`ItemDecodeError`).
 
+Key values you give, to reads and to writes by key, are validated like the stored values:
+`get()`, `exists()`, `batch_get()`, `query()` (the partition and sort key arguments, of the table
+or of an index), `User.key(...)`, and `update()`, `delete()` and transactions of a key. A
+validator that normalizes (`field(validators=(str.lower,))`) finds what it stored, so
+`query(index=User.by_email, email="Ada@Example.com")` returns the item stored with
+`ada@example.com`, and a value the field refuses (or `None`) raises `ValueError` before any
+request. A stored key, a dict of the key attributes with their stored values (`User.key("u1")`,
+`{"user_id": "u1"}`), is used as it is. Conditions (`where()`, `filter()`, `condition=`) compare
+with the value you give: they take prefixes and bounds, which constraints and validators are not
+made for. Pydantic models check key values by their type only (see the
+[pydantic guide](pydantic.md)).
+
 ## Automatic fields
 
 | Specifier | Behaviour |
