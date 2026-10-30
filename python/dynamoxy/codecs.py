@@ -639,7 +639,7 @@ class AnyCodec(Codec[Any]):
         # `bool` is an `int`: a boolean only fits a union that names bool.
         if allowed and (not isinstance(value, allowed) or (isinstance(value, bool) and bool not in allowed)):
             raise _type_error(self.describe(), value)
-        return value
+        return _plain(value)
 
     @override
     def decode(self, value: Any) -> Any:

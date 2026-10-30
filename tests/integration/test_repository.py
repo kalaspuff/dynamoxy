@@ -455,9 +455,10 @@ class Product(Model, table="products"):
     sku: Attr[str]
     shelf: Attr[Literal["top", "bottom"]] = field(default="top")
     media: Attr[Literal[Kind.BOOK, Kind.CD]] = field(default=Kind.BOOK)
+    alias: Attr[str | int] = field(default="")
     code: Attr[int] = field(default=0)
     label: Attr[str] = field(default="", unique=True)
-    gsi1pk: Attr[str] = field(template="CODE#{code}#{shelf}#{media}")
+    gsi1pk: Attr[str] = field(template="CODE#{code}#{shelf}#{media}#{alias}")
 
     by_code = GlobalIndex("gsi1", partition_key=gsi1pk)
 
@@ -472,14 +473,15 @@ async def test_members_of_mixin_enums_are_stored_as_their_values(client: dynamox
     await client.create_tables(Product)
     products = client.model(Product)
     product = await products.create(
-        Product(kind=Kind.BOOK, sku="s1", code=Code.ONE, shelf=Shelf.TOP, label=Kind.BOOK)  # pyrefly: ignore[bad-argument-type]
+        Product(kind=Kind.BOOK, sku="s1", code=Code.ONE, shelf=Shelf.TOP, label=Kind.BOOK, alias=Kind.CD)  # pyrefly: ignore[bad-argument-type]
     )
-    assert (type(product.kind), type(product.code), type(product.shelf), type(product.media)) == (str, int, str, str)
-    assert (product.pk, product.gsi1pk) == ("KIND#book#s1", "CODE#1#top#book")
+    kinds = (type(product.kind), type(product.code), type(product.shelf), type(product.media), type(product.alias))
+    assert kinds == (str, int, str, str, str)
+    assert (product.pk, product.gsi1pk) == ("KIND#book#s1", "CODE#1#top#book#cd")
     loaded = await products.get_or_raise(kind="book", sku="s1")
-    assert (loaded.media, loaded.gsi1pk) == ("book", "CODE#1#top#book")
+    assert (loaded.media, loaded.gsi1pk) == ("book", "CODE#1#top#book#cd")
     await loaded.save()  # the key it renders is the stored key
-    by_code = products.query(index=Product.by_code, code=1, shelf="top", media=Kind.BOOK)
+    by_code = products.query(index=Product.by_code, code=1, shelf="top", media=Kind.BOOK, alias=Kind.CD)
     assert [item.sku for item in await by_code.all()] == ["s1"]
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await products.create(Product(kind="book", sku="s2", label="book"))
