@@ -795,7 +795,9 @@ only when it applies once even when sent twice (transactions, puts, deletes, `SE
 Model writes store a random write id (`_wid`) and recognise their own earlier attempt by it, so
 a timed-out `create()`, `save()` or `increment()` that was applied succeeds, applied once.
 Otherwise (another writer wrote in between, deletes, the dict-level API, models declared with
-`write_ids=False`) the call raises `WriteOutcomeUnknownError`, never a conflict error.
+`write_ids=False`) the call raises `WriteOutcomeUnknownError`, never a conflict error, and so
+does a write whose attempts ran out after one that may have been applied (never a retryable
+`ThrottlingError` or `InternalServerError`).
 
 ### Credentials and region
 

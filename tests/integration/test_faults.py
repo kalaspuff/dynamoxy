@@ -80,10 +80,17 @@ async def test_retries_give_up(client: dynamoxy.Client) -> None:
 async def test_retryable_errors(client: dynamoxy.Client, fault: str, expected: type[Exception]) -> None:
     testing.inject_fault(client, operation="PutItem", error=fault, times=2)
     await client.model(Event).put(event(1))
-    testing.inject_fault(client, operation="PutItem", error=fault, times=3)
+    testing.inject_fault(client, operation="GetItem", error=fault, times=3)
     with pytest.raises(expected) as caught:
-        await client.model(Event).put(event(2))
+        await client.model(Event).get("s", 1)
     assert caught.value.retryable  # type: ignore[attr-defined]
+    # A write whose attempts all failed: a 5xx may have been applied ("the operation may have
+    # succeeded or failed"), so the outcome is unknown; other errors applied nothing.
+    testing.inject_fault(client, operation="PutItem", error=fault, times=3)
+    unknown = fault in ("internal", "unavailable")
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError if unknown else expected) as caught:
+        await client.model(Event).put(event(2))
+    assert caught.value.retryable is not unknown  # type: ignore[attr-defined]
 
 
 async def test_errors_that_are_not_retried(client: dynamoxy.Client) -> None:
@@ -181,6 +188,38 @@ async def test_model_writes_recognise_their_own_earlier_attempt(client: dynamoxy
     assert updated.visits == 1
     assert (await users.get_or_raise("u1")).visits == 1, "applied once"
     assert client.metrics().operations["UpdateItem"].attempts == 1
+
+
+async def test_writes_that_run_out_of_attempts_after_a_lost_response_are_settled(client: dynamoxy.Client) -> None:
+    # The first attempt creates the item and its response is lost; the others are throttled. The
+    # call does not report the throttling (as if nothing was written): the outcome is unknown,
+    # and the write id settles it.
+    events = client.model(Event)
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    testing.inject_fault(client, operation="PutItem", error="throttling", times=2)
+    with testing.capture_events(client, "request.outcome_*") as outcomes:
+        created = await events.create(event(3))
+    assert created.is_loaded
+    assert [entry.kind for entry in outcomes] == [
+        dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN,
+        dynamoxy.EventKind.REQUEST_OUTCOME_SETTLED,
+    ]
+    # The dict-level API reports the unknown outcome.
+    testing.inject_fault(client, operation="PutItem", lose_response=True)
+    testing.inject_fault(client, operation="PutItem", error="throttling", times=2)
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError, match="no later attempt answered whether it was"):
+        await events.table.put({"stream": "s", "seq": 4, "kind": "k"})
+
+
+async def test_calls_in_progress_finish_their_retries_after_close() -> None:
+    async with testing.memory_client(timeout=0.05, retry=dynamoxy.RetryPolicy(base_delay=0, max_delay=0)) as client:
+        await client.create_tables(Event)
+        testing.inject_fault(client, operation="PutItem", latency=0.5)  # the first attempt times out
+        put = asyncio.create_task(client.model(Event).create(event(1)))
+        await asyncio.sleep(0.01)
+        await client.close()
+        created = await put
+        assert created.is_loaded
 
 
 async def test_writes_overwritten_since_their_lost_attempt_stay_unknown(client: dynamoxy.Client) -> None:

@@ -66,6 +66,17 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   AWS clients failed the same way before sending an `UpdateItem`, whose expression dynamoxy
   parses to decide whether a retry is safe. Such expressions are now syntax errors
   (`ValidationException`), and AWS clients send them to DynamoDB.
+- A write whose retries ran out after an attempt that may have been applied raised the last
+  attempt's error, a `ThrottlingError` or `InternalServerError` that says it is retryable, so
+  the write ids never settled it: `create()` raised `ThrottlingError` for an item it had stored,
+  and the application's retry then raised `ItemAlreadyExistsError`; a transaction that was
+  applied raised `TransactionInProgressError`, and repeating it applied it twice. A 5xx on the
+  last attempt of an increment did the same, where one on an earlier attempt raised
+  `WriteOutcomeUnknownError`. Such writes now raise `WriteOutcomeUnknownError` (model writes
+  settle it by their write id), also with a single attempt. Reads still raise the last error.
+- `close()` refused the retries of calls in progress, so a write whose first attempt may have
+  been applied raised `ShutdownError`, as if nothing had happened. Calls in progress now finish,
+  retries included, as the core documented; new calls are refused.
 
 ### Security
 

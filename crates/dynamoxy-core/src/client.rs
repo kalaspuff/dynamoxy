@@ -227,6 +227,9 @@ enum Unsettled {
     OldValues(Option<Item>),
     /// No old item, which the earlier attempt may have deleted.
     Deleted,
+    /// No answer: the call gave up (the last attempt failed with a retryable error, which applies
+    /// nothing but says nothing about the earlier attempt), or it got no response.
+    NoAnswer(String),
 }
 
 /// Which old values of an item write the earlier attempt may have shaped.
@@ -254,9 +257,35 @@ struct Safety<T> {
 }
 
 impl<T> Safety<T> {
-    /// Reads, transactions and writes that apply once even when sent twice, without conditions.
+    /// Reads, and writes that apply once even when sent twice and whose answers stay the same
+    /// (batch writes, which have no conditions and return nothing of the items).
     fn resendable() -> Self {
         Self { resend: true, settle: None, old_values: OldValues::Trusted }
+    }
+
+    /// Transactions: their token makes a later attempt return the earlier one's result, so only
+    /// the lack of an answer leaves the outcome unknown.
+    fn transaction() -> Self {
+        Self { resend: true, settle: Some(settle_write::<T>), old_values: OldValues::Trusted }
+    }
+}
+
+/// Whether a failure says nothing about an earlier attempt: no answer came (a timeout, a lost
+/// connection, a 5xx, ...), or DynamoDB refused this attempt only (throttling, conflicts).
+fn answers_nothing(error: &Error) -> bool {
+    match error {
+        Error::Service(service) => service.is_retryable(),
+        Error::OutcomeUnknown { .. } | Error::Config(_) => false,
+        Error::Validation(_) | Error::Transport { .. } | Error::Credentials(_) | Error::Shutdown => true,
+    }
+}
+
+/// Whether the answer to a write settles nothing ([`settle_item_write`] and [`settle_statement`]
+/// look at the answers to item writes too).
+fn settle_write<T>(result: &Result<T>, _: OldValues) -> Option<Unsettled> {
+    match result {
+        Err(error) if answers_nothing(error) => Some(Unsettled::NoAnswer(reason(error))),
+        _ => None,
     }
 }
 
@@ -270,7 +299,7 @@ fn settle_item_write(result: &Result<WriteItemOutput>, old_values: OldValues) ->
             Some(Unsettled::OldValues(output.attributes.clone()))
         }
         Ok(output) if old_values == OldValues::Absent && output.attributes.is_none() => Some(Unsettled::Deleted),
-        _ => None,
+        _ => settle_write(result, old_values),
     }
 }
 
@@ -284,7 +313,7 @@ fn settle_statement(result: &Result<ExecuteStatementOutput>, old_values: OldValu
             Some(Unsettled::OldValues(output.items.first().cloned()))
         }
         Ok(output) if old_values == OldValues::Absent && output.items.is_empty() => Some(Unsettled::Deleted),
-        _ => None,
+        _ => settle_write(result, old_values),
     }
 }
 
@@ -361,7 +390,7 @@ impl Client {
         &self.inner.config
     }
 
-    /// Refuses new calls from now on (calls in progress finish).
+    /// Refuses new calls from now on (calls in progress finish, retries included).
     pub fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
     }
@@ -395,10 +424,12 @@ impl Client {
         let table = table.unwrap_or("");
         let mut attempts = 0;
         let mut throttles = 0;
-        // What the last attempt that may have been applied failed with.
-        let mut uncertain: Option<String> = None;
+        // What the last attempt that may have been applied failed with, and whether it was the
+        // last attempt of the call.
+        let mut uncertain: Option<(String, u32)> = None;
         let result = loop {
-            if self.is_closed() {
+            // Calls in progress finish their retries after `close()`; new calls are refused.
+            if attempts == 0 && self.is_closed() {
                 break Err(Error::Shutdown);
             }
             attempts += 1;
@@ -429,18 +460,8 @@ impl Client {
             if !retryable {
                 break Err(error);
             }
-            if attempts >= config.retry.max_attempts {
-                self.emit(EventKind::RequestGaveUp, || {
-                    Event::new(
-                        EventKind::RequestGaveUp,
-                        format!("{} failed after {attempts} attempts: {error}", operation.as_str()),
-                    )
-                    .field("operation", operation.as_str())
-                    .field("table", table)
-                    .field("attempts", attempts)
-                });
-                break Err(error);
-            }
+            // Also on the last attempt: one that may have been applied leaves the outcome unknown
+            // whether or not attempts are left.
             if error.may_have_been_applied() {
                 if !safety.resend {
                     break Err(Error::OutcomeUnknown {
@@ -453,7 +474,19 @@ impl Client {
                         item: None,
                     });
                 }
-                uncertain = Some(reason(&error));
+                uncertain = Some((reason(&error), attempts));
+            }
+            if attempts >= config.retry.max_attempts {
+                self.emit(EventKind::RequestGaveUp, || {
+                    Event::new(
+                        EventKind::RequestGaveUp,
+                        format!("{} failed after {attempts} attempts: {error}", operation.as_str()),
+                    )
+                    .field("operation", operation.as_str())
+                    .field("table", table)
+                    .field("attempts", attempts)
+                });
+                break Err(error);
             }
             let delay = backoff(&config.retry, attempts);
             self.emit(EventKind::RequestRetry, || {
@@ -470,7 +503,7 @@ impl Client {
             _ => None,
         };
         let result = match (unsettled, uncertain) {
-            (Some(unsettled), Some(earlier)) => {
+            (Some(unsettled), Some((earlier, attempt))) => {
                 let (message, item) = match unsettled {
                     Unsettled::Condition(item) => (
                         format!(
@@ -490,6 +523,16 @@ impl Client {
                         format!(
                             "the outcome is unknown: an attempt may have deleted the item ({earlier}), so what it \
                              held is not known"
+                        ),
+                        None,
+                    ),
+                    Unsettled::NoAnswer(_) if attempt == attempts => {
+                        (format!("the outcome is unknown: the last attempt may have been applied ({earlier})"), None)
+                    }
+                    Unsettled::NoAnswer(last) => (
+                        format!(
+                            "the outcome is unknown: an attempt may have been applied ({earlier}), and no later \
+                             attempt answered whether it was ({last})"
                         ),
                         None,
                     ),
@@ -608,7 +651,7 @@ impl Client {
             input.client_request_token = Some(request_token());
         }
         let table = input.transact_items.first().map(|item| item.target().table_name.clone());
-        call!(self, TransactWriteItems, table.as_deref(), transact_write_items(input))
+        call!(self, TransactWriteItems, table.as_deref(), transact_write_items(input); Safety::transaction())
     }
 
     /// `ExecuteStatement` (PartiQL). Writes are classified like item writes ([`partiql::effect`]).
@@ -638,7 +681,7 @@ impl Client {
             .statements
             .iter()
             .all(|statement| partiql::effect(&statement.statement, &statement.parameters) == Effect::Read);
-        let safety = if reads { Safety::resendable() } else { Safety { resend: false, ..Safety::resendable() } };
+        let safety = if reads { Safety::resendable() } else { Safety { resend: false, ..Safety::transaction() } };
         call!(self, BatchExecuteStatement, None, batch_execute_statement(input); safety)
     }
 
@@ -651,7 +694,8 @@ impl Client {
         if input.client_request_token.is_none() && writes {
             input.client_request_token = Some(request_token());
         }
-        call!(self, ExecuteTransaction, None, execute_transaction(input))
+        let safety = if writes { Safety::transaction() } else { Safety::resendable() };
+        call!(self, ExecuteTransaction, None, execute_transaction(input); safety)
     }
 
     fn table_event(&self, kind: EventKind, verb: &str, description: &TableDescription) {

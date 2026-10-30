@@ -479,7 +479,7 @@ impl PyCoreClient {
         self.client.memory_backend().map(|backend| PyMemoryStore { backend: backend.clone() })
     }
 
-    /// Refuses new calls from now on.
+    /// Refuses new calls from now on (calls in progress finish, retries included).
     fn close(&self) {
         self.client.close();
     }
