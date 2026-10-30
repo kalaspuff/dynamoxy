@@ -22,6 +22,8 @@
 //! key value, then by sort key, each in the direction of its first `ORDER BY` key (ascending by
 //! default), and pages continue in that order.
 
+use std::collections::BTreeSet;
+
 use super::items::{Failure, Prepared, apply, prepare_delete, prepare_put, prepare_update};
 use super::table::{CapacityMeter, KeyInfo, StoredKey, Table, read_units};
 use super::{State, TokenRecord, now};
@@ -879,6 +881,23 @@ fn full_key(table: &Table, condition: &Condition) -> Result<Item> {
     Ok(key)
 }
 
+/// The item a statement reads or writes: its table name and key (for a write, the key
+/// [`prepare_write`] writes). `None` when the table does not exist or the statement names no
+/// full key.
+fn addressed_item<'a>(state: &State, statement: &'a Statement) -> Option<(&'a str, StoredKey)> {
+    let table = state.tables.get(statement.table())?;
+    let key = match statement {
+        Statement::Insert { item, .. } => table.key.item_key(item),
+        Statement::Update { condition, .. }
+        | Statement::Delete { condition, .. }
+        | Statement::Select { condition: Some(condition), .. } => {
+            full_key(table, condition).and_then(|key| table.key.exact_key(&key))
+        }
+        Statement::Select { condition: None, .. } => return None,
+    };
+    Some((statement.table(), key.ok()?))
+}
+
 /// Prepares a write statement (shared by single statements, batches and transactions).
 fn prepare_write(state: &State, statement: &Statement) -> Result<(Prepared, Returning), Failure> {
     let table = state.table(statement.table())?;
@@ -1167,6 +1186,17 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
     let reads = statements.iter().filter(|statement| statement.is_read()).count();
     if reads != 0 && reads != statements.len() {
         return Err(invalid("Transaction must contain either all reads or all writes"));
+    }
+    // DynamoDB refuses a transaction that names an item twice, like TransactWriteItems and
+    // TransactGetItems (every write is prepared against the items as they were, so the second
+    // would undo the first). A statement without a table or a full key fails on its own below.
+    let mut items = BTreeSet::new();
+    for statement in &statements {
+        if let Some(item) = addressed_item(state, statement)
+            && !items.insert(item)
+        {
+            return Err(invalid("Transaction request cannot include multiple operations on one item"));
+        }
     }
     if let Some(token) = &input.client_request_token {
         let fingerprint = {
