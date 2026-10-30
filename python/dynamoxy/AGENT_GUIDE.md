@@ -112,7 +112,7 @@ values are stored (see `dynamoxy.codecs`):
 | `set[X]`, `frozenset[X]` | `SS` / `NS` / `BS` (empty sets are not stored) |
 | `dict[str, X]` | `M` |
 | a `dynamoxy.Document` or pydantic model | `M` |
-| `X \| None` | `X`, or nothing when `None` |
+| `X \| None`, `Literal[..., None]` | `X`, or nothing when `None` (also with a `codec=` of its own) |
 | `Any` | as given |
 
 Reading is exact: a stored value of another type, or one the field's type cannot hold (`2.5` in an
