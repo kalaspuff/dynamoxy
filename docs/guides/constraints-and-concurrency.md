@@ -77,6 +77,10 @@ Prefer atomic updates when the change does not depend on the current value:
 `save()` of a *new* instance (never loaded) behaves like `create()` for versioned models: it fails
 if the key exists. Use `put()` to overwrite unconditionally.
 
+Items stored before the model had a `version()` field load with `version` `None`. `save()` of
+such an instance requires that the item still exists without a version, and stores version 1;
+`VersionConflictError` says that another writer saved it first, or deleted it.
+
 ## Conditions as business rules
 
 Any write takes `condition=`. Typical rules:

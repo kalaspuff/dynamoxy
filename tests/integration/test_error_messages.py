@@ -78,7 +78,7 @@ async def test_conflicts(users: dynamoxy.Repository[User]) -> None:
         await users.save(stale)
     assert_private(conflict.value, PERSON, EMAIL)
     assert conflict.value.key == {"user_id": PERSON}
-    assert "stored version 2, expected 1" in str(conflict.value)
+    assert "stored version 2, expected version 1" in str(conflict.value)
 
     with pytest.raises(dynamoxy.ConditionalCheckFailedError) as failed:
         await users.save(user, condition=User.name == "Augusta")
