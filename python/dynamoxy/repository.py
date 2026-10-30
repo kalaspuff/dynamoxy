@@ -1104,8 +1104,10 @@ class Repository[M]:
 
         The entity type is set, and every field the actions leave alone gets ``if_not_exists``:
         the instance's value, or for keys the given field values and the field's default.
-        Existing items keep their values. Returns the actions and the Python values a created
-        item gets.
+        Existing items keep their values. Keys give no default to fields that store a value as
+        no attribute (``None``, an empty set): ``if_not_exists`` would replace an existing
+        item's, so a created item reads that value. Returns the actions and the Python values a
+        created item gets.
 
         Raises:
             ValueError: Before any I/O: a required field has no value, or a unique value needs
@@ -1128,6 +1130,8 @@ class Repository[M]:
                 value = schema.adapter.get(instance, spec.name)
             elif spec.name in provided:
                 value = spec.validate(provided[spec.name])
+            elif spec.empty() is not MISSING:
+                continue  # an existing item's None or empty set is no attribute either
             else:
                 value = spec.initial()
             if value is MISSING or value is None:
@@ -1201,6 +1205,8 @@ class Repository[M]:
         instance: untouched fields get their defaults (or the instance's values) with
         ``if_not_exists``, derived keys and the entity type are written, and required fields
         without a default must be set by the actions (``User.name.set_if_not_exists("Ada")``).
+        Key targets give ``X | None`` and set fields no default, since ``if_not_exists`` would
+        replace an existing item's ``None`` or empty set: a created item reads those.
 
         Example::
 

@@ -113,3 +113,18 @@ async def test_emptying_a_set_checks_its_constraints(client: dynamoxy.Client) ->
             with pytest.raises(dynamoxy.ValidationError, match="must have at least 1"):
                 await team.update(action)
     assert collected.calls == 0, "nothing was sent"
+
+
+async def test_upserts_by_key_give_no_default_over_none_or_an_empty_set(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member)
+    members = client.model(Member)
+    await Member.create(client, member_id="m1", nickname=None, roles=set())
+    # if_not_exists(nickname, "anon") cannot tell this item's None (no attribute) from a new item.
+    updated = await members.update(Member.key("m1"), Member.visits.increment(1), upsert=True)
+    assert (updated.nickname, updated.roles, updated.visits) == (None, set(), 8)
+    created = await members.update(Member.key("m2"), Member.visits.increment(1), upsert=True)
+    assert (created.nickname, created.roles, created.badges, created.visits) == (None, set(), frozenset(), 1)
+    named = await members.update(
+        Member.key("m3"), Member.nickname.set_if_not_exists("Ada"), Member.roles.add({"member"}), upsert=True
+    )
+    assert (named.nickname, named.roles, named.visits) == ("Ada", {"member"}, 7)

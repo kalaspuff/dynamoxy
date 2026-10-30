@@ -466,7 +466,9 @@ Every write of a repository takes `condition=`; when it does not hold,
 the actions leave alone get their defaults (and existing items keep their values), derived keys
 and the entity type are filled in, and every required field without a default must be set by the
 actions, typically with `set_if_not_exists(...)`. Otherwise dynamoxy raises `ValueError` before
-any I/O. For templated keys, pass the key as field values
+any I/O. `X | None` and set fields of key targets get no default, since `if_not_exists` would
+replace an existing item's `None` or empty set: a created item reads those unless the actions set
+them. For templated keys, pass the key as field values
 (`orders.update({"customer_id": "c1", "order_id": "o1"}, ..., upsert=True)`).
 
 ### Writing through an instance

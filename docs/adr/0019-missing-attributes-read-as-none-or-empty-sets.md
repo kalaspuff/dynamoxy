@@ -35,6 +35,10 @@ of these fields, and documenting the behaviour would leave revoked roles coming 
   constraints (they raised "is required and cannot be removed"); `set_if_not_exists(set())`
   raises like `set_if_not_exists(None)`; and `== set()` and `!= set()` compare like `== None` and
   `!= None`.
+* Upserts by key (`update(Model.key(...), ..., upsert=True)`) give such fields no default:
+  `if_not_exists(nickname, "anon")` cannot tell a new item from an existing item's `None`, and
+  would replace it. A created item reads `None` or an empty set there unless the actions set it.
+  Upserts of instances still write the instance's values with `if_not_exists`.
 * The stored format does not change.
 
 ## Consequences
@@ -47,5 +51,8 @@ of these fields, and documenting the behaviour would leave revoked roles coming 
   the default, backfill it (`update(item, Model.field.set_if_not_exists(default))` for each item
   of a scan that has no such attribute), or make the field required (`str` instead of
   `str | None`) when it never needs to be `None`.
+* Items that an upsert by key creates read `None` or an empty set in such fields, rather than a
+  default that is neither, unless the actions set them (`set_if_not_exists(...)`, which also
+  fills an existing item's `None` or empty set).
 * A `set[X] | None` field cannot tell `None` from an empty set; declare `set[X]` when the
   difference does not matter.

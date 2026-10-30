@@ -168,7 +168,11 @@ created item must be a complete model item, so dynamoxy:
 
 - writes the entity type (single-table models) and `created_at`, `updated_at` and `version`;
 - gives every field the actions leave alone its value with `if_not_exists`: the field's default
-  for key targets, the instance's value for instance targets (existing items keep theirs);
+  for key targets, the instance's value for instance targets (existing items keep theirs).
+  `X | None` and set fields of key targets get no default: they store `None` and empty sets as
+  no attribute, which `if_not_exists` cannot tell from a new item, so it would replace an
+  existing item's. A created item reads `None` or an empty set there unless the actions set it
+  (an instance's value fills an existing item's `None` or empty set the same way);
 - renders derived (templated) attributes from those values, also only where missing;
 - refuses, before any I/O, an upsert that leaves a required field without a value. Provide it in
   the actions, usually with `set_if_not_exists(...)`, which never overwrites an existing value:

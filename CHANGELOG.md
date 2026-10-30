@@ -35,6 +35,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   a model field removes the attribute like `set(None)` (it stored a `NULL`, on which later
   `add()` failed), `remove()` and `set(set())` of a set field empty it (they raised
   `ValidationError`), and `== set()` and `!= set()` compare like `== None` and `!= None`.
+  Upserts by key no longer give `X | None` and set fields their defaults, which
+  `if_not_exists` wrote over an existing item's `None` or empty set: an item they create reads
+  `None` or an empty set there unless the actions set it.
 
 ### Deprecated
 
