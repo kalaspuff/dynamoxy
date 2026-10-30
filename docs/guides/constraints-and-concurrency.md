@@ -28,15 +28,27 @@ nothing is written. `None` values have no guard (several items may have no handl
 `update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
 DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value.
 
-A `put()` (or `save()` of an unversioned model) of an instance whose unique values another writer
-changed since it was loaded reads the stored item and writes again, so it replaces what is stored
-and moves the guards with it, as `put()` promises.
+A `delete()` of an item that is not stored has no guards to delete and writes nothing, unless it
+has a `condition=`: then it checks the condition on the missing item, as DynamoDB does for any
+delete. `users.delete("u1", condition=User.name == "Ada")` raises `ConditionalCheckFailedError`
+when there is no item `u1`, and the same `tx.delete(...)` cancels its transaction.
+
+A write of an instance whose unique values another writer changed since it was loaded reads the
+stored item and writes again when nothing else of the write can have failed: `put()`, and
+`save()`, `update()` and `delete()` of unversioned models, without a `condition=`. `put()`
+replaces what is stored and moves the guards with it, as it promises, and `update()` and
+`delete()` change or delete the item with the guards of its values as stored now. When another
+writer deleted the item, they behave as for other models: `put()` and `save()` store it again,
+`delete()` returns `None` and `update()` raises `ItemNotFoundError`. A transaction cannot read
+again: such a write cancels it with a `ConditionalCheckFailedError` that says to `refresh()` the
+instance and retry.
 
 **Costs and requirements.**
 
 - Writes of unique models are transactional: 2x write capacity, plus a guard write per changed
   value. A delete or change of an instance that was not loaded first reads the stored item to
-  find the old values (one consistent read).
+  find the old values (one consistent read); a write of a loaded instance whose unique values
+  changed meanwhile costs that read and a second transaction.
 - The table's partition key must be a string attribute (guards share it).
 - Batch writes are refused (they cannot be transactional).
 - `update()` must set unique fields with `set()` or `remove()`.

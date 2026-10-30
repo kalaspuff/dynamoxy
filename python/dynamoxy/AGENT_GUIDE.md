@@ -436,7 +436,7 @@ await users.update(user, User.visits.set(User.visits + 10), condition=User.visit
 await stats.update(PageStats.key("home"), PageStats.views.add(1), upsert=True)  # creates it when missing
 
 deleted = await users.delete(user)  # returns the deleted item, or None
-await users.delete("u2", condition=User.visits == 0)
+await users.delete("u2", condition=User.visits == 0)  # the condition fails for a missing item too
 ```
 
 Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, `add(n or set)`,
@@ -530,6 +530,9 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
   value). Numbers are guarded as DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` collide.
 - Writes of unique models are transactions: twice the write capacity, plus one guard write per
   changed value. Batch writes are refused for them.
+- When another writer changed the unique values of a loaded instance, `put()`, and `save()`,
+  `update()` and `delete()` of unversioned models without a `condition=`, read the stored item
+  and write again; in a transaction, such a write cancels it (`refresh()` the instance and retry).
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
 - Writing such items with other tools bypasses the guards: route writes through dynamoxy.
 

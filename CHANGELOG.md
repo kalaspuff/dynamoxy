@@ -99,6 +99,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
   not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+- Deletes of models with unique attributes ignored their `condition=` when no item was stored:
+  `delete(key, condition=...)` returned `None`, and `tx.delete(...)` was left out of the
+  transaction, so a delete used as the guard of a transaction let the rest commit. As for other
+  models, the condition now applies to the missing item, as in DynamoDB: one that does not hold
+  for it raises `ConditionalCheckFailedError` or cancels the transaction. Such a delete of a
+  missing item also runs its `after_delete` hooks and leaves the instance unloaded, as for other
+  models.
+- Deletes and updates of loaded instances of unversioned models with unique attributes raised an
+  unexplained `ConditionalCheckFailedError` ("the condition of delete failed", without a
+  condition) when another writer had changed a unique value since the instance was loaded, and
+  `delete()` failed the same way when another writer had deleted the item, where other models
+  return `None`. Like `put()`, they now read the stored item and write again: `update()` moves
+  the guards of the values stored now, and `delete()` deletes the item with them or returns
+  `None`. In transactions, which cannot read again, the error says to `refresh()` the instance
+  and retry. `delete()` of an instance without unique values set whose item another writer had
+  deleted returned the item as loaded instead of `None`.
 
 ### Security
 

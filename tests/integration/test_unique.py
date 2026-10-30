@@ -209,3 +209,160 @@ async def test_put_of_an_instance_whose_unique_values_changed_meanwhile(client: 
         "_unique#Profile#handle#two",
         "_unique#Profile#seat#1",
     ]
+
+
+def record_write_hooks(client: dynamoxy.Client) -> list[str]:
+    """The update and delete hooks that run for profiles from now on, in order."""
+    calls: list[str] = []
+    client.hook("before_update", Profile)(lambda profile, context: calls.append("before_update"))
+    client.hook("after_update", Profile)(lambda profile, context: calls.append("after_update"))
+    client.hook("before_delete", Profile)(lambda profile, context: calls.append("before_delete"))
+    client.hook("after_delete", Profile)(lambda profile, context: calls.append("after_delete"))
+    return calls
+
+
+async def test_conditional_deletes_of_missing_items_check_the_condition(client: dynamoxy.Client) -> None:
+    await client.create_tables(User, Profile)
+    profiles = client.model(Profile)
+    # As without unique attributes, the condition applies to the missing item: the delete fails
+    # unless it holds for an item that does not exist.
+    with pytest.raises(dynamoxy.ConditionalCheckFailedError) as caught:
+        await profiles.delete("p1", condition=Profile.handle == "ada")
+    assert type(caught.value) is dynamoxy.ConditionalCheckFailedError
+    assert (caught.value.key, caught.value.item) == (Profile.key("p1"), None)
+    with pytest.raises(dynamoxy.ConditionalCheckFailedError) as caught:
+        await client.model(User).delete(User.key("u1"), condition=User.name == "Ada")
+    assert type(caught.value) is dynamoxy.ConditionalCheckFailedError, "not a version conflict"
+    assert await profiles.delete("p1", condition=Profile.handle.not_exists()) is None
+    assert await profiles.table.scan(consistent=True).all() == []
+
+
+async def test_conditional_deletes_of_missing_items_guard_transactions(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    with pytest.raises(dynamoxy.TransactionCanceledError) as caught:  # noqa: PT012 - the block commits
+        async with client.transaction() as tx:
+            tx.delete(Profile.key("p1"), model=Profile, condition=Profile.handle == "ada")
+            tx.create(Profile(profile_id="p2", handle="bo"))
+    reasons = dynamoxy.cancellation_reasons(caught.value)
+    assert [(reason.operation, reason.code) for reason in reasons] == [
+        ("delete Profile", "ConditionalCheckFailed"),
+        ("create Profile", "None"),
+        ("create Profile", "None"),
+    ]
+    assert type(reasons[0].error) is dynamoxy.ConditionalCheckFailedError
+    assert await profiles.get("p2") is None, "the rest of the transaction was not applied"
+    async with client.transaction() as tx:
+        tx.delete(Profile.key("p1"), model=Profile, condition=Profile.handle.not_exists())
+        tx.create(Profile(profile_id="p2", handle="bo"))
+    assert await profiles.get("p2") is not None
+    with dynamoxy.collect() as collected:
+        await client.transaction().delete(Profile.key("p1"), model=Profile).commit()
+    assert collected.by_operation() == {"GetItem": 1}, "nothing to delete, and nothing to check"
+
+
+async def test_conditional_deletes_read_again_when_the_item_is_stored_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+
+    async def store_after_the_read(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        response = await call_next(request)
+        if request.operation == "GetItem":
+            remove()
+            await profiles.create(Profile(profile_id="p1", handle="ada"))
+        return response
+
+    remove = client.use(store_after_the_read)
+    # The read finds no item, and the delete requires that there still is none: it fails, and is
+    # planned again from the item stored meanwhile, so the item and its guard go together.
+    deleted = await profiles.delete("p1", condition=Profile.handle == "ada")
+    assert deleted is not None
+    assert deleted.handle == "ada"
+    assert await profiles.table.scan(consistent=True).all() == []
+    # A transaction cannot plan again: it is canceled, and the item keeps its guard.
+    remove = client.use(store_after_the_read)
+    with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
+        await client.transaction().delete(Profile.key("p1"), model=Profile, condition=Profile.handle == "ada").commit()
+    (error,) = caught.value.errors
+    assert type(error) is dynamoxy.ConditionalCheckFailedError
+    assert "another writer stored the item after it was read: retry" in str(error)
+    assert await guards(profiles) == ["_unique#Profile#handle#ada"]
+    assert await profiles.delete("p1", condition=Profile.handle == "ada") is not None
+
+
+async def test_deletes_of_instances_deleted_meanwhile_return_none(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    calls = record_write_hooks(client)
+    # As without unique attributes: nothing is deleted, and the instance is no longer loaded.
+    for profile_id, handle in (("p1", "ada"), ("p2", None)):
+        stale = await profiles.create(Profile(profile_id=profile_id, handle=handle))
+        await profiles.delete(profile_id)
+        assert await profiles.delete(stale) is None
+        assert not stale.is_loaded
+    assert calls == ["before_delete", "after_delete"] * 2, "hooks of instances only, once per delete"
+    assert await profiles.delete(Profile(profile_id="p3")) is None
+    assert calls[4:] == ["before_delete", "after_delete"]
+    assert await profiles.table.scan(consistent=True).all() == []
+
+
+async def test_deletes_of_instances_whose_unique_values_changed_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one"))
+    unset = await profiles.create(Profile(profile_id="p2"))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("two"), Profile.seat.set(Decimal(1)))
+    await profiles.update(Profile.key("p2"), Profile.handle.set("three"))
+    calls = record_write_hooks(client)
+    with dynamoxy.collect() as collected:
+        deleted = await profiles.delete(stale)  # reads the stored item, and deletes it with its guards
+    assert deleted is not None
+    assert (deleted.handle, deleted.seat) == ("two", Decimal(1))
+    assert collected.by_operation() == {"TransactWriteItems": 2, "GetItem": 1}
+    assert calls == ["before_delete", "after_delete"]
+    assert not stale.is_loaded
+    deleted = await profiles.delete(unset)  # a delete without guards, which another writer added
+    assert deleted is not None
+    assert deleted.handle == "three"
+    assert await profiles.table.scan(consistent=True).all() == []
+
+
+async def test_updates_of_instances_whose_unique_values_changed_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one"))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("two"))
+    calls = record_write_hooks(client)
+    await profiles.update(stale, Profile.handle.set("three"))  # reads the stored item, and moves its guard
+    assert stale.handle == "three"
+    assert calls == ["before_update", "after_update"]
+    assert (await profiles.get_or_raise("p1")).handle == "three"
+    assert await guards(profiles) == ["_unique#Profile#handle#three"]
+    await profiles.update(Profile.key("p1"), Profile.handle.remove())
+    await stale.update(Profile.seat.set(Decimal(2)), Profile.handle.set("four"))
+    assert await guards(profiles) == ["_unique#Profile#handle#four", "_unique#Profile#seat#2"]
+    await profiles.delete("p1")
+    with pytest.raises(dynamoxy.ItemNotFoundError):
+        await profiles.update(stale, Profile.handle.set("five"))
+    assert await profiles.table.scan(consistent=True).all() == []
+
+
+async def test_transactions_explain_stale_unique_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+    stale = await profiles.create(Profile(profile_id="p1", handle="one"))
+    await profiles.update(Profile.key("p1"), Profile.handle.set("two"))
+    # A transaction cannot read the item again: it is canceled, and says why.
+    for transaction in (
+        client.transaction().delete(stale),
+        client.transaction().update(stale, Profile.handle.set("three")),
+    ):
+        with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
+            await transaction.commit()
+        (error,) = caught.value.errors
+        assert type(error) is dynamoxy.ConditionalCheckFailedError
+        assert "may have changed since the instance was loaded: refresh() it and retry" in str(error)
+    await stale.refresh()
+    async with client.transaction() as tx:
+        tx.delete(stale)
+    assert await profiles.table.scan(consistent=True).all() == []

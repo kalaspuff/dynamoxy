@@ -101,7 +101,7 @@ class _Step:
     """A registered operation, planned at commit."""
 
     description: str
-    plan: Callable[[], Awaitable[_WritePlan | list[dict[str, Any]] | None]]
+    plan: Callable[[], Awaitable[_WritePlan | list[dict[str, Any]]]]
 
 
 class Transaction:
@@ -176,7 +176,11 @@ class Transaction:
         )
 
     def delete(self, target: Any, *, condition: Condition | bool | None = None, model: type | None = None) -> Self:
-        """Deletes an item (an instance, or a stored key with ``model=``)."""
+        """Deletes an item (an instance, or a stored key with ``model=``).
+
+        As in DynamoDB, ``condition`` also applies when nothing is stored: a condition that does
+        not hold for the missing item cancels the transaction.
+        """
         resolved = model or _model_of(target, ())
         repository = self._repository(resolved, target)
         return self._add(f"delete {resolved.__name__}", lambda: repository._plan_delete(target, condition))
@@ -274,13 +278,13 @@ class Transaction:
         plans: list[_WritePlan] = []
         for index, step in enumerate(self._steps):
             planned = await step.plan()
-            if planned is None:  # e.g. deleting an item that does not exist (unique guards)
-                continue
             if isinstance(planned, list):
                 for operation in planned:
                     operations.append(operation)
                     owners.append((index, None, None))
                 continue
+            # A plan may have no operations (a delete of an item that is not stored, unique
+            # guards): it is only finalized.
             plans.append(planned)
             for operation, explain in zip(planned.plan.operations, planned.plan.explain, strict=True):
                 operations.append(operation)
@@ -290,18 +294,17 @@ class Transaction:
                 f"the transaction has {len(operations)} operations (guard items of unique attributes included); "
                 f"DynamoDB allows {MAX_OPERATIONS}"
             )
-        if not operations:
-            return
-        try:
-            await self.client.call(
-                "transact_write_items",
-                "TransactWriteItems",
-                transact_items=operations,
-                client_request_token=self.token or str(uuid.uuid4()),
-            )
-        except TransactionCanceledError as error:
-            self._explain(error, owners)
-            raise
+        if operations:
+            try:
+                await self.client.call(
+                    "transact_write_items",
+                    "TransactWriteItems",
+                    transact_items=operations,
+                    client_request_token=self.token or str(uuid.uuid4()),
+                )
+            except TransactionCanceledError as error:
+                self._explain(error, owners)
+                raise
         # Every write was made: each instance is finalized even when a hook of another one raises.
         errors: list[Exception] = []
         for plan in plans:
