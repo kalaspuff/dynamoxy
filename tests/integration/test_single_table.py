@@ -206,6 +206,13 @@ async def test_limits_grow_but_stay_bounded(client: dynamoxy.Client, monkeypatch
     assert memo is not None
     assert memo.memo_id == "m1"
     assert limits == [1, 2**20], "the other item came first, then a bounded request"
+    # Limits and page sizes larger than a request can say are bounded too.
+    limits.clear()
+    memos = Memo.query(client, user_id="u1")
+    assert len((await memos.limit(2**33).page()).items) == 1
+    assert len((await memos.page_size(2**33).page()).items) == 1
+    assert [memo.memo_id for memo in await memos.limit(2**33).all()] == ["m1"]
+    assert all(limit == 2**20 for limit in limits), limits
 
 
 async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> None:
