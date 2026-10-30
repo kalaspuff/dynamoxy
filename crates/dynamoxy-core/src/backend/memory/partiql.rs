@@ -23,7 +23,7 @@
 //! default), and pages continue in that order.
 
 use super::items::{Failure, Prepared, apply, prepare_delete, prepare_put, prepare_update};
-use super::table::{CapacityMeter, KeyInfo, StoredKey, Table, read_units};
+use super::table::{CapacityMeter, KeyInfo, PageRead, StoredKey, Table};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
@@ -35,7 +35,7 @@ use crate::types::{
     ExecuteStatementInput, ExecuteStatementOutput, ExecuteTransactionInput, ExecuteTransactionOutput,
     ParameterizedStatement, ReturnValuesOnConditionCheckFailure,
 };
-use crate::value::{AttributeValue, Item, Number, item_size};
+use crate::value::{AttributeValue, Item, Number};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
@@ -989,8 +989,11 @@ fn select(
         None => 0,
     };
     candidates.drain(..offset.min(candidates.len()));
+    // Like a query, a local index fetches each item from the table when the projection names an
+    // attribute the index does not hold. The WHERE clause still reads the index entries.
+    let fetch = index.zip(projection.as_ref()).is_some_and(|(index, paths)| index.fetches(paths, &table.key));
     let mut output = ExecuteStatementOutput::default();
-    let mut read = 0usize;
+    let mut read = PageRead::new(consistent);
     let mut evaluated = 0usize;
     for item in &candidates {
         let visible = match index {
@@ -998,14 +1001,17 @@ fn select(
             None => (*item).clone(),
         };
         evaluated += 1;
-        read += item_size(&visible);
+        read.entry(&visible);
+        if fetch {
+            read.fetch(item);
+        }
         if condition.as_ref().is_none_or(|condition| evaluate(condition, &visible)) {
             output.items.push(match projection {
-                Some(paths) => project(&visible, paths),
+                Some(paths) => project(if fetch { item } else { &visible }, paths),
                 None => visible,
             });
         }
-        if limit.is_some_and(|limit| evaluated >= limit as usize) || read >= 1024 * 1024 {
+        if limit.is_some_and(|limit| evaluated >= limit as usize) || read.is_full() {
             break;
         }
     }
@@ -1013,7 +1019,7 @@ fn select(
         output.next_token = Some(format!("offset:{}", offset + evaluated));
     }
     let mut meter = CapacityMeter::default();
-    meter.read(&table.name, index.map(|index| (index.name.as_str(), index.global)), read_units(read, consistent));
+    read.charge(&mut meter, &table.name, index.map(|index| (index.name.as_str(), index.global)));
     output.consumed_capacity = meter.table_report(&table.name, crate::types::ReturnConsumedCapacity::Total);
     Ok(output)
 }
