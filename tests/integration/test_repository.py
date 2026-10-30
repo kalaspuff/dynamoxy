@@ -437,6 +437,26 @@ async def test_keys_only_index_and_hydration(users: dynamoxy.Repository[User]) -
     assert sorted(user.name for user in hydrated) == ["U0", "U1", "U2"]
 
 
+async def test_projections_read_what_checks_and_hydration_need(client: dynamoxy.Client) -> None:
+    await client.create_tables(Player, User)
+    players = client.model(Player)
+    await players.batch_put([Player(player_id=f"p{index}", name=f"P{index}", score=index * 10) for index in range(5)])
+    # where() replaces the "SCORE#" prefix of the templated sort key, which dynamoxy then checks
+    # on each item: projected items need the sort key for it, also without a limit.
+    best = players.query(index=Player.by_rank, board="global").where(Player.rank >= "SCORE#00000020")
+    expected = [{"name": "P2"}, {"name": "P3"}, {"name": "P4"}]
+    assert await best.project(Player.name).all() == expected
+    assert (await best.project(Player.name).page()).items == expected
+    assert await best.project(Player.name).limit(5).all() == expected
+    # hydrate() reads the full items by the table keys of the projected index entries.
+    users = client.model(User)
+    for index in range(3):
+        await users.create(make_user(f"u{index}"))
+    by_status = users.query(index=User.by_status, status=Status.ACTIVE)
+    names = await by_status.project(User.name).hydrate().all()
+    assert sorted(row["name"] for row in names) == ["U0", "U1", "U2"]
+
+
 async def test_hydration_reads_as_consistently_as_the_query(
     client: dynamoxy.Client, events: dynamoxy.Repository[Event]
 ) -> None:

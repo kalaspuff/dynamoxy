@@ -44,6 +44,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   instance, or a pydantic model's default model): appending to one instance's list, or changing
   one instance's document, changed it for every instance created or read later. Each instance
   now gets its own copy, as in pydantic.
+- Projected reads without `limit()` lost the key attributes that dynamoxy needs on the client.
+  `where()` on a templated sort key of a model without an entity type
+  (`players.query(index=Player.by_rank, board="global").where(Player.rank >= "SCORE#0050")`)
+  returned no rows with `.project(...)`, because the sort key prefix that `where()` replaced is
+  checked on each item; and `.project(...).hydrate()` failed with `ValidationException`, because
+  the entries lacked the table key. Such reads now ask for the key attributes too, and the
+  dicts still hold only what was projected.
 
 ### Security
 
