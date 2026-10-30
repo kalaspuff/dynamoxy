@@ -192,7 +192,9 @@ class StrCodec(Codec[str]):
     def validate(self, value: Any) -> str:
         if not isinstance(value, str):
             raise _type_error("str", value)
-        return value
+        # A subclass (a member of a `(str, Enum)`, ...) as the text it holds, which is what
+        # DynamoDB stores: its str() ("Kind.BOOK") would end up in keys, templates and guards.
+        return value if value.__class__ is str else str.__str__(value)
 
     @override
     def decode(self, value: Any) -> str:
@@ -214,7 +216,8 @@ class IntCodec(Codec[int]):
             if isinstance(value, Decimal) and value == value.to_integral_value():
                 return int(value)
             raise _type_error("int", value)
-        return value
+        # A subclass (a member of an `(int, Enum)`, ...) as its number, as for `str`.
+        return value if value.__class__ is int else int.__int__(value)
 
     @override
     def decode(self, value: Any) -> int:
@@ -588,11 +591,12 @@ class LiteralCodec(Codec[Any]):
 
     @override
     def validate(self, value: Any) -> Any:
-        # `True == 1`: a bool only matches a bool literal, an int only a non-bool literal.
-        same_kind = (isinstance(value, bool) == isinstance(allowed, bool) for allowed in self.values)
-        if not any(value == allowed and kind for allowed, kind in zip(self.values, same_kind, strict=True)):
-            raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)} (got {type(value).__name__})")
-        return value
+        # `True == 1`: a bool only matches a bool literal, an int only a non-bool literal. The
+        # value is the literal it matches, also for a subclass (a member of a `(str, Enum)`).
+        for allowed in self.values:
+            if value == allowed and isinstance(value, bool) == isinstance(allowed, bool):
+                return allowed
+        raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)} (got {type(value).__name__})")
 
     @override
     def decode(self, value: Any) -> Any:
