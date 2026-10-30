@@ -95,7 +95,7 @@ class SearchRecord(SearchRequest, dynamoxy.PydanticModel, table="searches"):
 | `AttributeName("name")` | stored attribute name |
 | `Template("STATUS#{status}")` | derived field |
 | `CreatedAt()`, `UpdatedAt()`, `Version()`, `TTL()` | automatic fields (declare them optional with a `None` default); `CreatedAt("iso_z")` chooses a timestamp format |
-| `UseCodec(codec)` | custom storage |
+| `UseCodec(codec)` | custom storage (`Annotated[X \| None, UseCodec(...)]` stays optional) |
 
 Class keywords are the same as for native models, including `datetime_format`
 (`class Customer(dynamoxy.PydanticModel, table="customers", datetime_format="iso_z")` stores

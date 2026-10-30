@@ -42,8 +42,8 @@ the important rules:
 - Empty sets are not stored (DynamoDB has no empty sets), and a missing attribute reads back as
   an empty set. A `set[X] | None` field stores `None` and an empty set alike, so an empty set
   reads back as `None` there: declare `set[X]` unless `None` means something else.
-- `X | None` fields store nothing for `None`, and a missing attribute reads back as `None`;
-  `REMOVE` and `None` are the same.
+- `X | None` fields (and `Literal["a", None]`) store nothing for `None`, also with a codec of
+  their own, and a missing attribute reads back as `None`; `REMOVE` and `None` are the same.
 - Enums store their value; `Literal["a", "b"]` restricts strings (or numbers). A `str`, `int`
   or `Literal` field holds a plain `str` or `int`: a member of a `(str, Enum)` or `(int, Enum)`
   becomes its value, so keys, templates and unique values render what DynamoDB stores.
@@ -51,7 +51,9 @@ the important rules:
 
 Custom storage: pass `codec=` (or `Annotated[T, dynamoxy.UseCodec(codec)]`). `JsonCodec` stores
 any JSON-compatible structure as one string. A codec implements `encode`, `decode`, `validate`
-and `key_type` (see `dynamoxy.codecs.Codec`).
+and `key_type` (see `dynamoxy.codecs.Codec`). It stores the values of `T`: a field annotated
+`T | None` stays optional (`Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())`),
+and its codec never sees `None`.
 
 ## Constraints and validators
 

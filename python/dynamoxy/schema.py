@@ -35,6 +35,8 @@ from dynamoxy.codecs import (
     _check_datetime_format,
     _decoder,
     _decodes_unchanged,
+    _given_codec,
+    _optional,
     resolve_codec,
 )
 from dynamoxy.errors import FieldError, ItemDecodeError, validation_error
@@ -1188,14 +1190,12 @@ def make_field(
         codec = DateTimeCodec(datetime_format)
     elif codec is None:
         codec = resolve_codec(annotation, where=where, datetime_format=datetime_format)
+    else:  # the field's own: codec=, a pydantic UseCodec marker, created_at(format=...)
+        codec = _given_codec(codec, annotation)
     if auto == "ttl" and options.get("codec") is None:
         codec = _ttl_codec(codec, where)
-    if auto in ("created_at", "updated_at") and not isinstance(codec, OptionalCodec):
-        codec = OptionalCodec(codec)
-    if auto == "version" and not isinstance(codec, OptionalCodec):
-        codec = OptionalCodec(codec)
-    if template is not None and not isinstance(codec, OptionalCodec):
-        codec = OptionalCodec(codec)
+    if auto in ("created_at", "updated_at", "version") or template is not None:
+        codec = _optional(codec)
     return FieldSpec(
         name=name,
         attribute=options.get("attribute_name") or name,
