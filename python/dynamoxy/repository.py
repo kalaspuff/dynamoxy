@@ -1130,7 +1130,7 @@ class Repository[M]:
                 value = schema.adapter.get(instance, spec.name)
             elif spec.name in provided:
                 value = spec.validate(provided[spec.name])
-            elif spec.empty() is not MISSING:
+            elif spec.has_default and spec.empty() is not MISSING:
                 continue  # an existing item's None or empty set is no attribute either
             else:
                 value = spec.initial()

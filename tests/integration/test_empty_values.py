@@ -36,6 +36,7 @@ class PydanticMember(dynamoxy.PydanticModel, table="pydantic-members"):
 class Team(Model, table="teams"):
     team_id: Attr[str] = partition_key()
     members: Attr[set[str]] = field(min_length=1)
+    name: Attr[str] = field(default="")
 
 
 @pytest.mark.parametrize("model", [Member, PydanticMember])
@@ -128,3 +129,11 @@ async def test_upserts_by_key_give_no_default_over_none_or_an_empty_set(client: 
         Member.key("m3"), Member.nickname.set_if_not_exists("Ada"), Member.roles.add({"member"}), upsert=True
     )
     assert (named.nickname, named.roles, named.visits) == ("Ada", {"member"}, 7)
+
+
+async def test_upserts_by_key_still_require_set_fields_without_a_default(client: dynamoxy.Client) -> None:
+    await client.create_tables(Team)
+    teams = client.model(Team)
+    with dynamoxy.collect() as collected, pytest.raises(ValueError, match=r"required field\(s\) members"):
+        await teams.update(Team.key("t1"), Team.name.set("Core"), upsert=True)
+    assert collected.calls == 0, "refused before any I/O"
