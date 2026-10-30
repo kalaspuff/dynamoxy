@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
+
 import pytest
 
 import dynamoxy
+from dynamoxy.codecs import DateTimeCodec, JsonCodec
 from tests.models import Account, Contact, ContactRecord
 
 
@@ -48,3 +52,34 @@ async def test_model_copies_track_their_own_stored_item(client: dynamoxy.Client)
     await accounts.create(Account(account_id="a3", owner="Cy", handle="ada"))  # free again
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await accounts.create(Account(account_id="a4", owner="Di", handle="bob"))  # still taken
+
+
+class Reminder(dynamoxy.PydanticModel, table="reminders"):
+    """Optional fields with a codec of their own (``UseCodec``) or a ``Literal`` of ``None``."""
+
+    reminder_id: Annotated[str, dynamoxy.PartitionKey()]
+    due: Annotated[datetime | None, dynamoxy.UseCodec(DateTimeCodec("iso_z"))] = None
+    data: Annotated[dict[str, Any] | None, dynamoxy.UseCodec(JsonCodec())] = None
+    state: Literal["on", "off", None] = None  # noqa: PYI061 - the spelling under test
+
+
+async def test_fields_with_a_codec_of_their_own_may_be_optional(client: dynamoxy.Client) -> None:
+    await client.create_tables(Reminder)
+    created = await Reminder.create(client, reminder_id="r1")
+    assert (created.due, created.data, created.state) == (None, None, None)
+    moment = datetime(2026, 10, 13, 8, 48, 47, tzinfo=UTC)
+    await created.update(
+        dynamoxy.attr(Reminder.due).set(moment),
+        dynamoxy.attr(Reminder.data).set({"a": [1]}),
+        dynamoxy.attr(Reminder.state).set("on"),
+    )
+    loaded = await Reminder.get(client, "r1", consistent=True)
+    assert loaded is not None
+    assert (loaded.due, loaded.data, loaded.state) == (moment, {"a": [1]}, "on")
+    await loaded.update(dynamoxy.attr(Reminder.due).remove(), dynamoxy.attr(Reminder.data).set(None))
+    loaded.state = None
+    await loaded.save()
+    stored = await client.table("reminders").get({"reminder_id": "r1"}, consistent=True)
+    assert stored is not None
+    assert not {"due", "data", "state"} & set(stored), "None is not stored"
+    assert await Reminder.get(client, "r1", consistent=True) == loaded
