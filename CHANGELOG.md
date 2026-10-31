@@ -11,6 +11,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 ### Changed
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
+- [**breaking**] `client.transact_get(...)` returns a tuple instead of a list, and type checkers
+  know the model of each item for up to six reads: `customer, order = await
+  client.transact_get(Get(Customer, ...), Get(Order, ...))` gives `Customer | None` and
+  `Order | None` instead of `Any`. Code that unpacks or indexes the result works as before; compare
+  it with a tuple, or call `list()` on it to change it.
 
 ### Fixed
 
@@ -26,6 +31,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- pyright (and so VS Code's Pylance) and mypy did not type the constructor or `create()` of a
+  `PydanticModel`: `Wallet(wallet_id="w1", owner=3)`, a missing required field or a misspelt one
+  passed their checks, though they flag the same mistakes on a plain pydantic model (pyrefly
+  caught them). The model metaclass now declares pydantic's `dataclass_transform` itself, which
+  checkers do not inherit from a base metaclass. mypy also types the items of
+  `client.collection(A, B)` as `A | B` now, not as their common base class.
 
 ## [0.4.0] - 2026-10-31
 

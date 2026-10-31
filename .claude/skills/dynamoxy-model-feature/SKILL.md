@@ -17,6 +17,8 @@ description: Change how dynamoxy models are declared, validated, encoded or pers
    method; test in `tests/integration/test_repository.py` and `test_transactions.py`.
 4. **Stored formats are API** (ADR 0008): a change to what is stored needs backward-compatible
    reading, an ADR and a changelog note.
-5. **Typing**: check `uv run pyrefly check` on `tests/models.py`; field specifiers must stay
+5. **Typing**: check `uv run pyrefly check` on `tests/models.py`, and pin what applications see in
+   `tests/typecheck` (`uv run python scripts/check_typing.py` runs pyright, mypy and pyrefly: they
+   differ, e.g. on metaclasses and `dataclass_transform`); field specifiers must stay
    functions; constructor typing follows `dataclass_transform` rules (`init=False` overloads).
 6. Update `docs/guides/modeling.md` (or the relevant guide), `AGENT_GUIDE.md`, then `make check`.

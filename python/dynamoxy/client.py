@@ -764,7 +764,27 @@ class Client:
 
         return Table(self, name)
 
-    def collection[M](self, *models: type[M]) -> Collection[M]:
+    # The overloads give mypy the union of the models; with ``*models: type[M]`` alone it infers
+    # their common base class (pyright and pyrefly infer the union either way).
+    @overload
+    def collection[A, B](self, a: type[A], b: type[B], /) -> Collection[A | B]: ...
+    @overload
+    def collection[A, B, C](self, a: type[A], b: type[B], c: type[C], /) -> Collection[A | B | C]: ...
+    @overload
+    def collection[A, B, C, D](
+        self, a: type[A], b: type[B], c: type[C], d: type[D], /
+    ) -> Collection[A | B | C | D]: ...
+    @overload
+    def collection[A, B, C, D, E](
+        self, a: type[A], b: type[B], c: type[C], d: type[D], e: type[E], /
+    ) -> Collection[A | B | C | D | E]: ...
+    @overload
+    def collection[A, B, C, D, E, F](
+        self, a: type[A], b: type[B], c: type[C], d: type[D], e: type[E], f: type[F], /
+    ) -> Collection[A | B | C | D | E | F]: ...
+    @overload
+    def collection[M](self, *models: type[M]) -> Collection[M]: ...
+    def collection(self, *models: type[Any]) -> Collection[Any]:
         """Queries over several models sharing a table (single-table design).
 
         Each item is decoded into its model by the type attribute.
@@ -790,11 +810,40 @@ class Client:
 
         return Transaction(self, token=token)
 
-    async def transact_get(self, *gets: Get[Any]) -> list[Any]:
+    # Overloads type each item of up to six reads (``customer, order = await ...``).
+    @overload
+    async def transact_get[A](self, a: Get[A], /) -> tuple[A | None]: ...
+    @overload
+    async def transact_get[A, B](self, a: Get[A], b: Get[B], /) -> tuple[A | None, B | None]: ...
+    @overload
+    async def transact_get[A, B, C](
+        self, a: Get[A], b: Get[B], c: Get[C], /
+    ) -> tuple[A | None, B | None, C | None]: ...
+    @overload
+    async def transact_get[A, B, C, D](
+        self, a: Get[A], b: Get[B], c: Get[C], d: Get[D], /
+    ) -> tuple[A | None, B | None, C | None, D | None]: ...
+    @overload
+    async def transact_get[A, B, C, D, E](
+        self, a: Get[A], b: Get[B], c: Get[C], d: Get[D], e: Get[E], /
+    ) -> tuple[A | None, B | None, C | None, D | None, E | None]: ...
+    @overload
+    async def transact_get[A, B, C, D, E, F](
+        self, a: Get[A], b: Get[B], c: Get[C], d: Get[D], e: Get[E], f: Get[F], /
+    ) -> tuple[A | None, B | None, C | None, D | None, E | None, F | None]: ...
+    @overload
+    async def transact_get(self, *gets: Get[Any]) -> tuple[Any, ...]: ...
+    async def transact_get(self, *gets: Get[Any]) -> tuple[Any, ...]:
         """Reads up to 100 items in one consistent snapshot (``TransactGetItems``).
 
+        Example::
+
+            customer, order = await client.transact_get(
+                dynamoxy.Get(Customer, "c1"), dynamoxy.Get(Order, customer_id="c1", order_id="o1")
+            )
+
         Returns:
-            One model instance (or ``None``) per :class:`dynamoxy.Get`, in order.
+            A tuple of one model instance (or ``None``) per :class:`dynamoxy.Get`, in order.
         """
         from dynamoxy.transactions import transact_get
 
