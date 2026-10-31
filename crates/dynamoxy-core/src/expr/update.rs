@@ -5,6 +5,9 @@
 //! `SET` of list elements goes in order of their index (`SET l[4] = :b, l[3] = :a` past the end
 //! appends `a`, then `b`), and `REMOVE` of list elements uses the original indexes.
 
+use std::collections::HashSet;
+use std::hash::Hash;
+
 use super::ast::{Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
 use super::eval::resolve;
 use crate::error::{Error, Result};
@@ -242,12 +245,17 @@ fn remove(item: &mut Item, path: &Path) -> Result<()> {
     }
 }
 
-fn set_union<T: PartialEq + Clone>(existing: &mut Vec<T>, added: &[T]) {
-    for value in added {
-        if !existing.contains(value) {
-            existing.push(value.clone());
-        }
-    }
+/// Adds the elements of `added` that `existing` lacks, in linear time (sets may be large).
+fn set_union<T: Eq + Hash + Clone>(existing: &mut Vec<T>, added: &[T]) {
+    let mut seen: HashSet<&T> = existing.iter().collect();
+    let fresh: Vec<T> = added.iter().filter(|value| seen.insert(value)).cloned().collect();
+    existing.extend(fresh);
+}
+
+/// Removes the elements of `removed` from `current`, in linear time.
+fn set_difference<T: Eq + Hash>(current: &mut Vec<T>, removed: &[T]) {
+    let removed: HashSet<&T> = removed.iter().collect();
+    current.retain(|value| !removed.contains(value));
 }
 
 fn add(item: &mut Item, path: &Path, value: &AttributeValue) -> Result<()> {
@@ -279,15 +287,15 @@ fn delete(item: &mut Item, path: &Path, value: &AttributeValue) -> Result<()> {
     let Some(existing) = resolve(item, path).cloned() else { return Ok(()) };
     let remaining = match (existing, value) {
         (AttributeValue::Ss(mut current), AttributeValue::Ss(removed)) => {
-            current.retain(|value| !removed.contains(value));
+            set_difference(&mut current, removed);
             (!current.is_empty()).then_some(AttributeValue::Ss(current))
         }
         (AttributeValue::Ns(mut current), AttributeValue::Ns(removed)) => {
-            current.retain(|value| !removed.contains(value));
+            set_difference(&mut current, removed);
             (!current.is_empty()).then_some(AttributeValue::Ns(current))
         }
         (AttributeValue::Bs(mut current), AttributeValue::Bs(removed)) => {
-            current.retain(|value| !removed.contains(value));
+            set_difference(&mut current, removed);
             (!current.is_empty()).then_some(AttributeValue::Bs(current))
         }
         _ => return Err(incorrect_type()),
@@ -478,6 +486,18 @@ mod tests {
         assert!(!after.contains_key("tags"), "deleting every element removes the attribute");
         let after = run("ADD visits :one", &[(":one", AttributeValue::n(1))], Item::new()).unwrap();
         assert_eq!(after["visits"], AttributeValue::n(1));
+    }
+
+    #[test]
+    fn add_and_delete_of_large_sets() {
+        let numbers = |range: std::ops::Range<i64>| AttributeValue::Ns(range.map(Number::from).collect());
+        let before = item([("n", numbers(0..50_000))]);
+        let after = run("ADD n :more", &[(":more", numbers(49_990..50_010))], before).unwrap();
+        assert_eq!(after["n"], numbers(0..50_010));
+        let AttributeValue::Ns(added) = &after["n"] else { panic!("a number set") };
+        assert_eq!(added.len(), 50_010, "elements already present are not added again");
+        let after = run("DELETE n :some", &[(":some", numbers(0..50_000))], after).unwrap();
+        assert_eq!(after["n"], numbers(50_000..50_010));
     }
 
     #[test]

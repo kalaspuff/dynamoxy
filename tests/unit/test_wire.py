@@ -128,6 +128,11 @@ def test_deep_and_cyclic_values_raise_instead_of_crashing() -> None:
 
 def test_number_sets_deduplicate_equal_numbers() -> None:
     assert dynamoxy.to_wire({"ns": {1, 1.0, Decimal("1.00")}})["ns"] == {"NS": ["1"]}  # noqa: B033
+    # Equal as DynamoDB numbers, not in Python (0.1 is not exactly a tenth).
+    assert dynamoxy.to_wire({"ns": {0.1, Decimal("0.1"), Decimal("0.10")}})["ns"] == {"NS": ["0.1"]}
+    # A set of 60,000 numbers (about 210 KB, an item DynamoDB accepts) took seconds to deduplicate.
+    numbers = _core.value_to_wire({*range(60_000), 59_999.0, Decimal(0)})["NS"]
+    assert sorted(numbers, key=int) == [str(number) for number in range(60_000)]
 
 
 def test_base64_binary_for_json() -> None:

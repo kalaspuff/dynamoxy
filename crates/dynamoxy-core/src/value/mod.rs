@@ -7,8 +7,9 @@ pub mod number;
 mod size;
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::hash::Hash;
 
 pub use number::{Number, NumberError};
 pub use size::{MAX_ITEM_SIZE, item_size, value_size};
@@ -245,20 +246,26 @@ impl AttributeValue {
 }
 
 /// DynamoDB's messages for empty sets are verbatim (including "An string set  may not be empty").
-fn check_set<T: PartialEq>(values: &[T], empty_message: &str) -> Result<(), String> {
+/// Sets may hold tens of thousands of elements (an item holds up to 400 KB): duplicates are found
+/// with a hash set, in linear time.
+fn check_set<T: Eq + Hash>(values: &[T], empty_message: &str) -> Result<(), String> {
     if values.is_empty() {
         return Err(format!("One or more parameter values were invalid: {empty_message}"));
     }
-    for (index, value) in values.iter().enumerate() {
-        if values[..index].contains(value) {
-            return Err("Input collection contains duplicates".into());
-        }
+    let mut seen = HashSet::with_capacity(values.len());
+    if !values.iter().all(|value| seen.insert(value)) {
+        return Err("Input collection contains duplicates".into());
     }
     Ok(())
 }
 
-fn same_set<T>(left: &[T], right: &[T], equal: impl Fn(&T, &T) -> bool) -> bool {
-    left.len() == right.len() && left.iter().all(|value| right.iter().any(|other| equal(value, other)))
+/// Whether two sets (without duplicates) hold the same elements, in any order.
+fn same_set<T: Eq + Hash>(left: &[T], right: &[T]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let right: HashSet<&T> = right.iter().collect();
+    left.iter().all(|value| right.contains(value))
 }
 
 impl PartialEq for AttributeValue {
@@ -271,9 +278,9 @@ impl PartialEq for AttributeValue {
             (Self::Null, Self::Null) => true,
             (Self::L(left), Self::L(right)) => left == right,
             (Self::M(left), Self::M(right)) => left == right,
-            (Self::Ss(left), Self::Ss(right)) => same_set(left, right, |a, b| a == b),
-            (Self::Ns(left), Self::Ns(right)) => same_set(left, right, |a, b| a == b),
-            (Self::Bs(left), Self::Bs(right)) => same_set(left, right, |a, b| a == b),
+            (Self::Ss(left), Self::Ss(right)) => same_set(left, right),
+            (Self::Ns(left), Self::Ns(right)) => same_set(left, right),
+            (Self::Bs(left), Self::Bs(right)) => same_set(left, right),
             _ => false,
         }
     }
@@ -346,6 +353,24 @@ mod tests {
         assert_eq!(left, right);
         assert_ne!(left, AttributeValue::Ss(vec!["a".into()]));
         assert_ne!(AttributeValue::L(vec!["a".into(), "b".into()]), AttributeValue::L(vec!["b".into(), "a".into()]));
+    }
+
+    #[test]
+    fn large_sets_are_checked_and_compared_as_sets() {
+        // 60,000 numbers fit in an item (about 210 KB); quadratic checks took seconds.
+        let numbers: Vec<Number> = (0..60_000).map(Number::from).collect();
+        let reversed: Vec<Number> = numbers.iter().rev().cloned().collect();
+        assert_eq!(AttributeValue::Ns(numbers.clone()), AttributeValue::Ns(reversed));
+        assert!(AttributeValue::Ns(numbers.clone()).validate().is_ok());
+        let mut duplicated = numbers.clone();
+        duplicated.push(Number::from(59_999));
+        assert!(AttributeValue::Ns(duplicated).validate().unwrap_err().contains("duplicates"));
+        let mut other = numbers.clone();
+        other[30_000] = Number::from(-1);
+        assert_ne!(AttributeValue::Ns(numbers), AttributeValue::Ns(other));
+        let words: Vec<String> = (0..60_000).map(|index| index.to_string()).collect();
+        assert!(AttributeValue::Ss(words.clone()).validate().is_ok());
+        assert!(AttributeValue::Ss([words, vec!["7".into()]].concat()).validate().unwrap_err().contains("duplicates"));
     }
 
     #[test]

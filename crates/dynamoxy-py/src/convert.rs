@@ -15,7 +15,7 @@
 //!
 //! Anything else raises `ValidationError` naming the accepted types.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use dynamoxy_core::types::{
@@ -228,14 +228,10 @@ fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> Py
             })
             .collect::<PyResult<Vec<_>>>()
             .map(|numbers| {
-                // 1 and 1.0 are the same DynamoDB number: keep the set valid.
-                let mut unique: Vec<Number> = Vec::with_capacity(numbers.len());
-                for number in numbers {
-                    if !unique.contains(&number) {
-                        unique.push(number);
-                    }
-                }
-                AttributeValue::Ns(unique)
+                // 1 and 1.0 are the same DynamoDB number (one canonical text): keep the set valid,
+                // in linear time, since the conversion holds the GIL.
+                let mut seen = HashSet::with_capacity(numbers.len());
+                AttributeValue::Ns(numbers.into_iter().filter(|number| seen.insert(number.clone())).collect())
             }),
         AttributeValue::B(_) => converted
             .into_iter()
