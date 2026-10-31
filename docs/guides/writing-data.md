@@ -207,6 +207,9 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
   `batch_delete()` and `client.batch_writer()` write each key once (the last write wins). The
   batch writer flushes every `flush_size` operations; a flush that fails before its request (a
   `before_save` hook or validation raised) or whose request fails keeps the other writes queued.
+  When the `async with` block raises (also with the error of such a flush), the writer writes
+  nothing more, as a transaction: what is queued stays in it (`len(batch)`), and
+  `await batch.flush()` writes it.
 - Refused for models with unique attributes (use transactions or single writes).
 - `before_save` hooks run for batch puts; conditions and versions do not apply.
 

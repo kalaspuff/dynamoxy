@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, Model, partition_key
+from dynamoxy import Attr, Model, field, partition_key
 from tests.models import Article, Customer, Event, Order, Player, User
 
 ANNOUNCED: list[str] = []
@@ -202,3 +202,67 @@ async def test_failing_hooks_after_a_commit_leave_every_instance_final(client: d
     assert other.is_loaded
     await other.save()
     assert other.version == 2
+
+
+class Cart(Model, table="carts"):
+    """Unversioned: a transaction's update is refreshed from the item as last read."""
+
+    cart_id: Attr[str] = partition_key()
+    items: Attr[list[int] | None] = field(default=None)
+
+
+async def test_commits_refresh_instances_whose_item_changed_since_the_read(client: dynamoxy.Client) -> None:
+    await client.create_tables(Cart)
+    carts = client.model(Cart)
+    await carts.create(Cart(cart_id="c1"))
+    loaded = await carts.get_or_raise("c1")
+    await carts.update(Cart.key("c1"), Cart.items.set([1]))  # another writer
+    # The append applies to the stored item, not to the one read (which has no list): the
+    # commit succeeded, and the instance is refreshed from the item as stored now.
+    async with client.transaction() as tx:
+        tx.update(loaded, Cart.items.append([2]))
+    assert loaded.items == [1, 2]
+    assert loaded.is_loaded
+    assert (await carts.get_or_raise("c1")).items == [1, 2]
+
+
+async def test_commits_that_cannot_refresh_an_instance_do_not_fail(client: dynamoxy.Client) -> None:
+    await client.create_tables(Cart)
+    carts = client.model(Cart)
+    await carts.create(Cart(cart_id="c1"))
+    loaded = await carts.get_or_raise("c1")
+    await carts.update(Cart.key("c1"), Cart.items.set([1]))
+
+    async def delete_after_the_commit(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        response = await call_next(request)
+        if request.operation == "TransactWriteItems":
+            remove()
+            await carts.delete("c1")
+        return response
+
+    remove = client.use(delete_after_the_commit)
+    await client.transaction().update(loaded, Cart.items.append([2])).commit()  # applied: no error
+    assert not loaded.is_loaded, "the item is gone: the instance forgets the stored copy"
+
+
+async def test_commits_whose_refresh_read_fails_do_not_fail(client: dynamoxy.Client) -> None:
+    await client.create_tables(Cart)
+    carts = client.model(Cart)
+    await carts.create(Cart(cart_id="c1"))
+    loaded = await carts.get_or_raise("c1")
+    await carts.update(Cart.key("c1"), Cart.items.set([1]))
+    committed = False
+
+    async def fail_reads_after_the_commit(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        nonlocal committed
+        if committed and request.operation == "GetItem":
+            raise dynamoxy.TransportError("the connection dropped")
+        response = await call_next(request)
+        committed = committed or request.operation == "TransactWriteItems"
+        return response
+
+    remove = client.use(fail_reads_after_the_commit)
+    await client.transaction().update(loaded, Cart.items.append([2])).commit()  # applied: no error
+    remove()
+    assert not loaded.is_loaded, "the item could not be read: the instance forgets the stored copy"
+    assert (await carts.get_or_raise("c1")).items == [1, 2]
