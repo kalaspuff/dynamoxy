@@ -21,8 +21,8 @@ use pythonize::depythonize;
 
 use crate::convert::{
     PyItem, PyValueList, PyValues, backup_description, backup_details, backup_summary, capacities, collection_metrics,
-    continuous_backups, items_to_py, keys_and_attributes, optional_capacity, optional_item, py_to_item, stats,
-    table_description, ttl_to_py, write_request_to_py,
+    collection_metrics_map, continuous_backups, items_to_py, keys_and_attributes, optional_capacity, optional_item,
+    py_to_item, stats, table_description, ttl_to_py, write_request_to_py,
 };
 use crate::errors::{ConfigurationError, ShutdownError, ValidationError, call_error_in, error_in, to_py_err};
 use crate::runtime::{Deferred, future_into_py, future_into_py_in, future_into_py_inline};
@@ -799,6 +799,10 @@ impl PyCoreClient {
                     &[
                         (intern!(py, "unprocessed_items"), unprocessed.into_any()),
                         (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
+                        (
+                            intern!(py, "item_collection_metrics"),
+                            collection_metrics_map(py, &output.item_collection_metrics)?.into_any(),
+                        ),
                     ],
                 )
             })
@@ -941,7 +945,16 @@ impl PyCoreClient {
         };
         self.run(py, async move {
             finish(client.transact_write_items(input).await, |py, output| {
-                dict(py, &[(intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any())])
+                dict(
+                    py,
+                    &[
+                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
+                        (
+                            intern!(py, "item_collection_metrics"),
+                            collection_metrics_map(py, &output.item_collection_metrics)?.into_any(),
+                        ),
+                    ],
+                )
             })
         })
     }

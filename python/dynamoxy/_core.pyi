@@ -117,6 +117,7 @@ class BatchGetItemOutput(TypedDict):
 class BatchWriteItemOutput(TypedDict):
     unprocessed_items: dict[str, list[tuple[str, Item]]]
     consumed_capacity: list[ConsumedCapacityDict]
+    item_collection_metrics: dict[str, list[ItemCollectionMetricsDict]]
 
 class BatchGetOutput(TypedDict):
     items: dict[str, list[Item]]
@@ -133,6 +134,7 @@ class TransactGetItemsOutput(TypedDict):
 
 class TransactWriteItemsOutput(TypedDict):
     consumed_capacity: list[ConsumedCapacityDict]
+    item_collection_metrics: dict[str, list[ItemCollectionMetricsDict]]
 
 class ExecuteStatementOutput(TypedDict):
     items: list[Item]

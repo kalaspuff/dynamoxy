@@ -209,6 +209,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   during which no other task or thread ran. The in-memory DynamoDB's duplicate check, set
   comparisons and `ADD`/`DELETE` of set elements were quadratic too (a put of that set took
   10 s). All of them now take linear time (13 ms for the conversion, 40 ms for the put).
+- `batch_write_item` and `transact_write_items` of `client.call(...)` dropped the item
+  collection metrics that `return_item_collection_metrics=True` asks for: the core requested and
+  parsed them, and the in-memory DynamoDB computed them, but the outputs left them out. They now
+  return `item_collection_metrics`, a list of metrics per table (empty when not asked for), as
+  `put_item`, `update_item` and `delete_item` return theirs.
 
 ### Security
 

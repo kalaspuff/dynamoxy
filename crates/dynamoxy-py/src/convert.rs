@@ -551,6 +551,22 @@ pub fn collection_metrics<'py>(
     }
 }
 
+/// Item collection metrics per table (`BatchWriteItem`, `TransactWriteItems`): a dict of lists.
+pub fn collection_metrics_map<'py>(
+    py: Python<'py>,
+    metrics: &BTreeMap<String, Vec<ItemCollectionMetrics>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (table, entries) in metrics {
+        let list = PyList::empty(py);
+        for entry in entries {
+            list.append(collection_metrics(py, Some(entry))?)?;
+        }
+        dict.set_item(table, list)?;
+    }
+    Ok(dict)
+}
+
 /// `(partition_key, sort_key)`.
 pub fn key_schema_to_py(schema: &KeySchema) -> (String, Option<String>) {
     (schema.partition_key.clone(), schema.sort_key.clone())

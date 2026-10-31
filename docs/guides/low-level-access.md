@@ -66,4 +66,17 @@ To turn a stream image into a model: `dynamoxy.schema_of(User).decode(dynamoxy.f
 `client.call(method, operation, **params)` performs any native operation through the middleware,
 telemetry and event pipeline; repositories and tables are built on it. Parameters mirror the
 DynamoDB API in snake_case (see `python/dynamoxy/_core.pyi`). Prefer the typed APIs; this is the
-escape hatch.
+escape hatch. Parameters the typed APIs leave out are here, for example
+`return_item_collection_metrics=True` of writes to tables with local indexes: `put_item`,
+`update_item` and `delete_item` return the metrics of the item's collection, and
+`batch_write_item` and `transact_write_items` a list of them per table.
+
+```python
+output = await client.call(
+    "batch_write_item",
+    "BatchWriteItem",
+    request_items={"events": [("put", {"stream": "s", "seq": 1})]},
+    return_item_collection_metrics=True,
+)
+output["item_collection_metrics"]  # {"events": [{"item_collection_key": {...}, "size_estimate_range_gb": [...]}]}
+```
