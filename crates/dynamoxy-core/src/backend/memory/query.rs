@@ -178,7 +178,8 @@ fn effective_select(select: Option<Select>, projection: Option<&Vec<Path>>, targ
 /// Refuses a query filter that reads attributes the index does not hold, like DynamoDB (measured
 /// in eu-north-1 on 2026-10-31, docs/parity): for local indexes too, and whatever the query
 /// returns (`ALL_ATTRIBUTES`, `COUNT` or a projection it fetches from the table). The message
-/// names each place the filter reads one, in order. A scan's filter on them matches nothing.
+/// names each place the filter reads one, by its top-level name, in order. A scan's filter on them
+/// matches nothing, unless the scan fetches the items from the table.
 fn check_index_filter(index: &Index, table_key: &KeyInfo, filter: &Condition) -> Result<()> {
     let missing: Vec<&str> =
         condition_paths(filter).into_iter().map(Path::root).filter(|name| !index.holds(name, table_key)).collect();
@@ -235,18 +236,16 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
         read.entry(&visible);
         output.scanned_count += 1;
         last = Some(item);
-        // The filter sees the index entry: a scan's filter on attributes the index does not hold
-        // matches nothing (measured, docs/parity). That it does so also when the scan fetches the
-        // items from the table is assumed from DynamoDB's PartiQL SELECT, which does (round 2 of
-        // scripts/probe_dynamodb.sh asks DynamoDB).
-        let matches = request.filter.is_none_or(|filter| evaluate(filter, &visible));
+        // The filter sees what the read returns: the index entry, on which a scan's filter on
+        // attributes the index does not hold matches nothing, or the item the read fetches from
+        // the table (both measured, docs/parity; queries refuse such filters).
         let evaluated = if request.fetch {
             read.fetch(item);
             Cow::Borrowed(item)
         } else {
             visible
         };
-        if matches {
+        if request.filter.is_none_or(|filter| evaluate(filter, &evaluated)) {
             output.count += 1;
             if request.select != Select::Count {
                 output.items.push(match &request.projection {
