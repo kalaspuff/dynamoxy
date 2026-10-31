@@ -1,0 +1,335 @@
+# dynamoxy DynamoDB probes, 2026-10-31T13:59:11Z, region eu-north-1, aws-cli/2.37.6 Python/3.14.6 Darwin/27.0.0 script-exe/arm64
+tables: dynamoxy-probe-01a7b2-*
+### setup: create dynamoxy-probe-01a7b2-idx
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "gk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:13.289000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-idx", "TableId": "fe54748d-05de-49b0-9993-ad47cfd793fa", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "CREATING", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-idx/index/gsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-01a7b2-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:13.838000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-lsi", "TableId": "295e2cda-bc93-4a9f-8edb-90710da7f80d", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-lsi/index/lsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-01a7b2-big
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:14.336000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-big", "TableId": "3ae1afa4-5bb1-44e5-ad39-de0cbe1183d1", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-01a7b2-bill
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "gk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-bill", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:14.888000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-bill", "TableId": "ba5b9059-c6f3-4d02-836e-82540082e205", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "CREATING", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-bill/index/gsi1"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-01a7b2-gsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-gsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:15.412000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-gsi", "TableId": "ac9a2dbb-f807-4ce5-97d3-9a6f1176cde4", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+## 87: calls while a table is CREATING
+### setup: create dynamoxy-probe-01a7b2-ttl
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-01a7b2-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T14:59:15.985000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-01a7b2-ttl", "TableId": "7d4b65fe-2fee-4bb1-85b6-4053c57cd9ca", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+status right after create: CREATING
+### 87-ttl-creating: UpdateTimeToLive while the table is CREATING
+exit: 254
+err: aws: [ERROR]: An error occurred (ResourceNotFoundException) when calling the UpdateTimeToLive operation: Requested resource not found: Table: dynamoxy-probe-01a7b2-ttl not found
+
+### 87-update-creating: UpdateTable (add a global index) while the table is CREATING
+exit: 254
+err: aws: [ERROR]: An error occurred (ResourceInUseException) when calling the UpdateTable operation: Attempt to change a resource which is still in use: Table is being created: dynamoxy-probe-01a7b2-ttl
+
+tables active
+## 106: filters and projections of attributes an index does not project
+### setup: item
+exit: 0
+
+### 106-lsi-filter: Query KEYS_ONLY local index, filter on an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]
+
+### 106-lsi-filter-all: same with Select=ALL_ATTRIBUTES
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]
+
+### 106-lsi-filter-count: same with Select=COUNT
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]
+
+### 106-lsi-filter-projection: same with a projection of that attribute (fetches from the table)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]
+
+### 106-lsi-projection: Query KEYS_ONLY local index, projection of an attribute it does not project, no filter
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-entity-filter: Query KEYS_ONLY local index with dynamoxy's entity filter on _type, Select=ALL_ATTRIBUTES
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [_type, _type]
+
+### 106-gsi-filter: Query KEYS_ONLY global index, filter on an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index gsi does not project one or more filter attributes: [secret]
+
+### 106-gsi-entity-filter: Query KEYS_ONLY global index with dynamoxy's entity filter on _type
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index gsi does not project one or more filter attributes: [_type, _type]
+
+### 106-gsi-projection: Query KEYS_ONLY global index, projection of an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Global secondary index gsi does not project [secret]
+
+### 106-gsi-key-filter: control: Query global index, filter on a projected key attribute
+exit: 0
+out: {"Items": [{"gk": {"S": "g"}, "pk": {"S": "a"}, "sk": {"S": "1"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-filter: Scan KEYS_ONLY local index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [], "Count": 0, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-projection: Scan KEYS_ONLY local index, projection of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-scan-filter: Scan KEYS_ONLY global index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [], "Count": 0, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-scan-projection: Scan KEYS_ONLY global index, projection of an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Scan operation: One or more parameter values were invalid: Global secondary index gsi does not project [secret]
+
+## 97: expression limits
+### 97-name-placeholder-255: a #name placeholder of 255 bytes (with the #)
+exit: 0
+out: {"Item": {}}
+
+### 97-value-placeholder-255: a :value placeholder of 255 bytes (with the :)
+exit: 0
+out: {"Items": [{"secret": {"S": "s"}, "lsk": {"S": "x"}, "pk": {"S": "a"}, "gk": {"S": "g"}, "sk": {"S": "1"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-name-placeholder-256: a #name placeholder of 256 bytes (with the #)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the GetItem operation: ExpressionAttributeNames contains invalid key: The expression attribute map contains a key that is too long; size of key: 256
+
+### 97-value-placeholder-256: a :value placeholder of 256 bytes (with the :)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: ExpressionAttributeValues contains invalid key: The expression attribute map contains a key that is too long; size of key: 256
+
+### 97-name-placeholder-257: a #name placeholder of 257 bytes (with the #)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the GetItem operation: ExpressionAttributeNames contains invalid key: The expression attribute map contains a key that is too long; size of key: 257
+
+### 97-value-placeholder-257: a :value placeholder of 257 bytes (with the :)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: ExpressionAttributeValues contains invalid key: The expression attribute map contains a key that is too long; size of key: 257
+
+### 97-item-name-65534: an item with an attribute name of 65534 bytes
+exit: 0
+
+### 97-expression-name-65534: a projection of an attribute name of 65534 bytes, through a placeholder
+exit: 0
+out: {"Item": {}}
+
+### 97-item-name-65535: an item with an attribute name of 65535 bytes
+exit: 0
+
+### 97-expression-name-65535: a projection of an attribute name of 65535 bytes, through a placeholder
+exit: 0
+out: {"Item": {}}
+
+### 97-item-name-65536: an item with an attribute name of 65536 bytes
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: Attribute name is too large, must be less than 65536 bytes
+
+### 97-expression-name-65536: a projection of an attribute name of 65536 bytes, through a placeholder
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the GetItem operation: Attribute name is too large, must be less than 65536 bytes for key #n
+
+### setup: item
+exit: 0
+
+### 97-attribute-type-path-filter: attribute_type(a, b) in a filter, b a path holding "S" (a is a string)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}
+
+### 97-attribute-type-path-condition: attribute_type(a, b) as an update condition
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateItem operation: 1 validation error detected: Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}
+
+### 97-attribute-type-path-condition-names: attribute_type(#a, #b) as an update condition
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateItem operation: 1 validation error detected: Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}
+
+### 97-attribute-type-control: control: attribute_type(a, :t)
+exit: 0
+out: {"Items": [{"a": {"S": "x"}, "b": {"S": "S"}, "pk": {"S": "atype"}, "sk": {"S": "1"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-name-placeholder-dash: a #a-b name placeholder
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the GetItem operation: ExpressionAttributeNames contains invalid key: Syntax error; key: "#a-b"
+
+### 97-name-placeholder-dash-unused: a #a-b name placeholder that the expression does not use
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the GetItem operation: ExpressionAttributeNames contains invalid key: Syntax error; key: "#a-b"
+
+### 97-value-placeholder-dash: a :a-b value placeholder
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: ExpressionAttributeValues contains invalid key: Syntax error; key: ":a-b"
+
+### 97-value-placeholder-dash-unused: a :a-b value placeholder that the expression does not use
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: ExpressionAttributeValues contains invalid key: Syntax error; key: ":a-b"
+
+### 97-tx-read-missing: ExecuteTransaction, one SELECT of a missing table
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"ResourceNotFound","Message":"Requested resource not found"}],"Message":"Transaction cancelled, please refer cancellation reasons for specific reasons [ResourceNotFound]"}'
+
+### 97-tx-read-missing-second: ExecuteTransaction, SELECTs of an existing and a missing table
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"None"},{"Code":"ResourceNotFound","Message":"Requested resource not found"}],"Message":"Transaction cancelled, please refer cancellation reasons for specific reasons [None, ResourceNotFound]"}'
+
+### 97-tx-write-missing: control: ExecuteTransaction, one INSERT into a missing table
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"ResourceNotFound","Message":"Requested resource not found"}],"Message":"Transaction cancelled, please refer cancellation reasons for specific reasons [ResourceNotFound]"}'
+
+### 97-transact-get-missing: TransactGetItems of a missing table
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException","message":"Requested resource not found"}'
+
+## 93: local index entries in the 400 KB item limit (index projects ALL)
+### 93-lsi-put-150: PutItem of a 150 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-01a7b2-lsi", "CapacityUnits": 302.0, "Table": {"CapacityUnits": 151.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 151.0}}}}
+
+### 93-lsi-put-190: PutItem of a 190 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-01a7b2-lsi", "CapacityUnits": 382.0, "Table": {"CapacityUnits": 191.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 191.0}}}}
+
+### 93-lsi-put-210: PutItem of a 210 KB item that the ALL local index holds
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-lsi-put-300: PutItem of a 300 KB item that the ALL local index holds
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-lsi-put-300-unindexed: control: PutItem of a 300 KB item without the index key
+exit: 0
+
+### 93-keys-only-put-300: control: PutItem of a 300 KB item that a KEYS_ONLY local index holds
+exit: 0
+
+### 93-lsi-update-150-to-210: UpdateItem growing the 150 KB indexed item by 60 KB
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateItem operation: Item size to update has exceeded the maximum allowed size
+
+### 93-lsi-transact-put-210: TransactWriteItems Put of the 210 KB indexed item
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"ValidationError","Message":"Item size has exceeded the maximum allowed size"}],"Message":"Transaction cancelled, please refer cancellation reasons for specific reasons [ValidationError]"}'
+
+## 93: 4 MB of items in TransactGetItems
+### setup: 390 KB item 0
+exit: 0
+
+### setup: 390 KB item 1
+exit: 0
+
+### setup: 390 KB item 2
+exit: 0
+
+### setup: 390 KB item 3
+exit: 0
+
+### setup: 390 KB item 4
+exit: 0
+
+### setup: 390 KB item 5
+exit: 0
+
+### setup: 390 KB item 6
+exit: 0
+
+### setup: 390 KB item 7
+exit: 0
+
+### setup: 390 KB item 8
+exit: 0
+
+### setup: 390 KB item 9
+exit: 0
+
+### setup: 390 KB item 10
+exit: 0
+
+### 93-transact-get-10: control: TransactGetItems of ten 390 KB items (3.9 MB)
+exit: 0
+out: 10
+body: b'{"Responses":[{"Item":{"sk":{"S":"0"},"filler":{"S":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+### 93-transact-get-11: TransactGetItems of eleven 390 KB items (4.3 MB)
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Payload in response is too large."}'
+
+### 93-transact-update-10: control: TransactWriteItems of ten Updates writing 390 KB each
+exit: 0
+body: b'{}'
+
+### 93-transact-update-11: TransactWriteItems of eleven Updates writing 390 KB each
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393445"}'
+
+## 87: billing switches of a table with a global index
+### 87-provisioned-without-index: switch to PROVISIONED with capacity for the table only
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateTable operation: One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1
+
+status: ACTIVE gsi1=ACTIVE
+### 87-provisioned-with-index: control: switch to PROVISIONED with capacity for the table and the index
+exit: 0
+out: "UPDATING"
+
+### 87-describe-provisioned: the table, now provisioned
+exit: 0
+out: {"billing": "PROVISIONED", "table": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 1, "WriteCapacityUnits": 1}, "indexes": [{"name": "gsi1", "throughput": {"LastIncreaseDateTime": "2026-10-31T15:01:31.755000+01:00", "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 1, "WriteCapacityUnits": 1}}]}
+
+### 87-create-index-without-throughput: add a global index without ProvisionedThroughput to the provisioned table
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateTable operation: One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2
+
+### 87-on-demand: switch back to PAY_PER_REQUEST
+exit: 0
+out: "UPDATING"
+
+### 87-describe-on-demand: the table, on-demand again: what remains of the capacity
+exit: 0
+out: {"billing": "PAY_PER_REQUEST", "table": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "indexes": [{"name": "gsi1", "throughput": {"LastIncreaseDateTime": "2026-10-31T15:01:31.755000+01:00", "LastDecreaseDateTime": "2026-10-31T15:02:15.897000+01:00", "NumberOfDecreasesToday": 1, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "on_demand": null}]}
+
+### 87-on-demand-with-throughput: UpdateTable of the on-demand table giving the index ProvisionedThroughput
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateTable operation: One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput
+
+## 87: a second global index while the first is being created
+### setup: item
+exit: 0
+
+### 87-first-index: create index gsia
+exit: 0
+out: ["UPDATING", [["gsia", "CREATING"]]]
+
+status: UPDATING gsia=CREATING
+### 87-second-index-at-once: create index gsib right after (table UPDATING)
+exit: 254
+err: aws: [ERROR]: An error occurred (LimitExceededException) when calling the UpdateTable operation (reached max retries: 2): Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table
+
+after 1s: UPDATING gsia=CREATING
+after 25s: ACTIVE gsia=CREATING/backfilling
+### 87-second-index-while-backfilling: create index gsib while the table is ACTIVE and gsia is still CREATING
+exit: 254
+err: aws: [ERROR]: An error occurred (LimitExceededException) when calling the UpdateTable operation (reached max retries: 2): Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table
+
+after 506s: ACTIVE gsia=ACTIVE
+final: ACTIVE gsia=ACTIVE
+## cleanup
+deleted dynamoxy-probe-01a7b2-idx
+deleted dynamoxy-probe-01a7b2-lsi
+deleted dynamoxy-probe-01a7b2-big
+deleted dynamoxy-probe-01a7b2-bill
+deleted dynamoxy-probe-01a7b2-gsi
+deleted dynamoxy-probe-01a7b2-ttl
