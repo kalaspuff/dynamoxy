@@ -77,6 +77,45 @@ def test_mutable_defaults_are_copied_for_each_instance() -> None:
     assert schema_of(Shelf).fields["line"].default.quantity == 1, "the declared default is unchanged"
 
 
+class Badge(Document):
+    label: Attr[str | None] = field(default="new")
+    levels: Attr[set[int]] = field(default_factory=lambda: {1})
+
+
+class Card(Model, table="cards"):
+    """Fields that can be ``None`` or an empty set, with defaults that are neither."""
+
+    card_id: Attr[str] = partition_key()
+    nickname: Attr[str | None] = field(default="anon")
+    roles: Attr[frozenset[str]] = field(default=frozenset({"member"}))
+    labels: Attr[set[str] | None] = field(default_factory=lambda: {"x"})
+    expires_at: Attr[datetime | None] = ttl(default=datetime(2030, 1, 1, tzinfo=UTC))
+    visits: Attr[int] = field(default=3)
+    badge: Attr[Badge] = field(default_factory=Badge)
+
+
+def test_none_and_empty_sets_read_back_as_written() -> None:
+    card = Card(
+        card_id="c1",
+        nickname=None,
+        roles=frozenset(),
+        labels=None,
+        expires_at=None,
+        badge=Badge(label=None, levels=set()),
+    )
+    item = card.to_item()
+    assert item == {"card_id": "c1", "visits": 3, "badge": {}}, "None and empty sets are stored as nothing"
+    assert Card.from_item(item) == card, "and nothing reads as them, not as the defaults"
+    assert (Card(card_id="c2").nickname, Card(card_id="c2").badge.label) == ("anon", "new"), "new instances get them"
+    # Items without the attributes (written before the fields existed) read the same; fields that
+    # can be neither None nor an empty set read their default.
+    old = Card.from_item({"card_id": "c3"})
+    assert (old.nickname, old.roles, old.labels, old.expires_at, old.visits) == (None, frozenset(), None, None, 3)
+    assert old.badge == Badge()
+    # A set field that can be None stores None and an empty set alike: both read back as None.
+    assert Card.from_item(Card(card_id="c4", labels=set()).to_item()).labels is None
+
+
 def test_validation_collects_every_field_error() -> None:
     with pytest.raises(dynamoxy.ValidationError) as caught:
         User(user_id="u1", email="not-an-email", name="", age=-1)  # type: ignore[call-arg]

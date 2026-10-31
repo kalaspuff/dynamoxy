@@ -44,7 +44,9 @@ It is authoritative for the installed version; this skill only summarizes it.
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
    business rules, and `client.transaction()` for multi-item changes. Keys and
    `immutable=True` fields of loaded instances cannot change: write a copy as a new item.
-   `Model.field.set(None)` removes an attribute.
+   `Model.field.set(None)` removes an attribute. `None` and empty sets are stored as no
+   attribute, which reads back as `None` or an empty set whatever the field's default (a
+   `set[X] | None` field reads an empty set back as `None`).
 8. Catch specific errors: `ItemNotFoundError`, `ItemAlreadyExistsError`, `UniqueConstraintError`,
    `VersionConflictError`, `ConditionalCheckFailedError`, `TransactionCanceledError`
    (`.cancellation_reasons`), `ValidationError` (`.errors`), and `WriteOutcomeUnknownError` for

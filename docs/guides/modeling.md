@@ -39,9 +39,11 @@ the important rules:
   (`2026-01-02T03:04:05.000000+00:00`, or `2026-01-02T03:04:05.000000Z` with
   `datetime_format="iso_z"`), so string order is time order and sort keys and `BETWEEN` work.
   Epoch seconds or milliseconds are possible too (see [timestamp formats](#timestamp-formats)).
-- Empty sets are not stored (DynamoDB has no empty sets) and read back as empty sets.
+- Empty sets are not stored (DynamoDB has no empty sets), and a missing attribute reads back as
+  an empty set. A `set[X] | None` field stores `None` and an empty set alike, so an empty set
+  reads back as `None` there: declare `set[X]` unless `None` means something else.
 - `X | None` fields (and `Literal["a", None]`) store nothing for `None`, also with a codec of
-  their own; `REMOVE` and `None` are the same.
+  their own, and a missing attribute reads back as `None`; `REMOVE` and `None` are the same.
 - Enums store their value; `Literal["a", "b"]` restricts strings (or numbers). A `str`, `int`
   or `Literal` field holds a plain `str` or `int`: a member of a `(str, Enum)` or `(int, Enum)`
   becomes its value, so keys, templates and unique values render what DynamoDB stores.
@@ -71,8 +73,11 @@ class Product(dynamoxy.Model, table="products"):
 ```
 
 Defaults apply to new instances and to stored items without the attribute (written before the
-field existed). A mutable default (`field(default=[])`, a document) is copied for each instance,
-as in pydantic; `default_factory=` works too.
+field existed), except where a missing attribute is how a value is stored: `X | None` fields read
+it as `None` and set fields as an empty set, whatever their default, so that `None` and emptied
+sets read back as written ([ADR 0019](../adr/0019-missing-attributes-read-as-none-or-empty-sets.md)).
+A mutable default (`field(default=[])`, a document) is copied for each instance, as in pydantic;
+`default_factory=` works too.
 
 Invalid values raise `dynamoxy.ValidationError`; `.errors` lists every `FieldError` (`path`,
 `message`, `value`). Validation runs on construction, on attribute assignment, and before every

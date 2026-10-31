@@ -22,6 +22,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `AttributeName(...)` (and its name in pydantic's input and output with an alias).
 - `client.model(User)` returns the same repository on every call (built on first use), so the
   model's classmethods and inline `client.model(User).get(...)` calls cost a dictionary lookup.
+- [**breaking**] `None` and empty sets read back as written, not as the field's default
+  ([ADR 0019](docs/adr/0019-missing-attributes-read-as-none-or-empty-sets.md)). dynamoxy stores
+  both as no attribute, and read a missing attribute as the default: a
+  `nickname: Attr[str | None] = field(default="anon")` written as `None` came back as `"anon"`,
+  and a set field whose default is `{"member"}`, written empty or emptied by deleting its last
+  element, came back as `{"member"}`, so a revoked role was granted again and the next `save()`
+  stored it (in pydantic models and documents too). A missing attribute now reads as `None` in
+  an `X | None` field and as an empty set in a set field, also in items written before the
+  field existed: backfill the default (`await item.update(Model.field.set_if_not_exists(...))`)
+  where they need it. A `set[X] | None` field reads an empty set back as `None`. `set(set())` of
+  a model field removes the attribute like `set(None)` (it stored a `NULL`, on which later
+  `add()` failed), `remove()` and `set(set())` of a set field empty it (they raised
+  `ValidationError`), and `== set()` and `!= set()` compare like `== None` and `!= None`.
+  Upserts by key no longer give `X | None` and set fields their defaults, which
+  `if_not_exists` wrote over an existing item's `None` or empty set: an item they create reads
+  `None` or an empty set there unless the actions set it.
 
 ### Deprecated
 
