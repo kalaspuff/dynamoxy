@@ -164,7 +164,8 @@ class TableDescription:
 
     Attributes:
         name: Table name.
-        status: ``"ACTIVE"``, ``"CREATING"``, ``"UPDATING"``, ``"DELETING"``, ...
+        status: ``"ACTIVE"``, ``"CREATING"``, ``"UPDATING"``, ``"DELETING"``, ...; ``"UNKNOWN"``
+            for a status DynamoDB added after this version of dynamoxy (not ready).
         arn: ARN.
         partition_key: Partition key attribute.
         sort_key: Sort key attribute.

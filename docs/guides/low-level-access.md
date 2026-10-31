@@ -58,7 +58,10 @@ item = dynamoxy.from_wire(record["dynamodb"]["NewImage"])       # DynamoDB Strea
 json_safe = dynamoxy.to_wire(item, base64_binary=True)          # binary as base64 text
 ```
 
-Use these to exchange items with boto3's low-level client, DynamoDB Streams and S3 exports.
+Use these to exchange items with boto3's low-level client, DynamoDB Streams and S3 exports. They
+take any mapping, and refuse what DynamoDB would with `ValidationError`: a typed value that is not
+one (`{"N": 5}`, `{"NULL": false}`, an empty `{"SS": []}`), base64 that is not strict standard
+base64, text that is not valid Unicode (a lone surrogate) and numbers out of DynamoDB's range.
 To turn a stream image into a model: `dynamoxy.schema_of(User).decode(dynamoxy.from_wire(image))`.
 
 ## Calls without a wrapper

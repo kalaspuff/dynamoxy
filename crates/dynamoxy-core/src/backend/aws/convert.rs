@@ -361,8 +361,9 @@ pub fn table_description(description: sdk::TableDescription) -> TableDescription
         table_id: description.table_id().map(str::to_owned),
         table_status: description
             .table_status()
-            .and_then(|status| TableStatus::parse(status.as_str()))
-            .unwrap_or(TableStatus::Active),
+            // A status added after this SDK (or this enum) is not taken for ACTIVE: waiters
+            // would treat such a table as ready. A response without one is read as before.
+            .map_or(TableStatus::Active, |status| TableStatus::parse(status.as_str()).unwrap_or(TableStatus::Unknown)),
         creation_date_time: secs(description.creation_date_time()),
         key_schema: key_schema_from_sdk(description.key_schema()),
         attribute_definitions: attribute_definitions_from_sdk(description.attribute_definitions()),
@@ -485,6 +486,17 @@ mod tests {
         assert!(values(Values::new()).is_none());
         assert!(return_values(ReturnValues::None).is_none());
         assert_eq!(return_values(ReturnValues::AllNew), Some(sdk::ReturnValue::AllNew));
+    }
+
+    #[test]
+    fn table_statuses_the_enum_does_not_know_are_not_active() {
+        let status = |status: Option<sdk::TableStatus>| {
+            table_description(sdk::TableDescription::builder().set_table_status(status).build()).table_status
+        };
+        assert_eq!(status(Some(sdk::TableStatus::Active)), TableStatus::Active);
+        assert_eq!(status(Some(sdk::TableStatus::ReplicationNotAuthorized)), TableStatus::ReplicationNotAuthorized);
+        assert_eq!(status(Some(sdk::TableStatus::from("SOMETHING_NEW"))), TableStatus::Unknown);
+        assert_eq!(status(None), TableStatus::Active, "as before: responses always carry one");
     }
 
     #[test]

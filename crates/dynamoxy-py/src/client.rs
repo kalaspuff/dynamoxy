@@ -15,15 +15,16 @@ use dynamoxy_core::metrics::LATENCY_BUCKETS_MS;
 use dynamoxy_core::types::*;
 use dynamoxy_core::{Call, Client, ClientConfig};
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyTypeError;
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 use pythonize::depythonize;
 
 use crate::convert::{
-    PyItem, PyValueList, PyValues, backup_description, backup_details, backup_summary, capacities, collection_metrics,
-    collection_metrics_map, continuous_backups, items_to_py, keys_and_attributes, optional_capacity, optional_item,
-    py_to_item, stats, table_description, ttl_to_py, write_request_to_py,
+    PyItem, PyStrMap, PyValueList, PyValues, as_dict, backup_description, backup_details, backup_summary, capacities,
+    collection_metrics, collection_metrics_map, continuous_backups, items_to_py, keys_and_attributes,
+    optional_capacity, optional_item, py_to_item, stats, table_description, ttl_to_py, write_request_to_py,
 };
 use crate::errors::{ConfigurationError, ShutdownError, ValidationError, call_error_in, error_in, to_py_err};
 use crate::runtime::{Deferred, future_into_py, future_into_py_in, future_into_py_inline};
@@ -53,8 +54,8 @@ fn duration(seconds: f64, name: &str) -> PyResult<Duration> {
     Ok(dynamoxy_core::config::duration(seconds))
 }
 
-fn names(names: Option<BTreeMap<String, String>>) -> BTreeMap<String, String> {
-    names.unwrap_or_default()
+fn names(names: Option<PyStrMap>) -> BTreeMap<String, String> {
+    names.map(|names| names.0).unwrap_or_default()
 }
 
 fn values(values: Option<PyValues>) -> BTreeMap<String, dynamoxy_core::AttributeValue> {
@@ -220,7 +221,7 @@ struct TransactGetArg {
     #[pyo3(default)]
     projection_expression: Option<String>,
     #[pyo3(default)]
-    expression_attribute_names: Option<BTreeMap<String, String>>,
+    expression_attribute_names: Option<PyStrMap>,
 }
 
 /// One operation of `transact_write_items` (`kind` is put, update, delete or condition_check).
@@ -238,7 +239,7 @@ struct TransactWriteArg {
     #[pyo3(default)]
     condition_expression: Option<String>,
     #[pyo3(default)]
-    expression_attribute_names: Option<BTreeMap<String, String>>,
+    expression_attribute_names: Option<PyStrMap>,
     #[pyo3(default)]
     expression_attribute_values: Option<PyValues>,
     #[pyo3(default)]
@@ -293,7 +294,7 @@ struct KeysArg {
     #[pyo3(default)]
     projection_expression: Option<String>,
     #[pyo3(default)]
-    expression_attribute_names: Option<BTreeMap<String, String>>,
+    expression_attribute_names: Option<PyStrMap>,
 }
 
 impl KeysArg {
@@ -505,7 +506,7 @@ impl PyCoreClient {
         key: PyItem,
         consistent_read: bool,
         projection_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         return_consumed_capacity: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
@@ -543,7 +544,7 @@ impl PyCoreClient {
         table_name: String,
         item: PyItem,
         condition_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         expression_attribute_values: Option<PyValues>,
         return_values: &str,
         return_values_on_condition_check_failure: &str,
@@ -583,7 +584,7 @@ impl PyCoreClient {
         key: PyItem,
         update_expression: Option<String>,
         condition_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         expression_attribute_values: Option<PyValues>,
         return_values: &str,
         return_values_on_condition_check_failure: &str,
@@ -623,7 +624,7 @@ impl PyCoreClient {
         table_name: String,
         key: PyItem,
         condition_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         expression_attribute_values: Option<PyValues>,
         return_values: &str,
         return_values_on_condition_check_failure: &str,
@@ -664,7 +665,7 @@ impl PyCoreClient {
         index_name: Option<String>,
         filter_expression: Option<String>,
         projection_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         expression_attribute_values: Option<PyValues>,
         select: Option<&str>,
         limit: Option<u32>,
@@ -706,7 +707,7 @@ impl PyCoreClient {
         index_name: Option<String>,
         filter_expression: Option<String>,
         projection_expression: Option<String>,
-        expression_attribute_names: Option<BTreeMap<String, String>>,
+        expression_attribute_names: Option<PyStrMap>,
         expression_attribute_values: Option<PyValues>,
         select: Option<&str>,
         limit: Option<u32>,
@@ -744,10 +745,13 @@ impl PyCoreClient {
     fn batch_get_item<'py>(
         &self,
         py: Python<'py>,
-        request_items: BTreeMap<String, KeysArg>,
+        request_items: &Bound<'py, PyAny>,
         return_consumed_capacity: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
+        let request_items: BTreeMap<String, KeysArg> = as_dict(request_items)?
+            .ok_or_else(|| PyTypeError::new_err("request_items must be a mapping of table name to keys"))?
+            .extract()?;
         let input = BatchGetItemInput {
             request_items: request_items.into_iter().map(|(table, keys)| (table, keys.into_core())).collect(),
             return_consumed_capacity: constant!(
@@ -765,11 +769,13 @@ impl PyCoreClient {
     fn batch_write_item<'py>(
         &self,
         py: Python<'py>,
-        request_items: &Bound<'py, PyDict>,
+        request_items: &Bound<'py, PyAny>,
         return_consumed_capacity: &str,
         return_item_collection_metrics: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
+        let request_items = as_dict(request_items)?
+            .ok_or_else(|| PyTypeError::new_err("request_items must be a mapping of table name to write requests"))?;
         let mut items = BTreeMap::new();
         for (table, requests) in request_items.iter() {
             let table: String = table.extract()?;
@@ -1094,7 +1100,7 @@ impl PyCoreClient {
     }
 
     /// `CreateTable`.
-    #[pyo3(signature = (table_name, *, attribute_definitions, key_schema, local_secondary_indexes = Vec::new(), global_secondary_indexes = Vec::new(), billing_mode = "PAY_PER_REQUEST", provisioned_throughput = None, on_demand_throughput = None, stream_specification = None, sse_specification = None, tags = BTreeMap::new(), table_class = None, deletion_protection_enabled = false))]
+    #[pyo3(signature = (table_name, *, attribute_definitions, key_schema, local_secondary_indexes = Vec::new(), global_secondary_indexes = Vec::new(), billing_mode = "PAY_PER_REQUEST", provisioned_throughput = None, on_demand_throughput = None, stream_specification = None, sse_specification = None, tags = PyStrMap::default(), table_class = None, deletion_protection_enabled = false))]
     #[allow(clippy::too_many_arguments)]
     fn create_table<'py>(
         &self,
@@ -1109,7 +1115,7 @@ impl PyCoreClient {
         on_demand_throughput: Option<(Option<i64>, Option<i64>)>,
         stream_specification: Option<(bool, Option<String>)>,
         sse_specification: Option<(bool, Option<String>, Option<String>)>,
-        tags: BTreeMap<String, String>,
+        tags: PyStrMap,
         table_class: Option<&str>,
         deletion_protection_enabled: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -1142,7 +1148,7 @@ impl PyCoreClient {
             on_demand_throughput: on_demand(on_demand_throughput),
             stream_specification: stream(stream_specification)?,
             sse_specification: sse(sse_specification),
-            tags,
+            tags: tags.0,
             table_class: optional_constant(table_class, |value| constant!(value, TableClass, "table_class"))?,
             deletion_protection_enabled,
         };
@@ -1308,16 +1314,11 @@ impl PyCoreClient {
     }
 
     /// `TagResource`.
-    fn tag_resource<'py>(
-        &self,
-        py: Python<'py>,
-        resource_arn: String,
-        tags: BTreeMap<String, String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn tag_resource<'py>(&self, py: Python<'py>, resource_arn: String, tags: PyStrMap) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client()?;
         future_into_py(
             py,
-            async move { finish(client.tag_resource(&resource_arn, tags).await, |py, ()| Ok(py.None())) },
+            async move { finish(client.tag_resource(&resource_arn, tags.0).await, |py, ()| Ok(py.None())) },
         )
     }
 

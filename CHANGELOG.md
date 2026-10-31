@@ -362,6 +362,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   limits of table keys. `TransactWriteItems` counted only `Put` items towards its 4 MB limit, so
   eleven updates that store 390 KB items each were accepted; updates now count with the item
   they store.
+- Smaller binding and AWS adapter issues. The native module's functions took only `dict`s where
+  its type stubs promise any mapping: a `MappingProxyType` or `UserDict` as
+  `expression_attribute_names`/`expression_attribute_values`, `request_items`, `tags`, or the
+  item of `from_wire()` and `value_from_wire()` raised `TypeError`; they now take any mapping,
+  and PartiQL `parameters` given as a `str` raise `TypeError` instead of being split into
+  characters. The typed wire format accepted invalid input: `"===="`, `"A==="` and `"AA==AAAA"`
+  read as zero bytes, `{"NULL": false}` as `None` and `{"SS": []}` as an empty set, while
+  `{"N": 5}`, `{"BOOL": 1}` and non-`str` names raised `TypeError`; they now raise
+  `ValidationError`, with DynamoDB's wording where it has one. A lone surrogate in text raised
+  `UnicodeEncodeError`, an `int` of more than 4,300 digits Python's `ValueError`, and an `int`
+  subclass with its own `__str__` failed above 2**63; they are now a `ValidationError` and the
+  number. In-memory calls could not be awaited with `yield from call.__await__()` in
+  `types.coroutine` code (their awaitable had no `__iter__`). A wake-up write of the event loop
+  bridge that failed with anything but a full buffer left later calls undelivered; it is now
+  retried. Table statuses the AWS SDK adds later (and `REPLICATION_NOT_AUTHORIZED`) read as
+  `ACTIVE`, so waiters took such tables for ready; they now read as `UNKNOWN` (or their name).
 
 ### Security
 

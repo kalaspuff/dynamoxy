@@ -230,8 +230,22 @@ impl Shared {
         match self.wake.get() {
             #[cfg(unix)]
             Some(Wake::Socket { writer, .. }) => {
-                // A full buffer (WouldBlock) means that a wake-up is pending anyway.
-                let _ = (&*writer).write(&[1]);
+                if !write_wakeup(&mut &*writer) {
+                    // No byte is pending (ENOBUFS, ENOMEM, ...): the calls finishing later would
+                    // not write one either, so write it again until it is.
+                    let shared = Arc::clone(self);
+                    handle().spawn(async move {
+                        let mut delay = std::time::Duration::from_millis(1);
+                        loop {
+                            tokio::time::sleep(delay).await;
+                            let Some(Wake::Socket { writer, .. }) = shared.wake.get() else { return };
+                            if is_shut_down() || write_wakeup(&mut &*writer) {
+                                return;
+                            }
+                            delay = (delay * 2).min(std::time::Duration::from_millis(100));
+                        }
+                    });
+                }
             }
             Some(Wake::Threadsafe { .. }) => {
                 let shared = Arc::clone(self);
@@ -319,6 +333,20 @@ fn resolve(py: Python<'_>, future: &Bound<'_, PyAny>, finished: Finished) {
     };
 }
 
+/// Writes the wake-up byte. Returns whether a byte is pending for the loop: written, or the
+/// buffer is full (`WouldBlock`), which means one is pending anyway. Interrupted writes are
+/// retried; other errors leave nothing pending.
+#[cfg(unix)]
+fn write_wakeup(writer: &mut impl Write) -> bool {
+    loop {
+        match writer.write(&[1]) {
+            Ok(written) => return written == 1,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return error.kind() == std::io::ErrorKind::WouldBlock,
+        }
+    }
+}
+
 /// The awaitable of a call that finished when it was made (in-memory backend): awaiting it
 /// yields to the event loop once (a bare yield, like `asyncio.sleep(0)`), then returns the
 /// result, which is converted to Python only then.
@@ -331,6 +359,12 @@ pub struct Ready {
 #[pymethods]
 impl Ready {
     fn __await__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// The awaitable is its own iterator, also for `yield from call.__await__()` in generator
+    /// coroutines, as for an `asyncio.Future`.
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 

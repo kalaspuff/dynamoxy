@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+import json
+from collections import OrderedDict, UserDict
 from collections.abc import Callable
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -84,6 +86,36 @@ def test_invalid_values_are_validation_errors(value: Any, message: str) -> None:
         dynamoxy.to_wire({"value": value})
 
 
+class Sneaky(int):
+    """An int whose text is not its number."""
+
+    def __str__(self) -> str:
+        return "not a number"
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (json.loads('"\\ud800"'), "not valid Unicode"),
+        ({json.loads('"\\udfff"'): 1}, "not valid Unicode"),
+        (10**5000, "too large for DynamoDB"),
+        (-(10**130), "too large for DynamoDB"),
+    ],
+    ids=["lone surrogate", "lone surrogate in a name", "5,000 digits", "130 digits"],
+)
+def test_text_and_numbers_python_cannot_write_are_validation_errors(value: Any, message: str) -> None:
+    with pytest.raises(dynamoxy.ValidationError, match=message):
+        dynamoxy.to_wire({"value": value})
+
+
+def test_int_subclasses_are_their_numbers() -> None:
+    assert dynamoxy.to_wire({"small": Sneaky(5), "big": Sneaky(2**70)}) == {
+        "small": {"N": "5"},
+        "big": {"N": str(2**70)},
+    }
+    assert dynamoxy.to_wire({"n": 10**125}) == {"n": {"N": str(10**125)}}
+
+
 def nested(levels: int, inner: Any = 1, wrap: Callable[[Any], Any] = lambda value: [value]) -> Any:
     """``inner`` inside ``levels`` lists (or what ``wrap`` builds)."""
     value = inner
@@ -142,6 +174,50 @@ def test_base64_binary_for_json() -> None:
     wire = dynamoxy.to_wire({"b": b"foobar", "bs": {b"\x00\xff"}}, base64_binary=True)
     assert wire == {"b": {"B": "Zm9vYmFy"}, "bs": {"BS": ["AP8="]}}
     assert dynamoxy.from_wire(wire) == {"b": b"foobar", "bs": {b"\x00\xff"}}
+
+
+@pytest.mark.parametrize(
+    ("wire", "message"),
+    [
+        ({"B": "===="}, "base64"),
+        ({"B": "A==="}, "base64"),
+        ({"B": "AA==AAAA"}, "base64"),
+        ({"NULL": False}, "Null attribute value types must have the value of true"),
+        ({"NULL": 1}, "Null attribute value types must have the value of true"),
+        ({"SS": []}, "An string set  may not be empty"),
+        ({"NS": []}, "An number set  may not be empty"),
+        ({"BS": []}, "An binary set  may not be empty"),
+        ({"N": 5}, '"N" must be text, got int'),
+        ({"S": 5}, '"S" must be text, got int'),
+        ({"BOOL": 1}, '"BOOL" must be true or false, got int'),
+        ({"L": "abc"}, '"L" must be a list, got str'),
+        ({"SS": "abc"}, '"SS" must be a list, got str'),
+        ({"S": json.loads('"\\ud800"')}, "not valid Unicode"),
+        ({1: "x"}, "typed DynamoDB value"),
+        ({"M": {1: {"S": "x"}}}, "attribute names must be str"),
+    ],
+)
+def test_invalid_typed_values_are_validation_errors(wire: dict[Any, Any], message: str) -> None:
+    with pytest.raises(dynamoxy.ValidationError, match=message):
+        _core.value_from_wire(wire)
+
+
+def test_strict_base64_still_reads_valid_padding() -> None:
+    assert _core.value_from_wire({"B": "AA=="}) == b"\x00"
+    assert _core.value_from_wire({"B": "AAA="}) == b"\x00\x00"
+    assert _core.value_from_wire({"B": "Zm9v YmFy"}) == b"foobar", "whitespace is ignored"
+
+
+def test_mappings_are_accepted_where_the_stub_says_so() -> None:
+    assert _core.from_wire(MappingProxyType({"a": MappingProxyType({"S": "x"})})) == {"a": "x"}
+    assert _core.value_from_wire(UserDict({"N": "1"})) == 1
+    _core._check_expressions(condition="#a = :v", names=MappingProxyType({"#a": "a"}), values=UserDict({":v": 1}))
+    updated = _core._apply_update(
+        {"a": 1}, "SET #a = :v", names=UserDict({"#a": "a"}), values=MappingProxyType({":v": 2})
+    )
+    assert updated == {"a": 2}
+    with pytest.raises(TypeError, match="mapping of str to str"):
+        _core._check_expressions(condition="#a = :v", names={"#a": 1}, values={":v": 1})  # type: ignore[dict-item]
 
 
 def test_single_values() -> None:

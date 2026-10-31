@@ -9,14 +9,13 @@ mod convert;
 mod errors;
 mod runtime;
 
-use std::collections::BTreeMap;
-
 use dynamoxy_core::expr::{ExpressionInput, apply_update, parse_request, reserved, validate_update};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::convert::{
-    PyValues, av_from_wire, av_to_py, av_to_wire, item_from_wire, item_to_py, item_to_wire, py_to_av, py_to_item,
+    PyStrMap, PyValues, av_from_wire, av_to_py, av_to_wire, item_from_wire, item_to_py, item_to_wire, py_to_av,
+    py_to_item,
 };
 use crate::errors::to_py_err;
 
@@ -79,13 +78,17 @@ fn _check_expressions(
     key_condition: Option<&str>,
     update: Option<&str>,
     projection: Option<&str>,
-    names: Option<BTreeMap<String, String>>,
+    names: Option<PyStrMap>,
     values: Option<PyValues>,
 ) -> PyResult<()> {
     let input = ExpressionInput { condition, filter, key_condition, update, projection };
-    parse_request(input, &names.unwrap_or_default(), &values.map(|values| values.0).unwrap_or_default())
-        .map(|_| ())
-        .map_err(to_py_err)
+    parse_request(
+        input,
+        &names.map(|names| names.0).unwrap_or_default(),
+        &values.map(|values| values.0).unwrap_or_default(),
+    )
+    .map(|_| ())
+    .map_err(to_py_err)
 }
 
 /// Applies an update expression to an item (plain values) the way DynamoDB would, with the
@@ -99,13 +102,17 @@ fn _apply_update<'py>(
     py: Python<'py>,
     item: &Bound<'py, PyAny>,
     update: &str,
-    names: Option<BTreeMap<String, String>>,
+    names: Option<PyStrMap>,
     values: Option<PyValues>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let item = py_to_item(item, "item")?;
     let input = ExpressionInput { update: Some(update), ..ExpressionInput::default() };
-    let parsed = parse_request(input, &names.unwrap_or_default(), &values.map(|values| values.0).unwrap_or_default())
-        .map_err(to_py_err)?;
+    let parsed = parse_request(
+        input,
+        &names.map(|names| names.0).unwrap_or_default(),
+        &values.map(|values| values.0).unwrap_or_default(),
+    )
+    .map_err(to_py_err)?;
     let Some(update) = parsed.update else {
         return Err(pyo3::exceptions::PyValueError::new_err("an update expression is required"));
     };
