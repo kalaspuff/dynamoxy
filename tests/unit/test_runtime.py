@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import threading
+import types
 import weakref
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -44,6 +46,41 @@ async def test_in_memory_calls_yield_to_the_event_loop() -> None:
         await table.get({"pk": "a"})
         assert ran == ["other"], "like real I/O, a call lets other tasks run"
         await task
+
+
+async def test_in_memory_calls_work_in_generator_coroutines() -> None:
+    async with testing.memory_client() as client:
+        await items_table(client)
+        core = await client._core()
+
+        @types.coroutine
+        def legacy() -> Any:
+            output, _ = yield from core.get_item("items", {"pk": "a"}).__await__()
+            return output["item"]
+
+        assert await legacy() == {"pk": "a", "n": 1}
+
+
+async def test_calls_take_any_mapping_and_refuse_text_as_parameters() -> None:
+    async with testing.memory_client() as client:
+        table = await items_table(client)
+        core = await client._core()
+        await core.put_item(
+            "items",
+            {"pk": "b", "n": 2},
+            condition_expression="attribute_not_exists(#p) AND :v > :w",
+            expression_attribute_names=MappingProxyType({"#p": "pk"}),
+            expression_attribute_values=MappingProxyType({":v": 2, ":w": 1}),
+        )
+        output, _ = await core.batch_get_item(MappingProxyType({"items": {"keys": [{"pk": "b"}]}}))
+        assert output["responses"]["items"] == [{"pk": "b", "n": 2}]
+        await core.batch_write_item(MappingProxyType({"items": [("delete", {"pk": "b"})]}))
+        arn = (await table.describe()).arn
+        assert arn is not None
+        await core.tag_resource(arn, MappingProxyType({"team": "a"}))
+        assert await table.tags() == {"team": "a"}
+        with pytest.raises(TypeError, match="parameters must be a list of values, got str"):
+            core.execute_statement('SELECT * FROM "items" WHERE pk = ?', parameters="a")  # type: ignore[arg-type]
 
 
 async def test_waiting_calls_resolve_on_their_loop() -> None:

@@ -85,6 +85,33 @@ fn number(text: &str, path: &ValuePath<'_>) -> PyResult<Number> {
     })
 }
 
+/// The text of a `str`, refusing one that is not valid Unicode (a lone surrogate, from
+/// `json.loads('"\\ud800"')`), which cannot be sent: a `ValidationError`, not Python's
+/// `UnicodeEncodeError`.
+fn text(value: &Bound<'_, PyString>, path: &dyn std::fmt::Display) -> PyResult<String> {
+    match value.to_str() {
+        Ok(text) => Ok(text.to_owned()),
+        Err(_) => Err(ValidationError::new_err(format!(
+            "{path}: the text is not valid Unicode (it contains a lone surrogate)"
+        ))),
+    }
+}
+
+/// The digits of an `int` that does not fit 64 bits, as `int` itself writes them (a subclass's
+/// own `__str__` is not the number). Numbers above DynamoDB's range (about 1E126, 419 bits) are
+/// refused before they are written out, which Python refuses above 4,300 digits.
+fn big_int(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<Number> {
+    let py = value.py();
+    let bits: u64 = py.get_type::<PyInt>().call_method1("bit_length", (value,))?.extract()?;
+    if bits > 419 {
+        return Err(ValidationError::new_err(format!(
+            "{path}: the number is too large for DynamoDB (its numbers are below 1E+126)"
+        )));
+    }
+    let digits = py.get_type::<PyInt>().call_method1("__repr__", (value,))?;
+    number(&digits.cast::<PyString>()?.to_cow()?, path)
+}
+
 fn type_name(value: &Bound<'_, PyAny>) -> String {
     value.get_type().name().map(|name| name.to_string()).unwrap_or_else(|_| "?".into())
 }
@@ -116,8 +143,8 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
     if value.is_none() {
         return Ok(AttributeValue::Null);
     }
-    if let Ok(text) = value.cast_exact::<PyString>() {
-        return Ok(AttributeValue::S(text.to_str()?.to_owned()));
+    if let Ok(string) = value.cast_exact::<PyString>() {
+        return Ok(AttributeValue::S(text(string, path)?));
     }
     if let Ok(flag) = value.cast::<PyBool>() {
         return Ok(AttributeValue::Bool(flag.is_true()));
@@ -126,7 +153,7 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         if let Ok(small) = value.extract::<i64>() {
             return Ok(AttributeValue::N(Number::from(small)));
         }
-        return Ok(AttributeValue::N(number(&value.str()?.to_cow()?, path)?));
+        return Ok(AttributeValue::N(big_int(value, path)?));
     }
     if let Ok(float) = value.cast::<PyFloat>() {
         let float = float.value();
@@ -149,8 +176,8 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         }
         return Ok(AttributeValue::L(values));
     }
-    if let Ok(text) = value.cast::<PyString>() {
-        return Ok(AttributeValue::S(text.to_str()?.to_owned()));
+    if let Ok(string) = value.cast::<PyString>() {
+        return Ok(AttributeValue::S(text(string, path)?));
     }
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(AttributeValue::B(bytes.as_bytes().to_vec()));
@@ -265,9 +292,9 @@ fn dict_to_item(dict: &Bound<'_, PyDict>, path: &ValuePath<'_>, depth: usize) ->
                 type_name(&key)
             )));
         };
-        let name = name.to_str()?;
-        let converted = to_av(&value, &ValuePath::Member(path, name), depth)?;
-        item.insert(name.to_owned(), converted);
+        let name = text(name, path)?;
+        let converted = to_av(&value, &ValuePath::Member(path, &name), depth)?;
+        item.insert(name, converted);
     }
     Ok(item)
 }
@@ -443,6 +470,45 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyItem {
     }
 }
 
+/// `value` as a dict: the dict itself, or any other `collections.abc.Mapping` (a
+/// `MappingProxyType`, a `UserDict`) copied into one; `None` for anything else.
+pub fn as_dict<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyDict>>> {
+    if let Ok(dict) = value.cast::<PyDict>() {
+        return Ok(Some(dict.clone()));
+    }
+    let py = value.py();
+    if !value.is_instance(mapping_type(py)?)? {
+        return Ok(None);
+    }
+    let dict = PyDict::new(py);
+    for pair in value.call_method0("items")?.try_iter()? {
+        let (key, element): (Bound<'py, PyAny>, Bound<'py, PyAny>) = pair?.extract()?;
+        dict.set_item(key, element)?;
+    }
+    Ok(Some(dict))
+}
+
+/// A mapping of `str` to `str` (`expression_attribute_names`, `tags`), from any mapping.
+#[derive(Debug, Default)]
+pub struct PyStrMap(pub BTreeMap<String, String>);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for PyStrMap {
+    type Error = PyErr;
+
+    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let invalid = || PyTypeError::new_err(format!("expected a mapping of str to str, got {}", type_name(&value)));
+        let dict = as_dict(&value)?.ok_or_else(invalid)?;
+        let mut map = BTreeMap::new();
+        for (key, element) in dict.iter() {
+            let (Ok(key), Ok(element)) = (key.cast::<PyString>(), element.cast::<PyString>()) else {
+                return Err(invalid());
+            };
+            map.insert(key.to_str()?.to_owned(), element.to_str()?.to_owned());
+        }
+        Ok(Self(map))
+    }
+}
+
 /// `expression_attribute_values`: placeholder to Python value.
 #[derive(Debug, Default)]
 pub struct PyValues(pub BTreeMap<String, AttributeValue>);
@@ -451,9 +517,9 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyValues {
     type Error = PyErr;
 
     fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        let dict = value
-            .cast::<PyDict>()
-            .map_err(|_| PyTypeError::new_err("expression_attribute_values must be a dict of placeholder to value"))?;
+        let dict = as_dict(&value)?.ok_or_else(|| {
+            PyTypeError::new_err("expression_attribute_values must be a mapping of placeholder to value")
+        })?;
         let mut values = BTreeMap::new();
         for (key, element) in dict.iter() {
             let key: String = key.extract()?;
@@ -472,6 +538,13 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyValueList {
     type Error = PyErr;
 
     fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        // A str is iterable too: one parameter, not one per character.
+        if value.is_instance_of::<PyString>() || value.is_instance_of::<PyBytes>() || as_dict(&value)?.is_some() {
+            return Err(PyTypeError::new_err(format!(
+                "parameters must be a list of values, got {}",
+                type_name(&value)
+            )));
+        }
         value
             .try_iter()?
             .enumerate()
@@ -780,7 +853,8 @@ pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeV
     wire_to_av(value, path, 1)
 }
 
-/// Parses a typed value `depth` levels deep (see [`MAX_DEPTH`]).
+/// Parses a typed value `depth` levels deep (see [`MAX_DEPTH`]). Anything that is not one
+/// DynamoDB accepts raises `ValidationError`, with DynamoDB's wording where it has one.
 fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<AttributeValue> {
     if depth > MAX_DEPTH {
         return Err(too_deep(&path));
@@ -790,37 +864,65 @@ fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<At
             "{path}: expected a typed DynamoDB value such as {{\"S\": \"text\"}} or {{\"N\": \"1\"}}"
         ))
     };
-    let dict = value.cast::<PyDict>().map_err(|_| invalid())?;
+    let dict = as_dict(value)?.ok_or_else(invalid)?;
     if dict.len() != 1 {
         return Err(invalid());
     }
     let (kind, inner) = dict.iter().next().ok_or_else(invalid)?;
-    let kind: String = kind.extract()?;
+    let kind = kind.cast::<PyString>().map_err(|_| invalid())?.to_cow()?.into_owned();
+    let expected =
+        |what: &str| ValidationError::new_err(format!("{path}: \"{kind}\" must be {what}, got {}", type_name(&inner)));
+    let string = |element: &Bound<'_, PyAny>| match element.cast::<PyString>() {
+        Ok(string) => text(string, &path),
+        Err(_) => Err(expected("text")),
+    };
+    let elements = || -> PyResult<Vec<Bound<'_, PyAny>>> {
+        if !(inner.is_instance_of::<PyList>() || inner.is_instance_of::<PyTuple>()) {
+            return Err(expected("a list"));
+        }
+        inner.try_iter()?.collect()
+    };
+    let set = || -> PyResult<Vec<Bound<'_, PyAny>>> {
+        let elements = elements()?;
+        if elements.is_empty() {
+            // DynamoDB's wording, as the in-memory backend's (`AttributeValue::validate`).
+            return Err(ValidationError::new_err(format!(
+                "{path}: One or more parameter values were invalid: {}",
+                match kind.as_str() {
+                    "SS" => "An string set  may not be empty",
+                    "NS" => "An number set  may not be empty",
+                    _ => "Binary sets should not be empty",
+                }
+            )));
+        }
+        Ok(elements)
+    };
     Ok(match kind.as_str() {
-        "S" => AttributeValue::S(inner.extract()?),
-        "N" => AttributeValue::N(number(&inner.extract::<String>()?, &ValuePath::Root(path))?),
+        "S" => AttributeValue::S(string(&inner)?),
+        "N" => AttributeValue::N(number(&string(&inner)?, &ValuePath::Root(path))?),
         "B" => AttributeValue::B(wire_binary(&inner, path)?),
-        "BOOL" => AttributeValue::Bool(inner.extract()?),
-        "NULL" => AttributeValue::Null,
+        "BOOL" => AttributeValue::Bool(inner.cast::<PyBool>().map_err(|_| expected("true or false"))?.is_true()),
+        "NULL" => {
+            if !inner.cast::<PyBool>().is_ok_and(|flag| flag.is_true()) {
+                return Err(ValidationError::new_err(format!(
+                    "{path}: One or more parameter values were invalid: Null attribute value types must have the value of true"
+                )));
+            }
+            AttributeValue::Null
+        }
         "L" => AttributeValue::L(
-            inner
-                .try_iter()?
+            elements()?
+                .iter()
                 .enumerate()
-                .map(|(index, element)| wire_to_av(&element?, &format!("{path}[{index}]"), depth + 1))
+                .map(|(index, element)| wire_to_av(element, &format!("{path}[{index}]"), depth + 1))
                 .collect::<PyResult<_>>()?,
         ),
         "M" => AttributeValue::M(wire_to_item(&inner, path, depth + 1)?),
-        "SS" => AttributeValue::Ss(inner.extract()?),
+        "SS" => AttributeValue::Ss(set()?.iter().map(string).collect::<PyResult<_>>()?),
         "NS" => AttributeValue::Ns(
-            inner
-                .extract::<Vec<String>>()?
-                .iter()
-                .map(|text| number(text, &ValuePath::Root(path)))
-                .collect::<PyResult<_>>()?,
+            set()?.iter().map(|element| number(&string(element)?, &ValuePath::Root(path))).collect::<PyResult<_>>()?,
         ),
-        "BS" => {
-            AttributeValue::Bs(inner.try_iter()?.map(|element| wire_binary(&element?, path)).collect::<PyResult<_>>()?)
-        }
+        "BS" => AttributeValue::Bs(set()?.iter().map(|element| wire_binary(element, path)).collect::<PyResult<_>>()?),
         _ => return Err(invalid()),
     })
 }
@@ -832,15 +934,18 @@ pub fn item_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Item> {
 
 /// Parses the members of a typed map whose values are `depth` levels deep.
 fn wire_to_item(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<Item> {
-    let dict = value.cast::<PyDict>().map_err(|_| {
-        ValidationError::new_err(format!(
-            "{} must be a dict of typed values",
-            if path.is_empty() { "item" } else { path }
-        ))
-    })?;
+    let what = if path.is_empty() { "item" } else { path };
+    let dict =
+        as_dict(value)?.ok_or_else(|| ValidationError::new_err(format!("{what} must be a mapping of typed values")))?;
     let mut item = Item::new();
     for (name, value) in dict.iter() {
-        let name: String = name.extract()?;
+        let Ok(name) = name.cast::<PyString>() else {
+            return Err(ValidationError::new_err(format!(
+                "{what}: attribute names must be str, got {}",
+                type_name(&name)
+            )));
+        };
+        let name = text(name, &what)?;
         let child = if path.is_empty() { name.clone() } else { format!("{path}.{name}") };
         item.insert(name, wire_to_av(&value, &child, depth)?);
     }
@@ -866,13 +971,20 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Strict standard base64: padding (`=`, at most two) only at the end, so `"===="`, `"A==="`
+/// and `"AA==AAAA"` are refused rather than read as zero bytes.
 fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let clean: Vec<u8> = text.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
     if !clean.len().is_multiple_of(4) {
         return None;
     }
-    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
-    for chunk in clean.chunks(4) {
+    let chunks = clean.len() / 4;
+    let mut out = Vec::with_capacity(chunks * 3);
+    for (position, chunk) in clean.chunks(4).enumerate() {
+        let padded = chunk.iter().filter(|byte| **byte == b'=').count();
+        if padded > 2 || (padded > 0 && position + 1 < chunks) {
+            return None;
+        }
         let mut triple = 0u32;
         let mut padding = 0;
         for &byte in chunk {

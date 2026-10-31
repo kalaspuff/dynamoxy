@@ -115,6 +115,10 @@ string_enum! {
         Archiving => "ARCHIVING",
         /// Archived.
         Archived => "ARCHIVED",
+        /// A replica's region is not authorized (global tables).
+        ReplicationNotAuthorized => "REPLICATION_NOT_AUTHORIZED",
+        /// A status this version of dynamoxy does not know (DynamoDB added it later): not ready.
+        Unknown => "UNKNOWN",
     }
 }
 
@@ -129,6 +133,8 @@ string_enum! {
         Deleting => "DELETING",
         /// Ready.
         Active => "ACTIVE",
+        /// A status this version of dynamoxy does not know (DynamoDB added it later): not ready.
+        Unknown => "UNKNOWN",
     }
 }
 

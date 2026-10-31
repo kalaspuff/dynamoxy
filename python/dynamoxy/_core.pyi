@@ -395,7 +395,7 @@ class CoreClient:
         self,
         statement: str,
         *,
-        parameters: Sequence[Any] | None = None,
+        parameters: list[Any] | tuple[Any, ...] | None = None,
         consistent_read: bool = False,
         next_token: str | None = None,
         limit: int | None = None,
