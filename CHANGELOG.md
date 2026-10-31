@@ -190,6 +190,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   error says to `refresh()` the instance and retry. `delete()` of an instance without unique
   values set whose item another writer had deleted returned the item as loaded instead of
   `None`.
+- A `PydanticModel` that subclasses another `PydanticModel` (an abstract base with shared
+  fields) got the base's attribute paths as the defaults of the fields it inherits: required
+  inherited fields became optional, `create()` raised `ValidationError` ("expected int, got
+  FieldPath") for a field with a default, `to_item()` returned the paths as values, and items
+  without an inherited attribute could not be read. Subclasses now inherit the fields with their
+  defaults and required state, as in pydantic, and redeclaring an inherited field no longer
+  warns that it "shadows an attribute in parent".
 
 ### Security
 

@@ -28,10 +28,12 @@ Plain ``pydantic.BaseModel`` classes can be nested in any model; they are stored
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING, Any, ClassVar, Self, override
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, ClassVar, Self, overload, override
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as PydanticValidationError
+from pydantic._internal._model_construction import ModelMetaclass
 from pydantic_core import PydanticUndefined
 
 from dynamoxy._utils import MISSING
@@ -122,6 +124,44 @@ def _without_inputs(error: PydanticValidationError) -> ValueError:
     return ValueError(f"{error.title}: {problems}")
 
 
+#: Whether pydantic is building a ``PydanticModel`` class in this context (see ``_ModelMetaclass``).
+_BUILDING: ContextVar[bool] = ContextVar("dynamoxy_pydantic_building", default=False)
+
+
+class _ModelMetaclass(ModelMetaclass):
+    """Pydantic's metaclass, with the field paths of base classes hidden while it builds a class.
+
+    Pydantic reads ``getattr(cls, name)`` for every field while it collects the fields of a new
+    class, inherited ones included, and takes what it finds as the field's default (and warns that
+    a redeclared field "shadows an attribute in parent"). The class attributes of fields are
+    dynamoxy's paths, so a subclass of a ``PydanticModel`` would get the base's paths as defaults,
+    and its required inherited fields would become optional. While a class is built, paths answer
+    class access with ``AttributeError``, as the deleted class attributes of a plain pydantic
+    model do, so pydantic copies the fields of the base, as it does for plain models.
+    """
+
+    def __new__(mcs, *args: Any, **kwargs: Any) -> type:
+        token = _BUILDING.set(True)
+        try:
+            return super().__new__(mcs, *args, **kwargs)
+        finally:
+            _BUILDING.reset(token)
+
+
+class _PydanticFieldPath[T](FieldPath[T]):
+    """The class attribute of a ``PydanticModel`` field (hidden while pydantic builds a class)."""
+
+    @overload
+    def __get__(self, instance: None, owner: type[Any]) -> Self: ...
+    @overload
+    def __get__(self, instance: object, owner: type[Any]) -> T: ...
+    @override
+    def __get__(self, instance: object | None, owner: type[Any]) -> Self | T:
+        if instance is None and _BUILDING.get():
+            raise AttributeError(self.field_name)
+        return super().__get__(instance, owner)
+
+
 def _field_options(info: FieldInfo) -> dict[str, Any]:
     options: dict[str, Any] = {}
     if info.default is not PydanticUndefined:
@@ -200,7 +240,7 @@ def build_plain_schema(model: type[BaseModel]) -> ModelSchema:
     return _build(model, ModelOptions(abstract=True))
 
 
-class PydanticModel(BaseModel, _Persistence):
+class PydanticModel(BaseModel, _Persistence, metaclass=_ModelMetaclass):
     """A pydantic model stored in DynamoDB. Class keywords are the same as :class:`dynamoxy.Model`'s.
 
     Indexes are class attributes (``by_email = dynamoxy.GlobalIndex(partition_key="email")``).
@@ -244,6 +284,8 @@ class PydanticModel(BaseModel, _Persistence):
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        # Pydantic has collected the fields: paths answer class access again, also in subclasses' hooks.
+        _BUILDING.set(False)
         super().__pydantic_init_subclass__(**kwargs)
         # A field's path replaces the class attribute of its name: refuse the names of the model API
         # (as native models do), where pydantic only warns and the method would be gone.
@@ -255,7 +297,9 @@ class PydanticModel(BaseModel, _Persistence):
                 f"and keep the stored name with Annotated[..., dynamoxy.AttributeName({name!r})]"
             )
         for name, info in cls.model_fields.items():
-            path = FieldPath(**{key: value for key, value in _field_options(info).items() if key == "attribute_name"})
+            path = _PydanticFieldPath(
+                **{key: value for key, value in _field_options(info).items() if key == "attribute_name"}
+            )
             type.__setattr__(cls, name, path)
             path.__set_name__(cls, name)
         options = cls.__dynamoxy_options__

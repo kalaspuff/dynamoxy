@@ -72,6 +72,10 @@ record = await contacts.get("c1")  # a ContactRecord, and therefore a Contact
 
 A re-declared field replaces the inherited one, so repeat its type and its default.
 
+Models can also share fields through an abstract `PydanticModel`
+(`class Counted(dynamoxy.PydanticModel, abstract=True)`): its subclasses inherit the fields with
+their defaults and validators, as in pydantic.
+
 Fields cannot take the names of the model API (`key`, `to_item`, `create`, `get`, `query`,
 `save`, `update`, `delete`, ... as in [native models](modeling.md#names-to-avoid)): the class
 raises `TypeError` when it is defined. When an existing model has such a field, give it another
