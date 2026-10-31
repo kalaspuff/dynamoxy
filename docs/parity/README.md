@@ -123,7 +123,9 @@ bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 Mi
 | a check `attribute_not_exists(pk)` of that key added | 4,393,535 | probe `sizes.payload_updates_plus_check` |
 | a put of that key with `attribute_not_exists(pk)` added | 4,393,535 | probe `sizes.payload_updates_plus_put_with_condition` |
 
-The probe is `scripts/probe_backends.py`, whose run on DynamoDB is kept here with it.
+The probe facts come from dynamoxy's own probe run on DynamoDB, kept here as
+[probe-aws-eu-north-1-2026-10-31.json](probe-aws-eu-north-1-2026-10-31.json) (its script,
+`scripts/probe_backends.py`, comes with the probe's pull request).
 
 ### Table updates (#87)
 
