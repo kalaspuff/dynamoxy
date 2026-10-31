@@ -466,7 +466,13 @@ async def test_reads_refuse_items_that_another_model_stores(client: dynamoxy.Cli
     with pytest.raises(dynamoxy.ItemDecodeError, match=r"read it with client\.model\(Admin\)"):
         await members.batch_get(["a"])
     assert await members.query(member_id="a").all() == []
-    assert (await admins.get_or_raise("a")).level == 9
+    # Writes by key are not refused before they are made; the item they return is. An upsert
+    # does not re-type the item either.
+    for upsert in (False, True):
+        with pytest.raises(dynamoxy.ItemDecodeError, match="the update was applied"):
+            await members.update(Member.key("a"), Member.name.set("Ada"), upsert=upsert)
+    stored = await admins.get_or_raise("a")
+    assert (stored.name, stored.level) == ("Ada", 9)
     # An entity name no model declares (one renamed since) still decodes.
     await members.table.put({"member_id": "m", "name": "Old", "_type": "LegacyMember"})
     assert (await members.get_or_raise("m")).name == "Old"

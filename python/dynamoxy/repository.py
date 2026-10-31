@@ -1232,7 +1232,7 @@ class Repository[M]:
     ) -> tuple[list[UpdateAction], dict[str, Any]]:
         """Actions that make an item created by ``update(..., upsert=True)`` a complete model item.
 
-        The entity type is set, and every field the actions leave alone gets ``if_not_exists``:
+        The entity type is set where the item has none, and every field the actions leave alone gets ``if_not_exists``:
         the instance's value, or for keys the given field values and the field's default.
         Existing items keep their values. Keys give no default to fields that store a value as
         no attribute (``None``, an empty set): ``if_not_exists`` would replace an existing
@@ -1248,7 +1248,8 @@ class Repository[M]:
         actions: list[UpdateAction] = []
         values: dict[str, Any] = {}
         if schema.type_attribute is not None and schema.entity is not None:
-            actions.append(UpdateAction("SET", schema._path(schema.type_attribute), Value(schema.entity)))
+            # Only where the item has none: an existing item of another model keeps its type.
+            actions.append(schema._path(schema.type_attribute).set_if_not_exists(schema.entity))
         loaded = instance is not None and (state := schema.state(instance)) is not None and state.loaded
         missing: list[str] = []
         for spec in schema.fields.values():
