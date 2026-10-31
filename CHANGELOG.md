@@ -421,6 +421,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `client.model(Admin)`), and its reads raise `ItemDecodeError` for items whose type attribute
   names another model of the table (entity names no model declares still decode). A field typed
   as a native document refuses instances of the document's subclasses, whose fields it dropped.
+- Saves by an older version of an application erased the keys a newer one added to documents
+  (`address.zip_code`): writes of loaded instances kept the item's undeclared top-level
+  attributes only, although the usage guide said older versions do not erase what a newer one
+  wrote. A document read from an item (native, a model used as a document, or pydantic) now
+  writes back the map keys no field declares, also in lists and maps of documents and in update
+  values; a document the application builds replaces the map (ADR 0020).
 
 ### Security
 

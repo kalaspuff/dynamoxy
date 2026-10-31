@@ -29,3 +29,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted, amended by 0018 |
 | [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted |
 | [0019](0019-missing-attributes-read-as-none-or-empty-sets.md) | A missing attribute reads as `None` or an empty set where the field can hold one, not as the field's default | Accepted |
+| [0020](0020-documents-keep-undeclared-keys.md) | Documents read from an item keep the map keys their class does not declare | Accepted |

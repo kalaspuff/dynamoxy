@@ -221,6 +221,10 @@ another service may have written them. Remove one with an update:
 `await users.update(user, F("legacy_name").remove())`. A write of an instance that was not loaded
 replaces the item, as before.
 
+Documents do the same with the keys of their map: a document read from an item writes back the
+keys no field of its class declares, in `save()`, `put()` and update values. A document the
+application builds (`user.address = Address(city="Lund")`) replaces the map.
+
 ## Deleting
 
 `delete()` (`await users.delete(user)` or `await user.delete()`) returns the deleted item (or

@@ -536,7 +536,8 @@ queued.
 
 A write of a loaded instance (`save()`, `put()`, batch puts) keeps the stored attributes that no
 field declares (written by a newer version of the application during a rolling deploy, or by
-another service); remove one with `update(item, F("old_name").remove())`.
+another service); remove one with `update(item, F("old_name").remove())`. Documents read from an
+item keep the map keys no field declares too; a new document replaces the map.
 
 ## 6. Unique values
 
