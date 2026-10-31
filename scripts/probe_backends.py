@@ -716,11 +716,13 @@ async def delete_tables(client: dynamoxy.Client, prefix: str) -> list[str]:
             continue
         table = client.table(name.removeprefix(client.table_prefix))
         try:
-            status = (await table.describe()).status
-            if status == "DELETING":
+            description = await table.describe()
+            if description.status == "DELETING":
                 continue  # an interrupted run's deletion, still going
-            if status != "ACTIVE":
-                await table.wait_until_active(timeout=900)
+            if not description.active:
+                # Also an ACTIVE table whose index is still being created: DynamoDB refuses to
+                # delete it ("Cannot delete table while indexes are being created").
+                await table.wait_until_active(timeout=WAIT)
             await table.delete_table(missing_ok=True)
         except dynamoxy.ResourceNotFoundError:
             continue  # deleted meanwhile

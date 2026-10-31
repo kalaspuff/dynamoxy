@@ -48,6 +48,11 @@ deleted at the end (`cleanup --target aws` deletes what an interrupted run left)
 kept here: [DynamoDB](probe-aws-eu-north-1-2026-10-31.json) (eu-north-1, 2026-10-31),
 [the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
 [LocalStack](probe-localstack-2026.3.0.json).
+A second DynamoDB run of `sizes` and `tables`
+([run 2](probe-aws-eu-north-1-2026-10-31-run2.json), with the probe's first version) stopped
+early again, but every fact it holds matches the in-memory backend except the accepted 3.9 MB
+transaction, which DynamoDB answered with an `InternalServerError` once (an unknown outcome to
+dynamoxy).
 
 The in-memory backend's run answers every fact the DynamoDB run holds alike (`compare` counts the
 facts both runs hold apart from those only one holds). The DynamoDB run stopped two scenarios
