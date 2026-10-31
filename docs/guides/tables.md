@@ -28,7 +28,8 @@ await client.ensure_tables(User, Order)
   change: the key schema of the table or of an index with the same name (the attributes or their
   types), an index whose projection holds less than the models declare (`KEYS_ONLY` or `INCLUDE`
   where they expect `ALL`, or an `INCLUDE` without an attribute they include, such as `_type`), or
-  the TTL attribute. It raises before it changes anything. An index that holds more than the
+  the TTL attribute. It raises before it changes that table (tables handled earlier in the same
+  call may already be created or changed). An index that holds more than the
   models declare is accepted. A table that another process creates at the same time is checked
   like an existing one.
 - Indexes with a `KEYS_ONLY` or `INCLUDE` projection of models with an entity type also project

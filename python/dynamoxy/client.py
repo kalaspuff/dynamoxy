@@ -876,7 +876,8 @@ class Client:
             TypeError: A table's key, the key of an index with the same name (their attributes
                 or types) or the TTL attribute differs from the models, or an index projects
                 fewer attributes than the models declare (none of them can change in place).
-                Raised before anything changes; an index that projects more is accepted.
+                Raised before that table is changed (tables earlier in the call may already
+                be); an index that projects more is accepted.
         """
         from dynamoxy.table import definitions_for
 

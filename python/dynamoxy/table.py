@@ -607,7 +607,7 @@ class Table:
             TypeError: The table's keys, the key of one of its indexes or its TTL attribute differ
                 from the definition, or an index holds fewer attributes than the definition
                 projects (none of them can be changed in place). An index that holds more is
-                accepted. Nothing is changed when it raises.
+                accepted. The table is not changed when it raises.
         """
         description = await self.describe()
         types = description.attribute_types
