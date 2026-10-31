@@ -1145,6 +1145,26 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     if backend == "memory":  # MiniStack never reads the table for local indexes; DynamoDB does
         assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"
         assert projected == [{"kind": "k", "expires_at": expires}], "also for a projection"
+    # DynamoDB refuses a query filter on what a local index does not hold too, although it reads
+    # the items from the table; a filter on what it holds goes through.
+    by_kind = events.query(index="by_kind_local", stream="x")
+    with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+        by_kind.filter(Event.expires_at.exists())
+    assert len(await by_kind.filter(Event.payload["a"] == 1).all()) == 1
+    # A scan of a local index reads the items from the table (Select=ALL_ATTRIBUTES), and its
+    # filter sees them; one that projects only what the index holds would never match.
+    scanned = events.scan(index="by_kind_local").filter(Event.expires_at.exists())
+    if backend == "memory":  # MiniStack never reads the table for local indexes
+        assert [event.seq for event in await scanned.all()] == [1]
+    # Requests that return no items from the table filter the entries, and would never match.
+    for never in (scanned.project("kind").all(), scanned.hydrate().all(), scanned.count(), scanned.exists()):
+        with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+            await never
+    for hydrated in (scanned.project("kind").hydrate(), scanned.project("expires_at").hydrate()):
+        with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+            await hydrated.all()
+    with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+        await scanned.hydrate().project("expires_at").all()
 
 
 async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client: dynamoxy.Client) -> None:

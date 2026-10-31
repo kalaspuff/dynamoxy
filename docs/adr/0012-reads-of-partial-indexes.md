@@ -1,6 +1,6 @@
 # 0012: Model reads of indexes that hold only some attributes
 
-Status: Accepted
+Status: Accepted, amended by [0021](0021-index-reads-follow-dynamodbs-refusals.md)
 
 ## Context
 

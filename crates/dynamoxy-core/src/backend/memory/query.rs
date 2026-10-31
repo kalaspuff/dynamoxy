@@ -175,6 +175,44 @@ fn effective_select(select: Option<Select>, projection: Option<&Vec<Path>>, targ
     Ok(select)
 }
 
+/// Refuses a query filter that reads attributes the index does not hold, like DynamoDB (measured
+/// in eu-north-1 on 2026-10-31, docs/parity): for local indexes too, and whatever the query
+/// returns (`ALL_ATTRIBUTES`, `COUNT` or a projection it fetches from the table). The message
+/// names each place the filter reads one, by its top-level name, in order. A scan's filter on them
+/// matches nothing, unless the scan fetches the items from the table.
+fn check_index_filter(index: &Index, table_key: &KeyInfo, filter: &Condition) -> Result<()> {
+    let missing: Vec<&str> =
+        condition_paths(filter).into_iter().map(Path::root).filter(|name| !index.holds(name, table_key)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // "Secondary index", without Global or Local, on both kinds.
+    Err(invalid(format!(
+        "One or more parameter values were invalid: Secondary index {} does not project one or more filter attributes: [{}]",
+        index.name,
+        missing.join(", ")
+    )))
+}
+
+/// Refuses a projection of a global index that names attributes the index does not hold, in
+/// queries and scans, like DynamoDB (measured in eu-north-1 on 2026-10-31, docs/parity); a local
+/// index fetches them from the table.
+fn check_index_projection(index: &Index, table_key: &KeyInfo, projection: Option<&[Path]>) -> Result<()> {
+    if !index.global {
+        return Ok(());
+    }
+    let missing: Vec<&str> =
+        projection.unwrap_or_default().iter().map(Path::root).filter(|name| !index.holds(name, table_key)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "One or more parameter values were invalid: Global secondary index {} does not project [{}]",
+        index.name,
+        missing.join(", ")
+    )))
+}
+
 struct PageRequest<'a> {
     filter: Option<&'a Condition>,
     projection: Option<Projector>,
@@ -198,6 +236,9 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
         read.entry(&visible);
         output.scanned_count += 1;
         last = Some(item);
+        // The filter sees what the read returns: the index entry, on which a scan's filter on
+        // attributes the index does not hold matches nothing, or the item the read fetches from
+        // the table (both measured, docs/parity; queries refuse such filters).
         let evaluated = if request.fetch {
             read.fetch(item);
             Cow::Borrowed(item)
@@ -281,6 +322,12 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
                 )));
             }
         }
+    }
+    if let (Some(index), Some(filter)) = (target.index, &parsed.filter) {
+        check_index_filter(index, &table.key, filter)?;
+    }
+    if let Some(index) = target.index {
+        check_index_projection(index, &table.key, parsed.projection.as_deref())?;
     }
     let select = effective_select(input.select, parsed.projection.as_ref(), &target)?;
     let partition = StoredKey::new(condition.partition_value.clone(), None);
@@ -543,6 +590,9 @@ pub fn scan(state: &State, input: &ScanInput) -> Result<QueryOutput> {
     )?;
     let table = state.table(&input.table_name)?;
     let target = Target::new(table, input.index_name.as_deref(), input.consistent_read)?;
+    if let Some(index) = target.index {
+        check_index_projection(index, &table.key, parsed.projection.as_deref())?;
+    }
     let select = effective_select(input.select, parsed.projection.as_ref(), &target)?;
     let in_segment = |stored: &StoredKey| match (input.segment, input.total_segments) {
         (Some(segment), Some(total)) => stored.segment(total) == segment,

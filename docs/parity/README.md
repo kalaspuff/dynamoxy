@@ -46,6 +46,9 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | `ProjectionExpression` of a global index naming `note, m.x, pk, secret` | `Global secondary index gsi does not project [note, m, secret]` (in order, held ones left out) | returns `pk` | `[note, secret, m]` |
 | a `Scan` of a global index with both | the projection is refused first | returns an empty item | same as DynamoDB |
 
+The in-memory backend answers like DynamoDB, and model reads refuse these filters and projections
+before any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
+
 ### Expression limits (#97)
 
 | Request | DynamoDB | MiniStack | LocalStack |

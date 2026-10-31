@@ -460,6 +460,18 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   the package's `__getattr__`), and every misspelled name of the package too. The public
   submodules are now attributes of the package with their types, and type checkers report names
   the package does not define.
+- Reads of an index that name attributes it does not hold passed in tests and failed against
+  DynamoDB, which refuses a query filter on them, for local indexes too and also when the query
+  reads the items from the table, and a projection of a global index naming them
+  ([ADR 0021](docs/adr/0021-index-reads-follow-dynamodbs-refusals.md), measured against DynamoDB).
+  The in-memory backend now refuses them with DynamoDB's messages, and its scan filters see the
+  index entries (where such attributes never match) unless the scan reads the items from the
+  table. Model queries raise `ValueError` before any request for a filter of a
+  `KEYS_ONLY`/`INCLUDE` local index on an attribute it does not hold (filter the hydrated items in
+  Python instead), and model reads for `.project(...)` of such a global index naming one, unless
+  the query adds `.hydrate()`, which now reads the index for the keys only.
+  Queries of an index that does not hold the type attribute (created by other tools or by
+  dynamoxy 0.2) fail in DynamoDB: create the index again with it.
 
 ### Security
 
