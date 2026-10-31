@@ -382,3 +382,96 @@ async def test_transactions_explain_stale_unique_values(client: dynamoxy.Client)
     async with client.transaction() as tx:
         tx.delete(stale)
     assert await profiles.table.scan(consistent=True).all() == []
+
+
+async def test_upserts_read_again_when_the_item_is_created_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile)
+    profiles = client.model(Profile)
+
+    async def create_after_the_read(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        response = await call_next(request)
+        if request.operation == "GetItem":
+            remove()
+            await profiles.create(Profile(profile_id="p1", handle="ada"))
+        return response
+
+    remove = client.use(create_after_the_read)
+    # The read finds no item, and the upsert requires that there still is none: it fails, and is
+    # planned again from the item created meanwhile, whose guard it then frees.
+    updated = await profiles.update(Profile.key("p1"), Profile.handle.set("bob"), upsert=True)
+    assert updated is not None
+    assert (await profiles.get_or_raise("p1")).handle == "bob"
+    assert await guards(profiles) == ["_unique#Profile#handle#bob"]
+    await profiles.create(Profile(profile_id="p2", handle="ada"))  # free again
+    # A transaction cannot plan again: it is canceled, and the other writer's item stays.
+    await profiles.delete("p1")
+    await profiles.delete("p2")
+    remove = client.use(create_after_the_read)
+    with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
+        await client.transaction().update(Profile.key("p1"), Profile.handle.set("cy"), upsert=True).commit()
+    (error,) = caught.value.errors
+    assert type(error) is dynamoxy.ConditionalCheckFailedError
+    assert "another writer stored the item after it was read: retry" in str(error)
+    assert (await profiles.get_or_raise("p1")).handle == "ada"
+    assert await guards(profiles) == ["_unique#Profile#handle#ada"]
+
+
+class Place(Model, table="places"):
+    """A unique float."""
+
+    place_id: Attr[str] = partition_key()
+    latitude: Attr[float | None] = field(default=None, unique=True)
+    name: Attr[str] = field(default="")
+
+
+async def test_unique_floats_can_be_written_back(client: dynamoxy.Client) -> None:
+    await client.create_tables(Place)
+    places = client.model(Place)
+    await places.create(Place(place_id="p1", latitude=0.1))
+    loaded = await places.get_or_raise("p1")
+    loaded.name = "Null Island"
+    await places.save(loaded)
+    await places.put(loaded)
+    await places.update(loaded, Place.latitude.set(0.1))
+    assert await guards(places) == ["_unique#Place#latitude#0.1"]
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await places.create(Place(place_id="p2", latitude=0.1))
+    await places.update(loaded, Place.latitude.set(0.2))
+    assert await guards(places) == ["_unique#Place#latitude#0.2"]
+
+
+class TaggedSet(Model, table="tagged"):
+    tagged_id: Attr[str] = partition_key()
+    tags: Attr[set[str]] = field(unique=True)
+
+
+class TaggedList(Model, table="tagged"):
+    tagged_id: Attr[str] = partition_key()
+    tags: Attr[list[str]] = field(unique=True)
+
+
+class TaggedMap(Model, table="tagged"):
+    tagged_id: Attr[str] = partition_key()
+    tags: Attr[dict[str, int] | None] = field(default=None, unique=True)
+
+
+@pytest.mark.parametrize("model", [TaggedSet, TaggedList, TaggedMap])
+def test_collections_cannot_be_unique(model: type[Model]) -> None:
+    with pytest.raises(TypeError, match=r"\.tags: only strings, numbers, binary values and booleans can be unique"):
+        dynamoxy.schema_of(model)
+
+
+class Labelled(Model, table="labelled"):
+    labelled_id: Attr[str] = partition_key()
+    label: Attr[Any] = field(default=None, unique=True)
+
+
+async def test_collection_values_of_any_fields_cannot_be_unique(client: dynamoxy.Client) -> None:
+    await client.create_tables(Labelled)
+    labelled = client.model(Labelled)
+    for value in ({"a", "b"}, ["a"], {"a": 1}):
+        with pytest.raises(ValueError, match=r"Labelled\.label is unique: only strings, numbers"):
+            await labelled.create(Labelled(labelled_id="l1", label=value))
+    assert await labelled.table.scan(consistent=True).all() == [], "refused before any write"
+    await labelled.create(Labelled(labelled_id="l1", label="a"))
+    assert await guards(labelled) == ["_unique#Labelled#label#a"]

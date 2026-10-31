@@ -692,6 +692,13 @@ class ModelSchema:
         for spec in self.unique_fields:
             if spec.role is not None:
                 raise TypeError(f"{model.__name__}.{spec.name}: key attributes are unique already; remove unique=True")
+            if spec.codec.dynamo_type in _COLLECTION_TYPES:
+                # The guard key is the value as text, which has no canonical form for collections
+                # (a set's order depends on the hash seed of the process).
+                raise TypeError(
+                    f"{model.__name__}.{spec.name}: only strings, numbers, binary values and booleans can be "
+                    f"unique, not {spec.codec.describe()}; remove unique=True"
+                )
         self.version_field = self._single(fields, "version")
         self.created_at_field = self._single(fields, "created_at")
         self.updated_at_field = self._single(fields, "updated_at")
@@ -1103,6 +1110,10 @@ class ModelSchema:
         for name in used:
             remaining.pop(name, None)
         return value, remaining
+
+
+#: DynamoDB types of values that cannot be unique.
+_COLLECTION_TYPES = frozenset({"SS", "NS", "BS", "L", "M"})
 
 
 def _inner_codec(codec: Codec[Any]) -> Codec[Any]:

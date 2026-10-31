@@ -70,7 +70,16 @@ def guard_key(schema: ModelSchema, field: FieldSpec, stored_value: Any) -> dict[
 
 
 def guard_item(schema: ModelSchema, field: FieldSpec, stored_value: Any, owner: dict[str, Any]) -> dict[str, Any]:
-    """The guard item of a value, recording the key of the item that owns it."""
+    """The guard item of a value, recording the key of the item that owns it.
+
+    Raises:
+        ValueError: The value is a collection (of an ``Any`` field), which has no canonical text.
+    """
+    if isinstance(stored_value, (set, frozenset, list, tuple, dict)):
+        raise ValueError(
+            f"{schema.model.__name__}.{field.name} is unique: only strings, numbers, binary values and booleans "
+            f"can be unique, not a {type(stored_value).__name__}"
+        )
     item = guard_key(schema, field, stored_value)
     item["_type"] = GUARD_TYPE
     item["_owner"] = dict(owner)

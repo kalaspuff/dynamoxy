@@ -709,7 +709,8 @@ class Repository[M]:
         for spec in specs:
             before = old.get(spec.attribute) if old is not None else None
             after = new.get(spec.attribute) if new is not None else None
-            if before == after:
+            # As DynamoDB compares them: a float read back is the Decimal that was stored.
+            if stored_identity(before) == stored_identity(after):
                 continue
             if before is not None:
                 plan.add(
@@ -1073,8 +1074,14 @@ class Repository[M]:
                 rendered = spec.template.render(created, schema.codecs)
                 if rendered is not None:
                     actions_list.append(schema._path(spec.attribute).set_if_not_exists(rendered))
+        # The read (for unique values or derived attributes) found no item: an upsert creates it
+        # only if it is still missing, since an item another writer created meanwhile has a guard
+        # of its own unique value to delete, and its own values to render derived attributes from.
+        absent = needs_read and stored_old is None
         if unique_touched and stored_old is not None:
             parts.extend(self._guard_conditions(stored_old, unique_touched))
+        elif absent:
+            parts.append(schema._path(schema.partition_key.attribute).not_exists())
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
@@ -1123,6 +1130,7 @@ class Repository[M]:
             upsert=upsert,
             instance=instance,
             stale=stale,
+            absent=absent,
             write_id=write_id,
         )
 
@@ -1282,13 +1290,18 @@ class Repository[M]:
         try:
             attributes = await write.execute()
         except ConditionalCheckFailedError as error:
-            # Not upserts, whose error says to refresh the instance: planned again after another
-            # writer deleted the item, one would create it without the unique values that the
-            # instance had and the actions do not set.
-            if type(error) is not ConditionalCheckFailedError or upsert or not write.outdated(error.item):
+            # Not upserts of stale instances, whose error says to refresh the instance: planned
+            # again after another writer deleted the item, one would create it without the unique
+            # values that the instance had and the actions do not set. An upsert whose read found
+            # no item is planned again when another writer created it meanwhile.
+            if (
+                type(error) is not ConditionalCheckFailedError
+                or not write.outdated(error.item)
+                or (upsert and not write.absent)
+            ):
                 raise
-            # Another writer changed the unique values since the instance was loaded: plan the
-            # update again from the item as stored now.
+            # Another writer changed the unique values since the instance was loaded, or created
+            # the item since the upsert read it: plan the update again from the item as stored now.
             write = await self._plan_update(target, actions, condition, upsert, standalone=True, fresh=True)
             attributes = await write.execute()
         if attributes is None:  # executed as a transaction (unique attributes): read the result

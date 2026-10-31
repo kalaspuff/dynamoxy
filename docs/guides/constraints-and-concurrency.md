@@ -26,7 +26,11 @@ sort key). A write that sets or changes a unique value is a transaction:
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
 nothing is written. `None` values have no guard (several items may have no handle), and
 `update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
-DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value.
+DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` are the same value, and a float read
+back as the `Decimal` it was stored as is the same value too. Strings, numbers, binary values
+and booleans can be unique; `unique=True` on a set, list, map or document field is a
+`TypeError` when the model is used, and a collection stored in an `Any` field raises
+`ValueError` before any write, since a guard key needs one text for the value.
 
 A `delete()` of an item that is not stored has no guards to delete and writes nothing, unless it
 has a `condition=`: then it checks the condition on the missing item, as DynamoDB does for any
@@ -41,9 +45,12 @@ replaces what is stored and moves the guards with it, as it promises, and `updat
 writer deleted the item, they behave as for other models: `put()` and `save()` store it again,
 `delete()` returns `None` and `update()` raises `ItemNotFoundError`. A transaction cannot read
 again: such a write cancels it with a `ConditionalCheckFailedError` that says to `refresh()` the
-instance and retry. Upserts (`update(..., upsert=True)`) raise that error too instead of writing
-again: had another writer deleted the item, an upsert planned again would create it without the
-unique values that its actions do not set.
+instance and retry. Upserts (`update(..., upsert=True)`) of such an instance raise that error too
+instead of writing again: had another writer deleted the item, an upsert planned again would
+create it without the unique values that its actions do not set. An upsert that sets a unique
+value and finds no item creates it only if it is still missing: when another writer created it
+since the read, the upsert reads it and writes again, deleting the guard of the value it
+replaces (in a transaction, it cancels with a `ConditionalCheckFailedError` that says to retry).
 
 **Costs and requirements.**
 
