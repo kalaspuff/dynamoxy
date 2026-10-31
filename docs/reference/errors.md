@@ -7,8 +7,9 @@ Every exception dynamoxy raises derives from `dynamoxy.DynamoxyError` and is exp
 Every error has `.retryable`: whether the same call may succeed later. dynamoxy already retried
 retryable errors according to the client's `RetryPolicy` before raising them. Errors returned by
 DynamoDB also carry `.code` (`"ConditionalCheckFailedException"`), `.message`, `.operation`
-(`"PutItem"`), `.request_id` and `.status_code`; errors of a call carry `.attempts` and
-`.duration` (seconds, retries included).
+(`"PutItem"`), `.request_id` and `.status_code`; errors of a call carry `.attempts`,
+`.throttles` (attempts DynamoDB throttled), `.requests` (requests sent: 1 for a single call,
+several for a managed batch) and `.duration` (seconds, retries included).
 
 Messages name models, fields, attributes and types, but never keys, unique values or stored
 values: those may be personal data, and messages end up in logs. The errors carry them as

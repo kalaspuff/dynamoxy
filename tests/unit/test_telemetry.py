@@ -134,6 +134,16 @@ async def test_metrics(otel: Telemetry) -> None:
     assert rows == {"GetItem": 2}, "the items of writes are not returned rows"
 
 
+async def test_partiql_writes_record_no_returned_rows(otel: Telemetry) -> None:
+    await otel.client.execute("INSERT INTO events VALUE {'stream': 's', 'seq': 1, 'kind': 'k'}")
+    await otel.client.execute("UPDATE events SET kind = 'x' WHERE stream = 's' AND seq = 1 RETURNING ALL NEW *")
+    await otel.client.execute("SELECT * FROM events WHERE stream = 's'")
+    rows = otel.points("db.client.response.returned_rows")
+    assert [(point.attributes["db.operation.name"], point.count, point.sum) for point in rows] == [
+        ("ExecuteStatement", 1, 1)
+    ], "the SELECT only"
+
+
 async def test_failed_calls_record_their_throttles(otel: Telemetry) -> None:
     testing.inject_fault(otel.client, operation="GetItem", error="throttling", times=10)
     with pytest.raises(dynamoxy.ThrottlingError):

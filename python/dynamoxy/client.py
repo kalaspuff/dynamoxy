@@ -160,6 +160,16 @@ def _items_of(operation: str, params: Mapping[str, Any], output: Any) -> int:
 _PARTIQL = frozenset({"ExecuteStatement", "BatchExecuteStatement", "ExecuteTransaction"})
 
 
+#: Operations whose items are returned rows (``db.client.response.returned_rows``): reads, and
+#: PartiQL ``SELECT`` statements. The items of writes are not rows.
+_RETURNS_ROWS = frozenset({"GetItem", "Query", "Scan", "BatchGetItem", "TransactGetItems", "ExecuteStatement"})
+
+
+def _returns_rows(operation: str, params: Mapping[str, Any]) -> bool:
+    """Whether the items of a successful call are returned rows (a read, not a write)."""
+    return operation in _RETURNS_ROWS and not _statement_writes(operation, params)
+
+
 def _statement_writes(operation: str, params: Mapping[str, Any]) -> bool | None:
     """Whether a PartiQL request writes (``None`` for other operations): any statement but ``SELECT``."""
     if operation not in _PARTIQL:
@@ -590,7 +600,7 @@ class Client:
             incomplete = _incomplete(method, output, stats)
             entry = _success_record(operation, table, model, params, output, stats, incomplete)
             self._recorder.finish_span(span, output, entry, incomplete)
-        self._finish(core, entry, incomplete)
+        self._finish(core, entry, incomplete, returns_rows=_returns_rows(operation, params))
         return output, stats
 
     def _succeeded(
@@ -607,7 +617,7 @@ class Client:
         entry: OperationRecord | None = None
         if self._recorder.recording_metrics():
             entry = _success_record(operation, table, model, params, output, stats)
-            self._recorder.record_metrics(entry)
+            self._recorder.record_metrics(entry, returns_rows=_returns_rows(operation, params))
         collectors = active_collectors()
         if collectors:
             if entry is None:
@@ -645,8 +655,10 @@ class Client:
                 entry = _failure_record(operation, table, model, started, error)
             self._emit_failed(entry, error)
 
-    def _finish(self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None) -> None:
-        self._recorder.record_metrics(entry)
+    def _finish(
+        self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None, *, returns_rows: bool = False
+    ) -> None:
+        self._recorder.record_metrics(entry, returns_rows=returns_rows)
         for collector in active_collectors():
             collector.records.append(entry)
         self._dispatch_buffered(core)
