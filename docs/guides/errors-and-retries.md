@@ -32,9 +32,12 @@ All dynamoxy errors are classes of `dynamoxy.errors` (also exported by `dynamoxy
 tracebacks name, and derive from `DynamoxyError`. They say whether retrying may help
 (`.retryable`). Service errors keep DynamoDB's `.code`, `.message` and `.request_id` (quote it in
 support cases). Errors pickle with their attributes, so they reach the caller of a worker process
-or task queue as themselves. An attribute value that does not pickle is left out (`None` in the
-unpickled error): a `FieldError.value` such as a function, or the `.model` of a model class
-defined inside a function. The check uses the standard `pickle` module, also when the error is
+or task queue as themselves. Unpickling does not call the error's constructor, so your own
+subclasses of dynamoxy's errors may take more arguments than the message: their attributes come
+back from the pickle. A value that does not pickle, or does not unpickle, is left out (`None` in
+the unpickled error), at the finest level that works: a `FieldError.value` such as a function, the
+`.model` of a model class defined inside a function, or one value in a `.key` or `.item` dict
+(the rest of the dict stays). The check uses the standard `pickle` module, also when the error is
 sent by cloudpickle (Ray, Dask, PySpark), which could send such values: an error never fails to
 pickle because of an attribute, whichever pickler sends it. Copies (`copy.copy`,
 `copy.deepcopy`) keep every attribute.

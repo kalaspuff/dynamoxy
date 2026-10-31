@@ -31,9 +31,12 @@ DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.m
 from __future__ import annotations
 
 import copy
+import copyreg
+import dataclasses
 import pickle
+import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from dynamoxy._core import (
     AccessDeniedError,
@@ -287,8 +290,6 @@ class UnprocessedItemsError(DynamoxyError):
 
     def __init__(self, message: str, *, unprocessed: list[tuple[str, dict[str, Any]]] | None = None) -> None:
         super().__init__(message)
-        # Unpickling (multiprocessing, task queues) calls the class with the message only, then
-        # restores the attributes.
         self.unprocessed = unprocessed if unprocessed is not None else []
         self.message = message
 
@@ -350,38 +351,90 @@ setattr(TransactionCanceledError, "cancellation_reasons", property(cancellation_
 TransactionCanceledError.errors = ()  # pyrefly: ignore[missing-attribute]
 
 
-def _picklable(value: Any) -> Any:
+def _round_trips(value: object) -> bool:
     try:
-        pickle.dumps(value)
-    except Exception:  # noqa: BLE001 - whatever does not pickle
+        pickle.loads(pickle.dumps(value))  # noqa: S301 - our own value, unpickled to check it
+    except Exception:  # noqa: BLE001 - whatever does not pickle or unpickle
+        return False
+    return True
+
+
+def _picklable(value: object, active: frozenset[int] = frozenset()) -> object:
+    # Leaves out only what does not pickle: the fields of a dataclass and the items of a tuple, list
+    # or dict (a key's value, an item's attribute), else the value itself. Whatever it rebuilds is
+    # checked as a whole (a dict key may not pickle), and a container met again inside itself is
+    # left out, so the result always pickles.
+    if _round_trips(value):
+        return value
+    if id(value) in active:
         return None
-    return value
+    inner = active | {id(value)}
+    rebuilt: object
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        fields = {
+            field.name: _picklable(getattr(value, field.name), inner)
+            for field in dataclasses.fields(value)
+            if field.init
+        }
+        try:
+            rebuilt = dataclasses.replace(value, **fields)
+        except Exception:  # noqa: BLE001 - a field the dataclass does not accept as None
+            return None
+    elif type(value) is tuple:
+        rebuilt = tuple(_picklable(item, inner) for item in value)
+    elif type(value) is list:
+        rebuilt = [_picklable(item, inner) for item in value]
+    elif type(value) is dict:
+        rebuilt = {key: _picklable(item, inner) for key, item in value.items()}
+    else:
+        return None
+    return rebuilt if _round_trips(rebuilt) else None  # the class or a dict key may not pickle
 
 
 def _reduce_error(error: BaseException) -> tuple[Any, ...]:
-    # An error crosses process boundaries (multiprocessing, task queues) as itself also when one of
-    # its attributes does not pickle (the model class of a model defined in a function, a unique
-    # value of a type that does not pickle): the pickle leaves such a value out. ``__reduce__`` does
-    # not know which pickler calls it, so the check uses the standard one; values that only
-    # cloudpickle sends (lambdas, classes defined in functions) are left out under it too, so that
-    # a process that has cloudpickle loaded still sends errors through ``pickle``. Unpickling calls
-    # the class with the arguments of the message, then restores the attributes.
+    # An error crosses process boundaries (multiprocessing, task queues) as itself. Unpickling
+    # creates it without calling its constructor (an application's subclass may take more
+    # arguments than the message) and restores its attributes. A value that does not pickle, or
+    # does not unpickle, is left out (None): the model class of a model defined in a function, a
+    # unique value of a type that does not pickle. ``__reduce__`` does not know which pickler calls
+    # it, so the check uses the standard one; values that only cloudpickle sends (lambdas, classes
+    # defined in functions) are left out under it too, so that a process that has cloudpickle
+    # loaded still sends errors through ``pickle``.
     state = vars(error)
-    try:
-        pickle.dumps(state)
-    except Exception:  # noqa: BLE001 - whatever does not pickle
-        state = {name: _picklable(value) for name, value in state.items()}
-    return (type(error), error.args, state)
+    # The check pickles the state with a pickler of its own, which does not know the objects the
+    # outer one has seen: an error met again inside its own check (an error that holds itself)
+    # gives its state unchecked, the inner pickler's memo resolves the cycle, and the outer check
+    # handles what fails.
+    checking: set[int] = _checking.__dict__.setdefault("errors", set())
+    if id(error) not in checking:
+        checking.add(id(error))
+        try:
+            if not _round_trips(state):
+                state = {name: _picklable(value) for name, value in state.items()}
+        finally:
+            checking.discard(id(error))
+    return (copyreg.__newobj__, (type(error), *error.args), state)  # pyrefly: ignore[missing-attribute]
+
+
+# The errors whose pickle this thread is checking (pickles run in several threads: a
+# multiprocessing queue's feeder thread, a thread pool).
+_checking = threading.local()
+
+
+def _blank[E: BaseException](error: E, args: tuple[Any, ...]) -> E:
+    # A new instance of the error's class, created without calling its constructor, like unpickling.
+    cls = type(error)
+    return cast("E", cls.__new__(cls, *args))
 
 
 def _copy_error[E: BaseException](error: E) -> E:
-    copied = type(error)(*error.args)
+    copied = _blank(error, error.args)
     vars(copied).update(vars(error))
     return copied
 
 
 def _deepcopy_error[E: BaseException](error: E, memo: dict[int, Any]) -> E:
-    copied = type(error)(*copy.deepcopy(error.args, memo))
+    copied = _blank(error, copy.deepcopy(error.args, memo))
     memo[id(error)] = copied
     vars(copied).update(copy.deepcopy(vars(error), memo))
     return copied
