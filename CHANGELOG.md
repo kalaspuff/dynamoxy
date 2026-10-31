@@ -245,6 +245,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   another (closed) event loop made `close()` raise `ValueError: The future belongs to a
   different loop` after it had closed the core: `close()` and `events.drain()` now leave out the
   calling task and hooks of other event loops.
+- `ensure_tables()` compared the names of key attributes only, although it promises a
+  `TypeError` when a table's key differs from the models: a table created with a number
+  partition key and a string sort key passed for a model with a string partition key and a
+  number sort key, and every later write failed with "Type mismatch for key". It now compares the
+  types of the table's and its indexes' key attributes too. Concurrent `create_tables(...,
+  exist_ok=True)` or `ensure_tables()` calls (replicas or pytest-xdist workers starting
+  together) raised `ResourceInUseError` when another one created the table between the
+  existence check and `CreateTable`; they now treat it as an existing table.
 
 ### Security
 
