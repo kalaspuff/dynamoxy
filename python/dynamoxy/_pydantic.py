@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, overload, override
 from pydantic import BaseModel, ConfigDict, PydanticUndefinedAnnotation
 from pydantic import ValidationError as PydanticValidationError
 from pydantic._internal._model_construction import ModelMetaclass
-from pydantic_core import PydanticUndefined
+from pydantic_core import PydanticUndefined, SchemaValidator
 
 from dynamoxy._utils import MISSING
 from dynamoxy.attributes import (
@@ -227,11 +227,101 @@ def _resolve_annotations(model: type[BaseModel]) -> None:
         ) from None
 
 
+class _FieldValidator:
+    """Validates a value of one field given outside an instance (a key of a read, a value an update sets).
+
+    Pydantic validates instances, and has no public API that validates the value of one field.
+    This runs the field's schema from the model's core schema: its type, ``Field`` constraints,
+    ``Annotated`` validators and ``@field_validator``s, under the model's config. Validators that
+    take a ``ValidationInfo`` are left out, since they may read other fields, which a single value
+    lacks (``info.data`` is ``None``), and so are model validators. Built on first use.
+    """
+
+    __slots__ = ("_validate", "model", "name")
+
+    def __init__(self, model: type[BaseModel], name: str) -> None:
+        self.model = model
+        self.name = name
+        self._validate: Any = None
+
+    def __call__(self, value: Any) -> Any:
+        validate = self._validate
+        if validate is None:
+            validate = self._validate = _field_validation(self.model, self.name) or _unchanged
+        try:
+            return validate(value)
+        except PydanticValidationError as error:
+            # Without the input, which pydantic's messages quote (values may be personal data).
+            raise ValueError("; ".join(problem["msg"] for problem in error.errors(include_url=False))) from None
+
+
+def _unchanged(value: Any) -> Any:
+    return value
+
+
+class _InfoValidatorError(Exception):
+    """A field's schema is a plain validator that takes a ``ValidationInfo`` (it cannot be left out)."""
+
+
+def _field_validation(model: type[BaseModel], name: str) -> Any:
+    """``validate_python`` of a validator of the field's core schema, or ``None`` if there is none."""
+    definitions: list[Any] = []
+    node: Any = model.__pydantic_core_schema__
+    while node.get("type") != "model":
+        kind = node.get("type")
+        if kind == "definitions":
+            definitions.extend(node["definitions"])
+            node = node["schema"]
+        elif kind == "definition-ref":
+            node = next((entry for entry in definitions if entry.get("ref") == node["schema_ref"]), None)
+            if node is None:
+                return None
+        elif kind in ("function-before", "function-after", "function-wrap"):  # model validators
+            node = node["schema"]
+        else:
+            return None
+    fields = node["schema"]
+    if fields.get("type") != "model-fields" or name not in fields["fields"]:
+        return None
+    try:
+        schema = _without_info_validators(fields["fields"][name]["schema"])
+    except _InfoValidatorError:
+        return None
+    if definitions:
+        schema = {"type": "definitions", "schema": schema, "definitions": definitions}
+    return SchemaValidator(schema, node.get("config")).validate_python
+
+
+def _without_info_validators(node: Any) -> Any:
+    """A copy of a core schema without the validators that take a ``ValidationInfo``.
+
+    Nested models keep theirs: they validate their own fields, with ``info.data``.
+
+    Raises:
+        _InfoValidatorError: The schema is a plain validator that takes one.
+    """
+    if isinstance(node, list):
+        return [_without_info_validators(entry) for entry in node]
+    if not isinstance(node, dict):
+        return node
+    kind = node.get("type")
+    if kind == "model":
+        return node
+    function = node.get("function")
+    takes_info = isinstance(function, dict) and function.get("type") == "with-info"
+    if takes_info and kind in ("function-before", "function-after", "function-wrap"):
+        return _without_info_validators(node["schema"])
+    if takes_info and kind == "function-plain":
+        raise _InfoValidatorError
+    return {key: _without_info_validators(value) for key, value in node.items()}
+
+
 def _build(model: type[BaseModel], options: ModelOptions) -> ModelSchema:
     _resolve_annotations(model)
     specs = []
     for name, info in model.model_fields.items():
         field_options = _field_options(info)
+        field_options["outside_validator"] = _FieldValidator(model, name)
         path = model.__dict__.get(name)
         specs.append(
             make_field(
