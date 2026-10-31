@@ -56,7 +56,8 @@ early: on-demand throttling of eleven 390 KB writes to a new table ended `sizes`
 `tables` before its billing facts (the probe now retries and waits longer). It showed that
 DynamoDB refuses `DescribeTimeToLive` of a table it is still creating, and how conditions, deletes
 and checks count toward a transaction's payload. The other condition forms, asked since, have no
-DynamoDB answer yet: 24 facts are in the other runs only. Of the facts both runs hold, MiniStack
+DynamoDB answer yet: 22 facts are in the other runs only, and the DynamoDB run alone holds the
+`scenario_failed` facts of its two early stops. Of the facts both runs hold, MiniStack
 differs from DynamoDB in 39 and LocalStack in 34, each an emulator difference listed below.
 
 ## What DynamoDB answered

@@ -813,7 +813,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(differing) if differing else "no differences")
         if missing:
             print("\nFacts only one run holds:\n" + "\n".join(missing))
-        print(f"{len(differing) // 3} differing facts, {len(missing)} in one run only", file=sys.stderr)
+        only_reference = sum(
+            1 for line in missing if line.endswith(f"(only in {json.loads(args.reference.read_text())['target']})")
+        )
+        print(
+            f"{len(differing) // 3} differing facts; {only_reference} only in the first run, "
+            f"{len(missing) - only_reference} only in the second",
+            file=sys.stderr,
+        )
     elif args.command == "iam-policy":
         print(json.dumps(iam_policy(args.account), indent=2))
     else:
