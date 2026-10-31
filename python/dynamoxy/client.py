@@ -797,8 +797,8 @@ class Client:
                     deletion_protection=deletion_protection,
                     tags=tags,
                 )
-            except ResourceInUseError:
-                if not exist_ok:
+            except ResourceInUseError as error:
+                if not exist_ok or error.operation != "CreateTable":
                     raise
                 # Another writer (a replica starting at the same time) created it since exists().
                 if wait:
@@ -830,7 +830,9 @@ class Client:
             if not await table.exists():
                 try:
                     await table.create_from(definition, billing=billing, wait=wait)
-                except ResourceInUseError:
+                except ResourceInUseError as error:
+                    if error.operation != "CreateTable":
+                        raise
                     # Another writer created it since exists(): check it like an existing table.
                     if wait:
                         await table.wait_until_active()
