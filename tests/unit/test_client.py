@@ -348,6 +348,68 @@ async def test_clients_work_across_event_loops() -> None:
     await client.close()
 
 
+async def test_close_waits_for_async_hooks_that_use_the_client() -> None:
+    store = dynamoxy.MemoryStore()
+    client = testing.memory_client(store=store, retry=dynamoxy.RetryPolicy.none())
+    await client.create_tables(Event)
+    failures: list[dynamoxy.Event] = []
+    client.on(dynamoxy.EventKind.HOOK_FAILED, failures.append)
+
+    @client.on(dynamoxy.EventKind.OPERATION_FAILED)
+    async def audit(event: dynamoxy.Event) -> None:
+        await asyncio.sleep(0.01)
+        await client.model(Event).put(Event(stream="audit", seq=1, kind=event.fields["operation"]))
+
+    testing.inject_fault(client, operation="GetItem", error="internal")
+    with pytest.raises(dynamoxy.DynamoxyError):
+        await client.model(Event).get("s", 1)
+    await client.close()
+    assert failures == [], "the hook could still use the client"
+    reader = testing.memory_client(store=store)
+    audit_item = await reader.model(Event).get("audit", 1)
+    assert audit_item is not None
+    assert audit_item.kind == "GetItem"
+    await reader.close()
+    with pytest.raises(dynamoxy.ShutdownError):
+        await client.model(Event).get("s", 1)
+
+
+async def test_hooks_may_close_the_client() -> None:
+    client = testing.memory_client()
+    await client.create_tables(Event)
+    closed: list[bool] = []
+
+    @client.on(dynamoxy.EventKind.OPERATION_SUCCEEDED)
+    async def shut_down(event: dynamoxy.Event) -> None:
+        await client.close()  # does not wait for itself
+        closed.append(client.closed)
+
+    await client.model(Event).get("s", 1)
+    await asyncio.wait_for(client.events.drain(), timeout=5)
+    assert closed == [True]
+    await client.close()
+
+
+async def test_close_leaves_hooks_of_other_event_loops_alone() -> None:
+    client = testing.memory_client()
+    started = asyncio.Event()
+
+    async def stuck(event: dynamoxy.Event) -> None:
+        started.set()
+        await asyncio.Event().wait()  # never finishes on its own
+
+    await client.create_tables(Event)
+    client.on(dynamoxy.EventKind.OPERATION_SUCCEEDED, stuck)
+    loop = asyncio.new_event_loop()
+    try:
+        await asyncio.to_thread(loop.run_until_complete, client.model(Event).get("s", 1))
+    finally:
+        loop.close()  # with the hook still pending on it
+    assert started.is_set(), "the hook is pending on the closed loop"
+    await asyncio.wait_for(client.close(), timeout=5)
+    assert client.closed
+
+
 async def test_shared_stores_and_purging_expired_items() -> None:
     store = dynamoxy.MemoryStore()
     writer, reader = testing.memory_client(store=store), testing.memory_client(store=store)
