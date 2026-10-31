@@ -484,6 +484,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `DescribeTable` after it and `ACTIVE` from the next on (the waiter polls it without sleeping),
   so tests catch a missing wait. `table.add_index()` without `billing=`
   gives an index added to a provisioned table the table's capacity (DynamoDB refused it).
+  `ensure_tables()` described the Time to Live of a table another process was still creating,
+  which DynamoDB refuses ("Cannot describe time to live while table is in CREATING state"): it
+  waits for the table first, and the in-memory backend refuses it too.
 - The in-memory backend accepted expressions DynamoDB refuses (measured against DynamoDB):
   placeholders (`#name`, `:value`) longer than 255 bytes or with characters other than ASCII
   letters, digits and `_` (`#a-b` was reported as undefined or unused), attribute names of 64 KB
@@ -498,7 +501,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   the reason. It also refuses a `TransactGetItems` that would return more than 4 MB ("Payload in
   response is too large."), and refuses a `TransactWriteItems` over 4 MB with DynamoDB's message
   ("Transaction payload size cannot exceed 4MB. Payload Size: ..."), counting the payload as
-  DynamoDB does: a put's item, an update's key and request charge. A standalone `UpdateItem` is
+  DynamoDB does: a put's item, an update's key and request charge, a delete's and a check's key,
+  and their conditions. A standalone `UpdateItem` is
   held to 400 KB by that charge before the item is read, and item collection metrics report
   whole gigabytes (`[0.0, 1.0]` for a small collection) as DynamoDB does, instead of the exact
   fraction.
