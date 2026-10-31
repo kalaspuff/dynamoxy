@@ -1,9 +1,15 @@
 //! Table administration: create, update, delete, describe and list tables; Time to Live; tags;
 //! point-in-time recovery; backups and restores.
 //!
-//! Tables are usable immediately. Like DynamoDB, `CreateTable` reports `CREATING`, `UpdateTable`
+//! Tables hold items immediately. Like DynamoDB, `CreateTable` reports `CREATING`, `UpdateTable`
 //! `UPDATING` and `DeleteTable` `DELETING`, while `DescribeTable` afterwards reports `ACTIVE`
 //! (or `ResourceNotFoundException`), so code that waits for a table works unchanged.
+//!
+//! A created table, and a global index added to one, stays `CREATING` until a `DescribeTable`
+//! sees it, the way a caller that waits for it would: until then DynamoDB refuses to change it
+//! (`UpdateTable`, `UpdateTimeToLive`) or to add or delete another index, with its messages
+//! (measured in eu-north-1 on 2026-10-31, docs/parity). Reads and writes of its items are not
+//! refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -213,6 +219,7 @@ pub fn create_table(state: &mut State, input: CreateTableInput) -> Result<TableD
         ttl_attribute: None,
         tags: input.tags,
         pitr_days: None,
+        creating: true,
     };
     let description = table.describe(TableStatus::Creating);
     state.tables.insert(input.table_name, table);
@@ -229,9 +236,23 @@ fn not_found(table_name: &str) -> Error {
     ServiceError::resource_not_found(format!("Requested resource not found: Table: {table_name} not found")).into()
 }
 
-/// `DescribeTable`.
-pub fn describe_table(state: &State, table_name: &str) -> Result<TableDescription> {
-    state.tables.get(table_name).map(|table| table.describe(TableStatus::Active)).ok_or_else(|| not_found(table_name))
+/// `DescribeTable`: the table is active from now on, and so are the indexes being created.
+pub fn describe_table(state: &mut State, table_name: &str) -> Result<TableDescription> {
+    let table = state.tables.get_mut(table_name).ok_or_else(|| not_found(table_name))?;
+    table.creating = false;
+    for index in &mut table.indexes {
+        index.status = IndexStatus::Active;
+    }
+    Ok(table.describe(TableStatus::Active))
+}
+
+/// DynamoDB's refusal to change a table it is still creating (measured, docs/parity).
+fn being_created(table: &Table) -> Error {
+    ServiceError::new(
+        "ResourceInUseException",
+        format!("Attempt to change a resource which is still in use: Table is being created: {}", table.name),
+    )
+    .into()
 }
 
 /// `DeleteTable`.
@@ -250,6 +271,9 @@ pub fn delete_table(state: &mut State, table_name: &str) -> Result<TableDescript
 /// `UpdateTable`.
 pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableDescription> {
     let table = state.tables.get_mut(&input.table_name).ok_or_else(|| not_found(&input.table_name))?;
+    if table.creating {
+        return Err(being_created(table));
+    }
     let nothing = input.billing_mode.is_none()
         && input.provisioned_throughput.is_none()
         && input.on_demand_throughput.is_none()
@@ -270,10 +294,15 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
             matches!(update, GlobalSecondaryIndexUpdate::Create(_) | GlobalSecondaryIndexUpdate::Delete { .. })
         })
         .count();
-    if index_operations > 1 {
-        return Err(parameter_error(
+    let index_being_created = table.indexes.iter().any(|index| index.status == IndexStatus::Creating);
+    if index_operations > 1 || (index_operations == 1 && index_being_created) {
+        // Measured for an index added while another is being created, also once the table is
+        // ACTIVE again during the other's backfill (docs/parity).
+        return Err(ServiceError::new(
+            "LimitExceededException",
             "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table",
-        ));
+        )
+        .into());
     }
     // DynamoDB applies nothing of a request it refuses: validate all of it before changing the table.
     let billing_mode = input.billing_mode.unwrap_or(table.billing_mode);
@@ -290,6 +319,40 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
         return Err(parameter_error(
             "ReadCapacityUnits and WriteCapacityUnits must both be specified when BillingMode is PROVISIONED",
         ));
+    }
+    // Global indexes have capacity of their own on a provisioned table, and none on an on-demand
+    // one (measured, docs/parity).
+    let updated_capacity = |name: &str| {
+        input.global_secondary_index_updates.iter().any(|update| {
+            matches!(update, GlobalSecondaryIndexUpdate::Update { index_name, provisioned_throughput: Some(_), .. }
+                if index_name == name)
+        })
+    };
+    if billing_mode == BillingMode::Provisioned
+        && table.billing_mode == BillingMode::PayPerRequest
+        && let Some(index) = table.indexes.iter().find(|index| index.global && !updated_capacity(&index.name))
+    {
+        return Err(parameter_error(format!("ProvisionedThroughput must be specified for index: {}", index.name)));
+    }
+    for update in &input.global_secondary_index_updates {
+        match update {
+            GlobalSecondaryIndexUpdate::Create(global)
+                if billing_mode == BillingMode::Provisioned && global.provisioned_throughput.is_none() =>
+            {
+                return Err(parameter_error(format!(
+                    "Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: {}",
+                    global.index_name
+                )));
+            }
+            GlobalSecondaryIndexUpdate::Update { index_name, provisioned_throughput: Some(_), .. }
+                if billing_mode == BillingMode::PayPerRequest =>
+            {
+                return Err(parameter_error(format!(
+                    "The only Updates for index: {index_name} when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput"
+                )));
+            }
+            _ => {}
+        }
     }
     let index_not_found = |index_name: &str| -> Error {
         ServiceError::resource_not_found(format!("Requested resource not found: Index: {index_name} not found")).into()
@@ -332,7 +395,7 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                     key,
                     projection: global.projection.clone(),
                     entries: BTreeSet::new(),
-                    status: IndexStatus::Active,
+                    status: IndexStatus::Creating,
                     provisioned_throughput: global.provisioned_throughput,
                     on_demand_throughput: global.on_demand_throughput,
                 };
@@ -356,6 +419,11 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
         }
     }
     // Apply it.
+    if billing_mode == BillingMode::PayPerRequest && table.billing_mode == BillingMode::Provisioned {
+        for index in &mut table.indexes {
+            index.provisioned_throughput = None; // DynamoDB reports 0/0 from then on
+        }
+    }
     table.billing_mode = billing_mode;
     table.provisioned_throughput = provisioned_throughput;
     if let Some(on_demand) = input.on_demand_throughput {
@@ -430,6 +498,10 @@ pub fn list_tables(state: &State, input: &ListTablesInput) -> Result<ListTablesO
 /// `UpdateTimeToLive`.
 pub fn update_time_to_live(state: &mut State, input: &UpdateTimeToLiveInput) -> Result<TimeToLiveDescription> {
     let table = state.tables.get_mut(&input.table_name).ok_or_else(|| not_found(&input.table_name))?;
+    if table.creating {
+        // DynamoDB answers as if the table did not exist yet (measured, docs/parity).
+        return Err(not_found(&input.table_name));
+    }
     if input.attribute_name.is_empty() {
         return Err(invalid("TimeToLiveSpecification AttributeName must not be empty"));
     }
@@ -646,6 +718,7 @@ fn restore(
     table.stream_specification = None;
     table.stream_label = None;
     table.deletion_protection = false;
+    table.creating = true;
     if let Some(mode) = overrides.billing_mode {
         table.billing_mode = mode;
     }

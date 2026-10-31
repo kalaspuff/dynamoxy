@@ -412,3 +412,46 @@ async def test_steps_wait_for_a_change_an_earlier_call_left_in_progress(
     await client.ensure_tables(Visit, wait=False)
     changes = [operation for operation in operations if operation in ("wait", "UpdateTable", "UpdateTimeToLive")]
     assert changes == expected
+
+
+async def test_indexes_added_to_a_provisioned_table_get_its_capacity(client: dynamoxy.Client) -> None:
+    table = client.table("capacity")
+    await table.create(partition_key=("pk", "S"), billing=dynamoxy.Billing.provisioned(3, 2))
+    sent: list[dict[str, Any]] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        if request.operation == "UpdateTable":
+            sent.append(dict(request.params))
+        return await call_next(request)
+
+    client.use(record)
+    description = await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")))
+    assert description.indexes["by_owner"].status == "ACTIVE"
+    [created] = sent[0]["global_secondary_index_updates"]
+    assert created["create"]["provisioned_throughput"] == (3, 2), "DynamoDB refuses an index without capacity there"
+
+
+async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, backend: str) -> None:
+    # DynamoDB refuses to change a table it is still creating (measured, docs/parity); the
+    # in-memory backend keeps a table CREATING until a DescribeTable sees it. MiniStack and
+    # LocalStack make tables active at once.
+    table = client.table("creating")
+    await table.create(partition_key=("pk", "S"), wait=False)
+    if backend == "memory":
+        with pytest.raises(dynamoxy.ResourceNotFoundError, match=r"Table: .*creating not found"):
+            await table.enable_time_to_live("expires")
+        with pytest.raises(dynamoxy.ResourceInUseError, match="Table is being created"):
+            # With billing=, add_index() does not describe the table (which would wait for it here).
+            await table.add_index(
+                dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")), billing=dynamoxy.Billing()
+            )
+    await table.wait_until_active()
+    await table.enable_time_to_live("expires")
+    await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")), wait=False)
+    if backend == "memory":  # MiniStack creates the index at once
+        with pytest.raises(dynamoxy.LimitExceededError, match="Only 1 online index"):
+            await table.add_index(
+                dynamoxy.IndexDefinition("by_name", "global", ("name", "S")), billing=dynamoxy.Billing()
+            )
+    await table.wait_until_active()
+    await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))

@@ -429,6 +429,9 @@ pub struct Table {
     pub tags: BTreeMap<String, String>,
     /// Point-in-time recovery period in days, when enabled.
     pub pitr_days: Option<i64>,
+    /// Whether the table is still being created: until a `DescribeTable` sees it, like a caller
+    /// that waits for the table (see `admin`).
+    pub creating: bool,
 }
 
 impl Table {

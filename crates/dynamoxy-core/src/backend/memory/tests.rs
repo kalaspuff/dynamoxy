@@ -73,6 +73,7 @@ fn table_input(name: &str) -> CreateTableInput {
 async fn backend_with_table() -> MemoryBackend {
     let backend = MemoryBackend::default();
     backend.create_table(table_input("items")).await.unwrap();
+    backend.describe_table("items").await.unwrap(); // waits for it, which ends CREATING
     backend
 }
 
@@ -961,6 +962,7 @@ async fn update_table_adds_and_backfills_global_indexes() {
         .await
         .unwrap();
     assert_eq!(found.count, 1, "existing items are backfilled; items with a wrongly typed key are skipped");
+    backend.describe_table("items").await.unwrap(); // waits for the index
     backend
         .update_table(UpdateTableInput {
             table_name: "items".into(),
@@ -971,6 +973,138 @@ async fn update_table_adds_and_backfills_global_indexes() {
         .unwrap();
     let description = backend.describe_table("items").await.unwrap();
     assert!(description.attribute_definitions.iter().all(|definition| definition.name != "email"));
+}
+
+#[tokio::test]
+async fn tables_and_indexes_being_created_refuse_changes_like_dynamodb() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): a table DynamoDB is
+    // still creating refuses UpdateTable and answers UpdateTimeToLive as if it did not exist, and
+    // a second index cannot be added while one is being created. The in-memory backend creates
+    // them at once, and they stay CREATING until a DescribeTable sees them, as a caller that waits.
+    let backend = MemoryBackend::default();
+    backend.create_table(table_input("items")).await.unwrap();
+    let ttl = UpdateTimeToLiveInput { table_name: "items".into(), enabled: true, attribute_name: "expires".into() };
+    let error = backend.update_time_to_live(ttl.clone()).await.unwrap_err();
+    assert_eq!(
+        (code(&error), message(&error)),
+        ("ResourceNotFoundException", "Requested resource not found: Table: items not found".into())
+    );
+    let index = |name: &str, attribute: &str| UpdateTableInput {
+        table_name: "items".into(),
+        attribute_definitions: vec![definition(attribute, ScalarType::S)],
+        global_secondary_index_updates: vec![GlobalSecondaryIndexUpdate::Create(GlobalSecondaryIndex {
+            index_name: name.into(),
+            key_schema: keys(attribute, None),
+            projection: Projection::all(),
+            provisioned_throughput: None,
+            on_demand_throughput: None,
+        })],
+        ..Default::default()
+    };
+    let error = backend.update_table(index("by_email", "email")).await.unwrap_err();
+    assert_eq!(
+        (code(&error), message(&error)),
+        (
+            "ResourceInUseException",
+            "Attempt to change a resource which is still in use: Table is being created: items".into()
+        )
+    );
+    put(&backend, item([("pk", s("a")), ("sk", n(1))])).await; // items can be written meanwhile
+    assert_eq!(backend.describe_table("items").await.unwrap().table_status, TableStatus::Active);
+    backend.update_time_to_live(ttl).await.unwrap();
+
+    let updating = backend.update_table(index("by_email", "email")).await.unwrap();
+    let status = |description: &TableDescription, name: &str| {
+        description
+            .global_secondary_indexes
+            .iter()
+            .find(|index| index.index_name == name)
+            .and_then(|index| index.index_status)
+    };
+    assert_eq!(status(&updating, "by_email"), Some(IndexStatus::Creating));
+    let error = backend.update_table(index("by_name", "name")).await.unwrap_err();
+    assert_eq!(
+        (code(&error), message(&error)),
+        (
+            "LimitExceededException",
+            "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table".into()
+        )
+    );
+    assert_eq!(status(&backend.describe_table("items").await.unwrap(), "by_email"), Some(IndexStatus::Active));
+    backend.update_table(index("by_name", "name")).await.unwrap();
+}
+
+#[tokio::test]
+async fn global_indexes_have_capacity_on_provisioned_tables_only() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
+    let backend = backend_with_table().await;
+    let capacity = ProvisionedThroughput { read_capacity_units: 1, write_capacity_units: 1 };
+    let provisioned = UpdateTableInput {
+        table_name: "items".into(),
+        billing_mode: Some(BillingMode::Provisioned),
+        provisioned_throughput: Some(capacity),
+        ..Default::default()
+    };
+    let error = backend.update_table(provisioned.clone()).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: ProvisionedThroughput must be specified for index: by_status"
+    );
+    let index_capacity = GlobalSecondaryIndexUpdate::Update {
+        index_name: "by_status".into(),
+        provisioned_throughput: Some(capacity),
+        on_demand_throughput: None,
+    };
+    backend
+        .update_table(UpdateTableInput { global_secondary_index_updates: vec![index_capacity.clone()], ..provisioned })
+        .await
+        .unwrap();
+    backend.describe_table("items").await.unwrap();
+    let error = backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            attribute_definitions: vec![definition("email", ScalarType::S)],
+            global_secondary_index_updates: vec![GlobalSecondaryIndexUpdate::Create(GlobalSecondaryIndex {
+                index_name: "by_email".into(),
+                key_schema: keys("email", None),
+                projection: Projection::all(),
+                provisioned_throughput: None,
+                on_demand_throughput: None,
+            })],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: by_email"
+    );
+    backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            billing_mode: Some(BillingMode::PayPerRequest),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let described = backend.describe_table("items").await.unwrap();
+    let throughput = described.global_secondary_indexes[0].provisioned_throughput;
+    assert!(
+        throughput.is_none_or(|capacity| (capacity.read_capacity_units, capacity.write_capacity_units) == (0, 0)),
+        "on-demand indexes keep no capacity: {throughput:?}"
+    );
+    let error = backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            global_secondary_index_updates: vec![index_capacity],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: The only Updates for index: by_status when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput"
+    );
 }
 
 #[tokio::test]

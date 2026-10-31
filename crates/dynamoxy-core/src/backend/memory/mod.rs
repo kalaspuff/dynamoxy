@@ -443,7 +443,8 @@ impl Backend for MemoryBackend {
 
     async fn describe_table(&self, table_name: &str) -> Result<TableDescription> {
         let fault = self.fault("DescribeTable", &[table_name]).await?;
-        fault.deliver("DescribeTable", named("DescribeTable", admin::describe_table(&self.state.lock(), table_name)))
+        fault
+            .deliver("DescribeTable", named("DescribeTable", admin::describe_table(&mut self.state.lock(), table_name)))
     }
 
     async fn update_table(&self, input: UpdateTableInput) -> Result<TableDescription> {

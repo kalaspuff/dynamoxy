@@ -88,6 +88,10 @@ any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 | give an index `ProvisionedThroughput` on an on-demand table | `One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput` | accepted | `InternalFailure` |
 | add a second global index while the first is `CREATING`, the table `UPDATING` or already `ACTIVE` again during the backfill (25 s to 506 s) | `LimitExceededException: Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table` | accepted (indexes are active at once) | same as DynamoDB |
 
+The in-memory backend answers like DynamoDB. It creates tables and indexes at once but keeps them
+`CREATING` until a `DescribeTable` sees them, as a caller that waits would; reads and writes of
+the items of a table being created are not refused (DynamoDB's answer to them was not measured).
+
 ## The emulators
 
 - **MiniStack** (`uv run ministack`, part of the test dependencies) is what the e2e tests and CI

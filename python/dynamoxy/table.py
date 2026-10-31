@@ -715,9 +715,17 @@ class Table:
     async def add_index(
         self, index: IndexDefinition, *, billing: Billing | None = None, wait: bool = True
     ) -> TableDescription:
-        """Adds a global secondary index (DynamoDB backfills it from existing items)."""
+        """Adds a global secondary index (DynamoDB backfills it from existing items).
+
+        Without ``billing``, the index of a provisioned table gets the table's capacity (unless the
+        definition gives its own), since DynamoDB refuses an index without capacity there.
+        """
         if index.kind != "global":
             raise ValueError("only global secondary indexes can be added to an existing table")
+        if billing is None and index.throughput is None:
+            current = await self.describe()
+            if current.billing_mode == "PROVISIONED":
+                billing = Billing.provisioned(current.read_capacity or 1, current.write_capacity or 1)
         attributes = {index.partition_key[0]: index.partition_key[1]}
         if index.sort_key is not None:
             attributes[index.sort_key[0]] = index.sort_key[1]
