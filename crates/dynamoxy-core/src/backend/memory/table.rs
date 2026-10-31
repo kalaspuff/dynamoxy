@@ -454,7 +454,6 @@ impl Table {
             .ok_or_else(|| invalid(format!("The table does not have the specified index: {name}")))
     }
 
-    /// Validates a full item for a write and returns its key.
     /// DynamoDB's 400 KB limit of an item together with its entries in the table's local
     /// indexes (measured in eu-north-1 on 2026-10-31, docs/parity: a 190 KB item an `ALL` local
     /// index holds is taken, a 210 KB one refused; DynamoDB Local refuses it from 204,801 bytes, an
@@ -475,6 +474,7 @@ impl Table {
         Ok(())
     }
 
+    /// Validates a full item for a write and returns its key.
     pub fn validate_item(&self, item: &Item) -> Result<StoredKey> {
         self.validate_written(item, false)
     }
