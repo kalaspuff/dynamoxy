@@ -437,6 +437,41 @@ mod tests {
     }
 
     #[test]
+    fn request_charges_follow_what_dynamodb_charges() {
+        // Each rule dynoxide-rs measured against DynamoDB (eu-west-2, 2026-10-09), one at a time.
+        let charge = |expression: &str| {
+            let names = BTreeMap::from([("#n".to_owned(), "name".to_owned())]);
+            let values: BTreeMap<String, AttributeValue> = [
+                (":s".to_owned(), AttributeValue::S("abcde".into())),
+                (":n".to_owned(), AttributeValue::N(Number::parse("12").unwrap())),
+                (":l".to_owned(), AttributeValue::L(vec![AttributeValue::S("x".into())])),
+                (":ss".to_owned(), AttributeValue::Ss(vec!["a".into()])),
+            ]
+            .into_iter()
+            .filter(|(key, _)| expression.contains(key.as_str()))
+            .collect();
+            let mut placeholders = Placeholders::new(&names, &values);
+            parse_update(expression, &mut placeholders).unwrap().request_charge()
+        };
+        let size = |value: AttributeValue| crate::value::value_size(&value);
+        let (s, n, ss) = (5, size(AttributeValue::N(Number::parse("12").unwrap())), 1);
+        let l = size(AttributeValue::L(vec![AttributeValue::S("x".into())]));
+        assert_eq!(charge("SET a = :s"), 3 + 19 + 1 + s, "a statement, a SET, its target and value");
+        assert_eq!(charge("SET #n = :s"), 3 + 19 + 4 + s, "a placeholder costs its name");
+        assert_eq!(charge("SET a.bc = :s"), 3 + 19 + (1 + 4 + 2) + s, "4 per later target element");
+        assert_eq!(charge("SET a[10] = :s"), 3 + 19 + (1 + 4 + 2) + s, "an index costs its digits");
+        assert_eq!(charge("SET a = bc"), 3 + 19 + 1 + (1 + 14 + 2), "a path read: 1, then 14 per element");
+        assert_eq!(charge("SET a = :n + :n"), 3 + 19 + 1 + 34 + n + n, "a + b");
+        assert_eq!(charge("SET a = :n - :n"), 3 + 19 + 1 + 37 + n + n, "a - b");
+        assert_eq!(charge("SET a = if_not_exists(b, :s)"), 3 + 19 + 1 + 39 + (1 + 14 + 1) + s, "if_not_exists");
+        assert_eq!(charge("SET a = list_append(a, :l)"), 3 + 19 + 1 + 37 + (1 + 14 + 1) + l, "list_append");
+        assert_eq!(charge("ADD a :n"), 3 + 19 + 1 + n, "ADD: like SET");
+        assert_eq!(charge("REMOVE a.b"), 3 + 1 + (1 + 4 + 1), "REMOVE: 1 and the target");
+        assert_eq!(charge("DELETE a :ss"), 3 + 1 + 1, "DELETE: the members removed are free ({ss} bytes)");
+        assert_eq!(charge("SET a = :s, b = :s REMOVE c"), 3 + (19 + 1 + s) * 2 + (1 + 1), "clauses add up");
+    }
+
+    #[test]
     fn set_swap_uses_old_values() {
         let before = item([("a", AttributeValue::n(1)), ("b", AttributeValue::n(2))]);
         let after = run("SET a = b, b = a", &[], before).unwrap();
