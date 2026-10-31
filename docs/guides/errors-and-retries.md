@@ -135,8 +135,13 @@ async with client.transaction(token=request_id) as tx:
 The repeated transaction must be identical: automatic timestamps such as `updated_at()` change
 between calls, so for such models also make it refuse a repeat, for example with `tx.create()` of
 an item keyed by the request id ([idempotency tokens](transactions.md#idempotency-tokens)). It
-costs twice the write units of a single write. `RetryPolicy(retry_timeouts=False)` retries no
-timeouts at all: they raise `TransportError`.
+costs twice the write units of a single write.
+
+`RetryPolicy(retry_timeouts=False)` sends nothing again after a timeout or a lost connection.
+A write whose attempt may have been applied raises `WriteOutcomeUnknownError` (a
+`TransportError` that is not `.retryable`), which model writes settle by their write id as
+above; reads, batch writes and table operations raise the attempt's `TransportError`, which is
+`.retryable` because sending them again is safe.
 
 ## Batches
 

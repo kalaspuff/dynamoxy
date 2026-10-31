@@ -163,8 +163,49 @@ async fn attempts_time_out_and_timeouts_are_retried() {
         times: 1,
     });
     let call = strict.put_item(put("a")).await;
-    assert!(matches!(call.result, Err(Error::Transport { .. })));
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
     assert_eq!(call.stats.attempts, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_retries_of_timeouts_writes_that_may_have_been_applied_are_unknown() {
+    let client =
+        client_with_table(ClientConfig { retry: RetryConfig { retry_timeouts: false, ..config().retry }, ..config() })
+            .await;
+    let backend = client.memory_backend().unwrap();
+    client.put_item(put("a")).await.result.unwrap();
+    kinds(&client);
+
+    // An increment, a SET and a put whose responses were lost: each was applied, and none is
+    // sent again or reported as retryable.
+    backend.inject_fault(lose("UpdateItem"));
+    let call = client.update_item(update("a", "ADD n :v", AttributeValue::n(1))).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+    assert!(!call.result.as_ref().unwrap_err().is_retryable());
+    assert_eq!(call.stats.attempts, 1);
+    assert_eq!(stored(&client, "a").await.unwrap().get("n"), Some(&AttributeValue::n(1)));
+
+    backend.inject_fault(lose("UpdateItem"));
+    let call = client.update_item(update("a", "SET s = :v", AttributeValue::s("x"))).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 1);
+    assert_eq!(stored(&client, "a").await.unwrap().get("s"), Some(&AttributeValue::s("x")));
+
+    backend.inject_fault(lose("PutItem"));
+    let call = client.put_item(put("b")).await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 1);
+    assert!(stored(&client, "b").await.is_some());
+    assert_eq!(kinds(&client), [EventKind::RequestOutcomeUnknown; 3]);
+
+    // Reads keep their retryable transport error.
+    backend.inject_fault(lose("GetItem"));
+    let input =
+        GetItemInput { table_name: "items".into(), key: item([("pk", AttributeValue::s("a"))]), ..Default::default() };
+    let call = client.get_item(input).await;
+    assert!(matches!(call.result, Err(Error::Transport { retryable: true, .. })), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 1);
+    assert!(kinds(&client).is_empty());
 }
 
 #[tokio::test(start_paused = true)]

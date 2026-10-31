@@ -26,12 +26,18 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- With `RetryPolicy(retry_timeouts=False)`, a write whose attempt timed out or lost its
+  connection raised a `TransportError` with `.retryable == True`, although it may have been
+  applied: a caller that trusted `.retryable` applied an `increment()` twice. Such a write now
+  raises `WriteOutcomeUnknownError` (a `TransportError` that is not retryable) and emits
+  `request.outcome_unknown`, and model writes settle it by their write id like any other unknown
+  outcome. Reads keep raising a retryable `TransportError`.
 - A write whose request never left the process (connection refused, DNS or TLS failure, a
-  connect timeout shorter than `timeout`, no file descriptors for the socket) counted as "may have been applied": it raised
-  `WriteOutcomeUnknownError`, and increments, `add()` and `append()` were not retried, although
-  sending them again is safe. Failures to connect now count as sent nothing: every write is
-  retried after them, and when all attempts fail to connect the call raises a retryable
-  `TransportError`. `testing.inject_fault()` takes `refuse_connection=True` to simulate them.
+  connect timeout shorter than `timeout`, no file descriptors for the socket) counted as "may
+  have been applied": it raised `WriteOutcomeUnknownError`, and increments, `add()` and
+  `append()` were not retried, although sending them again is safe. Failures to connect now
+  count as sent nothing: every write is retried after them, and when all attempts fail to
+  connect the call raises a retryable `TransportError`. `testing.inject_fault()` takes `refuse_connection=True` to simulate them.
 
 ## [0.4.0] - 2026-10-31
 

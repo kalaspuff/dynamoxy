@@ -130,9 +130,58 @@ async def test_timeouts_of_writes_can_be_left_to_the_caller() -> None:
     async with testing.memory_client(timeout=0.05, retry=policy) as client:
         await client.create_tables(Event)
         testing.inject_fault(client, operation="PutItem", latency=0.5)
-        with pytest.raises(dynamoxy.TransportError):
-            await client.model(Event).put(event(1))
+        with pytest.raises(dynamoxy.WriteOutcomeUnknownError) as caught:
+            await client.table("events").put(event(1).to_item())
+        assert isinstance(caught.value, dynamoxy.TransportError)
+        assert not caught.value.retryable
         assert client.metrics().operations["PutItem"].attempts == 1
+
+
+async def test_without_retries_of_timeouts_lost_writes_are_not_retryable() -> None:
+    policy = dynamoxy.RetryPolicy(max_attempts=3, base_delay=0, max_delay=0, retry_timeouts=False)
+    async with testing.memory_client(retry=policy) as client:
+        await client.create_tables(Event, Plain)
+        table = client.table("plain")
+        await table.put({"plain_id": "a", "n": 0})
+        writes = {
+            "an increment": lambda: table.update({"plain_id": "a"}, F("n").add(1)),
+            "a SET": lambda: table.update({"plain_id": "a"}, F("text").set("x")),
+            "a put": lambda: table.put({"plain_id": "b", "n": 0}),
+        }
+        for name, write in writes.items():
+            testing.inject_fault(client, lose_response=True)
+            with pytest.raises(dynamoxy.WriteOutcomeUnknownError) as caught:
+                await write()
+            assert isinstance(caught.value, dynamoxy.TransportError), name
+            assert not caught.value.retryable, name
+            assert caught.value.attempts == 1, name
+        # Each lost write was applied once.
+        assert await table.get({"plain_id": "a"}) == {"plain_id": "a", "n": 1, "text": "x"}
+        assert await table.get({"plain_id": "b"}) == {"plain_id": "b", "n": 0}
+
+        # A write that never left the process was not applied: a retryable transport error.
+        testing.inject_fault(client, operation="UpdateItem", refuse_connection=True)
+        with pytest.raises(dynamoxy.TransportError, match="connection refused") as refused:
+            await table.update({"plain_id": "a"}, F("n").add(1))
+        assert not isinstance(refused.value, dynamoxy.WriteOutcomeUnknownError)
+        assert refused.value.retryable
+        assert (await table.get({"plain_id": "a"}) or {})["n"] == 1, "not applied"
+
+        # Reads keep their retryable transport error.
+        testing.inject_fault(client, operation="GetItem", lose_response=True)
+        with pytest.raises(dynamoxy.TransportError) as read:
+            await table.get({"plain_id": "a"})
+        assert not isinstance(read.value, dynamoxy.WriteOutcomeUnknownError)
+        assert read.value.retryable
+
+        # Model writes settle the unknown outcome by their write id.
+        testing.inject_fault(client, operation="PutItem", lose_response=True)
+        with testing.capture_events(client, "request.outcome_*") as outcomes:
+            await client.model(Event).create(event(3))
+        assert [entry.kind for entry in outcomes] == [
+            dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN,
+            dynamoxy.EventKind.REQUEST_OUTCOME_SETTLED,
+        ]
 
 
 async def test_conditions_that_fail_after_a_lost_response_have_an_unknown_outcome(client: dynamoxy.Client) -> None:

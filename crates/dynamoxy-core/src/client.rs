@@ -15,7 +15,12 @@
 //! with [`Error::OutcomeUnknown`]. So does a write whose next attempt gives an answer that the
 //! earlier attempt may have caused: a failed condition (`create()` of an item the earlier
 //! attempt created), a `DuplicateItem` of a PartiQL `INSERT`, or old values (the item the
-//! earlier attempt wrote, or the absence of the item it deleted).
+//! earlier attempt wrote, or the absence of the item it deleted). With `retry_timeouts` off, a
+//! write that timed out or lost its connection is not sent again and fails with
+//! [`Error::OutcomeUnknown`] too; calls that are always sent again (reads, batch writes, table
+//! operations) keep their retryable [`Error::Transport`]. An attempt that failed to connect sent
+//! nothing (`Error::Transport { sent: false, .. }`): it leaves no outcome unknown, and every write
+//! is sent again after it.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -466,9 +471,7 @@ impl Client {
                         .field("attempt", attempts)
                 });
             }
-            let transport = matches!(error, Error::Transport { .. });
-            let retryable = error.is_retryable() && (!transport || config.retry.retry_timeouts);
-            if !retryable {
+            if !error.is_retryable() {
                 break Err(error);
             }
             // Also on the last attempt: one that may have been applied leaves the outcome unknown
@@ -486,6 +489,11 @@ impl Client {
                     });
                 }
                 uncertain = Some((reason(&error), attempts));
+            }
+            // `retry_timeouts=False`: the caller decides. A write that may have been applied is
+            // settled below like one out of attempts, so it does not leave as a retryable error.
+            if matches!(error, Error::Transport { .. }) && !config.retry.retry_timeouts {
+                break Err(error);
             }
             if attempts >= config.retry.max_attempts {
                 self.emit(EventKind::RequestGaveUp, || {
