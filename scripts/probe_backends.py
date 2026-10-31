@@ -753,22 +753,23 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     return {"target": args.target, "dynamoxy": dynamoxy.__version__, "facts": probe.facts}
 
 
-def compare(reference: dict[str, Any], other: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """The facts both runs hold that differ (``scenario.fact`` and both values), and the facts only
-    one of them holds."""
-    differing, missing = [], []
+def compare(reference: dict[str, Any], other: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    """The facts both runs hold that differ (``scenario.fact`` and both values, three lines each),
+    and the facts only the first and only the second run holds."""
+    differing, only_first, only_second = [], [], []
     left, right = reference["facts"], other["facts"]
     for scenario in sorted(set(left) | set(right)):
         facts_left, facts_right = left.get(scenario, {}), right.get(scenario, {})
         for name in sorted(set(facts_left) | set(facts_right)):
-            if name not in facts_left or name not in facts_right:
-                holder = reference["target"] if name in facts_left else other["target"]
-                missing.append(f"{scenario}.{name} (only in {holder})")
+            if name not in facts_right:
+                only_first.append(f"{scenario}.{name}")
+            elif name not in facts_left:
+                only_second.append(f"{scenario}.{name}")
             elif facts_left[name] != facts_right[name]:
                 differing.append(f"{scenario}.{name}:")
                 differing.append(f"  {reference['target']}: {json.dumps(facts_left[name])}")
                 differing.append(f"  {other['target']}: {json.dumps(facts_right[name])}")
-    return differing, missing
+    return differing, only_first, only_second
 
 
 def iam_policy(account: str) -> dict[str, Any]:
@@ -809,16 +810,16 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         print(f"wrote {out}")
     elif args.command == "compare":
-        differing, missing = compare(json.loads(args.reference.read_text()), json.loads(args.other.read_text()))
-        print("\n".join(differing) if differing else "no differences")
-        if missing:
-            print("\nFacts only one run holds:\n" + "\n".join(missing))
-        only_reference = sum(
-            1 for line in missing if line.endswith(f"(only in {json.loads(args.reference.read_text())['target']})")
+        differing, only_first, only_second = compare(
+            json.loads(args.reference.read_text()), json.loads(args.other.read_text())
         )
+        print("\n".join(differing) if differing else "no differences")
+        for label, facts in (("the first run", only_first), ("the second run", only_second)):
+            if facts:
+                print(f"\nFacts only {label} holds:\n" + "\n".join(facts))
         print(
-            f"{len(differing) // 3} differing facts; {only_reference} only in the first run, "
-            f"{len(missing) - only_reference} only in the second",
+            f"{len(differing) // 3} differing facts; {len(only_first)} only in the first run, "
+            f"{len(only_second)} only in the second",
             file=sys.stderr,
         )
     elif args.command == "iam-policy":
