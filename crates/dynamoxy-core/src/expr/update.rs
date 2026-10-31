@@ -336,6 +336,21 @@ pub fn apply_update(update: &UpdateExpression, item: &Item) -> Result<Item> {
     Ok(result)
 }
 
+/// What a path element counts for in DynamoDB's charges: the bytes of its name, or the digits of
+/// a list index.
+fn element_charge(element: &PathElement) -> usize {
+    match element {
+        PathElement::Name(name) => name.len(),
+        PathElement::Index(index) => index.to_string().len(),
+    }
+}
+
+/// What a path counts for as the target of an update, or in a condition: its first element, plus
+/// 4 and the element for each later one.
+fn target_charge(path: &Path) -> usize {
+    path.0.iter().enumerate().map(|(i, part)| element_charge(part) + if i == 0 { 0 } else { 4 }).sum()
+}
+
 impl UpdateExpression {
     /// What DynamoDB charges an update for what its request carries, from the request alone
     /// (captured by dynoxide-rs against eu-west-2 on 2026-10-09 across 86 statements, and
@@ -346,17 +361,9 @@ impl UpdateExpression {
     /// its name or the digits of a list index; a value its size; `a + b` 34, `a - b` 37,
     /// `if_not_exists(p, v)` 39 and `list_append(a, b)` 37 more than their operands.
     pub fn request_charge(&self) -> usize {
-        fn element(element: &PathElement) -> usize {
-            match element {
-                PathElement::Name(name) => name.len(),
-                PathElement::Index(index) => index.to_string().len(),
-            }
-        }
-        fn target(path: &Path) -> usize {
-            path.0.iter().enumerate().map(|(i, part)| element(part) + if i == 0 { 0 } else { 4 }).sum()
-        }
+        let target = target_charge;
         fn read(path: &Path) -> usize {
-            1 + path.0.iter().map(|part| 14 + element(part)).sum::<usize>()
+            1 + path.0.iter().map(|part| 14 + element_charge(part)).sum::<usize>()
         }
         fn operand(value: &UpdateOperand) -> usize {
             match value {
@@ -381,28 +388,16 @@ impl UpdateExpression {
 }
 
 /// What DynamoDB counts a condition for in the payload size of `TransactWriteItems`, from the
-/// request alone (measured through dynamoxy's probe, scripts/probe_backends.py, in eu-north-1 on 2026-10-31,
-/// docs/parity): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
+/// request alone (measured in eu-north-1 on 2026-10-31 through dynamoxy's own probe, whose run is
+/// kept in docs/parity): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
 /// a comparison 57 more than its operands; a path counts like an update's target, a value its
 /// size, `size(p)` its path. The other forms were not measured and count like a comparison, and
 /// `AND`, `OR` and `NOT` their parts.
 pub fn condition_charge(condition: &Condition) -> usize {
-    fn path(path: &Path) -> usize {
-        path.0
-            .iter()
-            .enumerate()
-            .map(|(i, part)| {
-                let element = match part {
-                    PathElement::Name(name) => name.len(),
-                    PathElement::Index(index) => index.to_string().len(),
-                };
-                element + if i == 0 { 0 } else { 4 }
-            })
-            .sum()
-    }
+    let path = target_charge;
     fn operand(operand: &Operand) -> usize {
         match operand {
-            Operand::Path(p) | Operand::Size(p) => path(p),
+            Operand::Path(p) | Operand::Size(p) => target_charge(p),
             Operand::Value(value) => value_size(value),
         }
     }
@@ -426,7 +421,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::expr::{Placeholders, parse_update};
+    use crate::expr::{ExpressionKind, Placeholders, parse_update};
     use crate::value::item;
 
     #[test]
@@ -510,6 +505,39 @@ mod tests {
         assert_eq!(charge("REMOVE a.b"), 3 + 1 + (1 + 4 + 1), "REMOVE: 1 and the target");
         assert_eq!(charge("DELETE a :ss"), 3 + 1 + 1, "DELETE: the members removed are free ({ss} bytes)");
         assert_eq!(charge("SET a = :s, b = :s REMOVE c"), 3 + (19 + 1 + s) * 2 + (1 + 1), "clauses add up");
+    }
+
+    #[test]
+    fn condition_charges_follow_what_dynamodb_counts() {
+        // attribute_exists, attribute_not_exists and a comparison were measured against DynamoDB
+        // (docs/parity); the other forms are pinned as assumed: like a comparison, AND/OR/NOT as
+        // their parts.
+        let charge = |expression: &str| {
+            let names = BTreeMap::new();
+            let values: BTreeMap<String, AttributeValue> =
+                [(":w".to_owned(), AttributeValue::S("w".into())), (":t".to_owned(), AttributeValue::S("S".into()))]
+                    .into_iter()
+                    .filter(|(key, _)| expression.contains(key.as_str()))
+                    .collect();
+            let mut placeholders = Placeholders::new(&names, &values);
+            condition_charge(
+                &crate::expr::parse_condition(ExpressionKind::Condition, expression, &mut placeholders).unwrap(),
+            )
+        };
+        assert_eq!(charge("attribute_exists(pk)"), 63 + 2);
+        assert_eq!(charge("attribute_exists(ab.cd)"), 63 + (2 + 4 + 2));
+        assert_eq!(charge("attribute_not_exists(absent)"), 67 + 6);
+        assert_eq!(charge("note = :w"), 57 + 4 + 1);
+        assert_eq!(charge("note = alt"), 57 + 4 + 3);
+        assert_eq!(charge("size(note) > :w"), 57 + 4 + 1);
+        assert_eq!(charge("note BETWEEN :w AND :w"), 57 + 4 + 1 + 1);
+        assert_eq!(charge("note IN (:w, :w)"), 57 + 4 + 1 + 1);
+        assert_eq!(charge("begins_with(note, :w)"), 57 + 4 + 1);
+        assert_eq!(charge("contains(note, :w)"), 57 + 4 + 1);
+        assert_eq!(charge("attribute_type(note, :t)"), 57 + 4 + 1);
+        assert_eq!(charge("attribute_exists(pk) AND attribute_exists(pk)"), 2 * (63 + 2));
+        assert_eq!(charge("attribute_exists(pk) OR attribute_exists(pk)"), 2 * (63 + 2));
+        assert_eq!(charge("NOT attribute_exists(pk)"), 63 + 2);
     }
 
     #[test]

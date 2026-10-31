@@ -108,6 +108,23 @@ bytes of key 3. The table's name and placeholder names count nothing, and an
 `attribute_not_exists(absent)` condition added 73 bytes per update. Eleven updates of 363,700
 bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 MiB; not probed).
 
+| Eleven 390 KB updates (`SET filler = :v`, keys `upd`/`00`..`10`), changed in one way | Payload Size | Source |
+| --- | --- | --- |
+| none | 4,393,455 | round 2, `93-tx-base`; probe `sizes.payload_updates_11` |
+| a second `SET note = :w` of `"x"` | 4,393,719 | round 2, `93-tx-expression` |
+| a longer table name, or `#f` for `filler` | 4,393,455 | round 2, `93-tx-long-table`, `93-tx-names` |
+| a key `updupd` | 4,393,488 | round 2, `93-tx-long-key`; probe `sizes.payload_updates_longer_key` |
+| eleven puts of the same items instead | 4,393,125 | round 2, `93-tx-puts`; probe `sizes.payload_puts_11` |
+| `attribute_not_exists(absent)` on each | 4,394,258 | round 2, `93-tx-condition` |
+| `attribute_exists(pk)` on each | 4,394,170 | probe `sizes.payload_updates_condition_exists_pk` |
+| `attribute_exists(abcdefghij)` on each | 4,394,258 | probe `sizes.payload_updates_condition_exists_long` |
+| `note = :w` on each | 4,394,137 | probe `sizes.payload_updates_condition_compare` |
+| a delete of a 11-byte key added | 4,393,466 | probe `sizes.payload_updates_plus_delete` |
+| a check `attribute_not_exists(pk)` of that key added | 4,393,535 | probe `sizes.payload_updates_plus_check` |
+| a put of that key with `attribute_not_exists(pk)` added | 4,393,535 | probe `sizes.payload_updates_plus_put_with_condition` |
+
+The probe is `scripts/probe_backends.py`, whose run on DynamoDB is kept here with it.
+
 ### Table updates (#87)
 
 | Request | DynamoDB | MiniStack | LocalStack |
