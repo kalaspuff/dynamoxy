@@ -44,9 +44,9 @@ def test_native_errors_name_their_module(error_type: type[Exception]) -> None:
 
 
 @pytest.mark.parametrize("error_type", ALL, ids=lambda error_type: error_type.__name__)
-def test_every_error_unpickles_from_its_message(error_type: type[Exception]) -> None:
-    # Unpickling calls the class with the message alone: an error class with a second required
-    # argument pickles, and then fails to unpickle in the process that receives it.
+def test_every_error_round_trips(error_type: type[Exception]) -> None:
+    # Every class pickles on every protocol and comes back with its message and attributes
+    # (subclasses with more arguments than the message: test_subclasses_with_more_arguments_unpickle).
     error = error_type("boom")
     error.extra = {"n": 1}  # pyrefly: ignore[missing-attribute]
     for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
