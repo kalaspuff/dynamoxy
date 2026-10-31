@@ -1140,7 +1140,7 @@ class Repository[M]:
                 )
         if derived_specs:
             known: dict[str, Any] = {}
-            # Changed by arithmetic, functions or in nested paths (the version: ADD).
+            # Changed by arithmetic, functions or in nested paths (the version is set: assigned).
             computed = changed - assigned.keys()
             if any(computed.intersection(spec.template.fields) for spec in derived_specs):  # type: ignore[union-attr]
                 # The new values of such fields are what the update makes of the item as last read,
