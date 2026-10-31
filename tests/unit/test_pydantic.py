@@ -352,3 +352,33 @@ def test_star_imports_work_with_and_without_pydantic(installed: bool) -> None:
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+class Tree(dynamoxy.PydanticModel, table="trees"):
+    """Recursive and nested models (core schema definitions), and a plain validator that takes info."""
+
+    tree_id: Annotated[str, dynamoxy.PartitionKey(), pydantic.AfterValidator(str.upper)]
+    parent: Tree | None = None
+    address: Address | None = None
+    label: Annotated[str, pydantic.PlainValidator(lambda value, info: f"{value}:{info.field_name}")] = ""
+
+    @pydantic.model_validator(mode="after")
+    def needs_label(self) -> Tree:
+        if not self.label:
+            raise ValueError("needs a label")
+        return self
+
+
+def test_values_outside_instances_run_the_fields_schema() -> None:
+    schema = schema_of(Tree)
+    # Through the core schema's definitions, without the model validator (which needs the instance).
+    assert schema.key_from(("t1",), {}) == {"tree_id": "T1"}
+    assert schema.fields["address"].validate({"street": "Main"}) == Address(street="Main")
+    with pytest.raises(ValueError, match="Field required"):
+        schema.fields["address"].validate({"city": "Oslo"})
+    parent = Tree(tree_id="p", label="x")
+    assert schema.fields["parent"].validate(parent) is parent
+    # A plain validator that takes a ValidationInfo cannot be left out: the codec checks the value.
+    assert schema.fields["label"].validate("x") == "x"
+    with pytest.raises(ValueError, match="expected str"):
+        schema.fields["label"].validate(5)

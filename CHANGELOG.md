@@ -429,6 +429,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   wrote. A document read from an item (native, a model used as a document, or pydantic) now
   writes back the map keys no field declares, also in lists and maps of documents and in update
   values; a document the application builds replaces the map (ADR 0020).
+- Pydantic models checked the key values of reads and writes by key, and the values `update()`
+  sets, against the field's type only: a key that a validator normalizes
+  (`AfterValidator(str.lower)`, a `@field_validator`) found no item, and an update wrote values
+  that `Field` constraints refuse, then raised `ItemDecodeError` after the write. Such values now
+  run the field's pydantic validation before any I/O: its type, constraints, `Annotated`
+  validators and `@field_validator`s, under the model's config. Validators that take a
+  `ValidationInfo` (they may read other fields) and model validators still run on instances
+  only.
 
 ### Security
 
