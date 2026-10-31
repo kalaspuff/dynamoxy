@@ -921,10 +921,12 @@ class Repository[M]:
             touched[spec.name] = spec
             if len(elements) == 1:
                 is_literal, value = action.literal()
-                if is_literal:
-                    literals[spec.name] = spec.codec.decode(value) if value is not None else None
-                elif action.kind == "REMOVE":
-                    literals[spec.name] = None
+                if is_literal and value is not None:
+                    literals[spec.name] = spec.codec.decode(value)
+                elif is_literal or action.kind == "REMOVE":
+                    # No attribute: None, or an empty set for set fields (see FieldSpec.empty).
+                    empty = spec.empty()
+                    literals[spec.name] = None if empty is MISSING else empty
                 else:
                     continue
                 # Values set outright must satisfy the field like a constructor argument would
@@ -939,7 +941,12 @@ class Repository[M]:
                     ) from None
                 if checked is not None and checked != literals[spec.name]:  # a validator normalized it
                     literals[spec.name] = checked
-                    actions_list[position] = UpdateAction("SET", action.path, Value(spec.codec.encode(checked)))
+                    encoded = spec.codec.encode(checked)
+                    actions_list[position] = (
+                        UpdateAction("SET", action.path, Value(encoded))
+                        if encoded is not None
+                        else UpdateAction("REMOVE", action.path, None)  # an empty set
+                    )
         assert schema.partition_key is not None
         parts: list[Condition] = []
         if not upsert:
@@ -1097,8 +1104,10 @@ class Repository[M]:
 
         The entity type is set, and every field the actions leave alone gets ``if_not_exists``:
         the instance's value, or for keys the given field values and the field's default.
-        Existing items keep their values. Returns the actions and the Python values a created
-        item gets.
+        Existing items keep their values. Keys give no default to fields that store a value as
+        no attribute (``None``, an empty set): ``if_not_exists`` would replace an existing
+        item's, so a created item reads that value. Returns the actions and the Python values a
+        created item gets.
 
         Raises:
             ValueError: Before any I/O: a required field has no value, or a unique value needs
@@ -1121,6 +1130,8 @@ class Repository[M]:
                 value = schema.adapter.get(instance, spec.name)
             elif spec.name in provided:
                 value = spec.validate(provided[spec.name])
+            elif spec.has_default and spec.empty() is not MISSING:
+                continue  # an existing item's None or empty set is no attribute either
             else:
                 value = spec.initial()
             if value is MISSING or value is None:
@@ -1194,6 +1205,8 @@ class Repository[M]:
         instance: untouched fields get their defaults (or the instance's values) with
         ``if_not_exists``, derived keys and the entity type are written, and required fields
         without a default must be set by the actions (``User.name.set_if_not_exists("Ada")``).
+        Key targets give ``X | None`` and set fields no default, since ``if_not_exists`` would
+        replace an existing item's ``None`` or empty set: a created item reads those.
 
         Example::
 

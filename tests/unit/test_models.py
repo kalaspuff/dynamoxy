@@ -77,6 +77,45 @@ def test_mutable_defaults_are_copied_for_each_instance() -> None:
     assert schema_of(Shelf).fields["line"].default.quantity == 1, "the declared default is unchanged"
 
 
+class Badge(Document):
+    label: Attr[str | None] = field(default="new")
+    levels: Attr[set[int]] = field(default_factory=lambda: {1})
+
+
+class Card(Model, table="cards"):
+    """Fields that can be ``None`` or an empty set, with defaults that are neither."""
+
+    card_id: Attr[str] = partition_key()
+    nickname: Attr[str | None] = field(default="anon")
+    roles: Attr[frozenset[str]] = field(default=frozenset({"member"}))
+    labels: Attr[set[str] | None] = field(default_factory=lambda: {"x"})
+    expires_at: Attr[datetime | None] = ttl(default=datetime(2030, 1, 1, tzinfo=UTC))
+    visits: Attr[int] = field(default=3)
+    badge: Attr[Badge] = field(default_factory=Badge)
+
+
+def test_none_and_empty_sets_read_back_as_written() -> None:
+    card = Card(
+        card_id="c1",
+        nickname=None,
+        roles=frozenset(),
+        labels=None,
+        expires_at=None,
+        badge=Badge(label=None, levels=set()),
+    )
+    item = card.to_item()
+    assert item == {"card_id": "c1", "visits": 3, "badge": {}}, "None and empty sets are stored as nothing"
+    assert Card.from_item(item) == card, "and nothing reads as them, not as the defaults"
+    assert (Card(card_id="c2").nickname, Card(card_id="c2").badge.label) == ("anon", "new"), "new instances get them"
+    # Items without the attributes (written before the fields existed) read the same; fields that
+    # can be neither None nor an empty set read their default.
+    old = Card.from_item({"card_id": "c3"})
+    assert (old.nickname, old.roles, old.labels, old.expires_at, old.visits) == (None, frozenset(), None, None, 3)
+    assert old.badge == Badge()
+    # A set field that can be None stores None and an empty set alike: both read back as None.
+    assert Card.from_item(Card(card_id="c4", labels=set()).to_item()).labels is None
+
+
 def test_validation_collects_every_field_error() -> None:
     with pytest.raises(dynamoxy.ValidationError) as caught:
         User(user_id="u1", email="not-an-email", name="", age=-1)  # type: ignore[call-arg]
@@ -167,7 +206,46 @@ def test_keys_from_values_and_instances() -> None:
         User.key("u1", extra=1)
     with pytest.raises(ValueError, match="expected int"):
         Event.key("s", "three")
+    with pytest.raises(ValueError, match=r"Order\.customer_id: expected str, got int"):
+        Order.key(customer_id=1, order_id="o1")
     assert make_user().primary_key() == {"user_id": "u1"}
+
+
+def test_keys_from_values_refuse_none() -> None:
+    # Templated keys accept None as their stored value (`pk` is derived), which a key never is.
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(None, "ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(pk=None, sk="ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.customer_id: must not be None"):
+        Order.key(customer_id=None, order_id="o1")
+    with pytest.raises(ValueError, match=r"User\.user_id: must not be None"):
+        User.key(None)
+
+
+def _one_word(value: str) -> str:
+    if " " in value.strip():
+        raise ValueError("must be one word")
+    return value.strip().lower()
+
+
+class Handle(Model, table="handles"):
+    """Key fields whose validators normalize values, and refuse some."""
+
+    handle: Attr[str] = partition_key(min_length=2, validators=(str.lower,))
+    slug: Attr[str] = sort_key(attribute_name="sk", validators=(_one_word,))
+
+
+def test_keys_from_values_are_validated_like_stored_values() -> None:
+    stored = Handle(handle="Ada", slug=" Intro ").primary_key()
+    assert stored == {"handle": "ada", "sk": "intro"}
+    assert Handle.key("ADA", "intro ") == stored, "positional values"
+    assert Handle.key(handle="Ada", slug=" INTRO") == stored, "field names"
+    assert Handle.key(handle="aDA", sk="Intro") == stored, "attribute names"
+    with pytest.raises(ValueError, match=r"Handle\.handle: must have at least 2 characters/elements, has 1"):
+        Handle.key("a", "intro")
+    with pytest.raises(ValueError, match=r"Handle\.slug: must be one word"):
+        Handle.key(handle="ada", slug="two words")
 
 
 def test_schema_describes_the_model() -> None:

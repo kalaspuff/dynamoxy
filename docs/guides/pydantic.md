@@ -37,6 +37,15 @@ persistence. Everything else works the same: repositories, transactions, unique 
 optimistic locking, hooks, single-table design (`entity=`), indexes. The class is still a pydantic
 model: `model_dump()`, JSON schema and FastAPI request and response models work as usual, and
 `==` compares values, so an instance read from DynamoDB equals a new one with the same values.
+Stored items are read like those of native models: a missing attribute reads as `None` in an
+`X | None` field and as an empty set in a set field, which is how dynamoxy stores them, and as
+the field's default in other fields (see [modeling](modeling.md#fields-and-codecs)).
+
+Key values you give to reads and to writes by key (`customers.get("c1")`,
+`query(index=Customer.by_email, email=...)`) are checked against the field's type only:
+pydantic's validators run on instances, not on these values. When a validator normalizes a key
+or index key field (`AfterValidator(str.lower)`), normalize the value the same way before the
+lookup. Native models run their validators on key values too ([modeling](modeling.md)).
 
 ## Existing models
 

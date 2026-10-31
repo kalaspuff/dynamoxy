@@ -22,6 +22,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `AttributeName(...)` (and its name in pydantic's input and output with an alias).
 - `client.model(User)` returns the same repository on every call (built on first use), so the
   model's classmethods and inline `client.model(User).get(...)` calls cost a dictionary lookup.
+- [**breaking**] `None` and empty sets read back as written, not as the field's default
+  ([ADR 0019](docs/adr/0019-missing-attributes-read-as-none-or-empty-sets.md)). dynamoxy stores
+  both as no attribute, and read a missing attribute as the default: a
+  `nickname: Attr[str | None] = field(default="anon")` written as `None` came back as `"anon"`,
+  and a set field whose default is `{"member"}`, written empty or emptied by deleting its last
+  element, came back as `{"member"}`, so a revoked role was granted again and the next `save()`
+  stored it (in pydantic models and documents too). A missing attribute now reads as `None` in
+  an `X | None` field and as an empty set in a set field, also in items written before the
+  field existed: backfill the default (`await item.update(Model.field.set_if_not_exists(...))`)
+  where they need it. A `set[X] | None` field reads an empty set back as `None`. `set(set())` of
+  a model field removes the attribute like `set(None)` (it stored a `NULL`, on which later
+  `add()` failed), `remove()` and `set(set())` of a set field empty it (they raised
+  `ValidationError`), and `== set()` and `!= set()` compare like `== None` and `!= None`.
+  Upserts by key no longer give `X | None` and set fields their defaults, which
+  `if_not_exists` wrote over an existing item's `None` or empty set: an item they create reads
+  `None` or an empty set there unless the actions set it.
 
 ### Deprecated
 
@@ -130,6 +146,19 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   ten items of 300 KB came back in one page for 1 read unit. Such reads now fetch the items,
   count each, rounded up to 4 KB, towards the page, and charge a read of each to the table, as
   DynamoDB does.
+- Reads by key and index queries skipped the field's validators and constraints, which writes
+  run, so a validator that normalizes made items unreachable: with
+  `email = field(unique=True, validators=(str.lower,))` and `GlobalIndex(partition_key=email)`,
+  `query(index=User.by_email, email="Ada@Example.com")` returned nothing for the item stored with
+  `ada@example.com`, and `get("Ada")` missed the item whose partition key a validator stored as
+  `"ada"`. Key values given to `get()`, `exists()`, `batch_get()`, `query()` (table and index
+  keys), collection queries, `Model.key()`, `Get()` and writes by key are now validated like
+  stored values. A value the field refuses raises `ValueError` before any request, where such
+  reads found nothing (an item whose key predates the rule is still read with a stored key:
+  `batch_get([{"user_id": ...}])`), and so does `None`, which templated keys sent to DynamoDB.
+  Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
+  they are, and conditions compare with the value as given. Pydantic models still check key
+  values against the field's type only.
 - Fields that a subclass inherits encoded expression values in the `datetime_format` of the
   class that declared them, while the subclass stored them in its own. With an abstract
   `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,

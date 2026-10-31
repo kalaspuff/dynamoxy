@@ -30,6 +30,12 @@ found = await users.batch_get(["u1", "u2"])        # any number of keys, order k
 await users.refresh(user)                          # reload in place (consistent by default)
 ```
 
+Key values are validated like the stored values, so a field's validators apply: with
+`email: Attr[str] = field(validators=(str.lower,))` as an index key,
+`users.query(index=User.by_email, email="Ada@Example.com")` finds the item stored with
+`ada@example.com`. A value the field refuses raises `ValueError` before any request (see
+[constraints and validators](modeling.md#constraints-and-validators)).
+
 ## Consistency
 
 Reads are eventually consistent by default: a read right after a write may (rarely) miss it.

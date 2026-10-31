@@ -17,7 +17,7 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0005](0005-unique-constraints-guard-items.md) | Unique attributes with guard items written in transactions | Accepted, amended by 0013 |
 | [0006](0006-attr-descriptors-dataclass-transform.md) | Fields are `Attr[T]` descriptors declared with `dataclass_transform` | Accepted |
 | [0007](0007-repositories-over-active-record.md) | Repositories (data mapper) instead of active record | Accepted, amended by 0011 |
-| [0008](0008-stored-formats.md) | Stored formats: codecs, sortable timestamps, entity types, cursors | Accepted, amended by 0013 |
+| [0008](0008-stored-formats.md) | Stored formats: codecs, sortable timestamps, entity types, cursors | Accepted, amended by 0013 and 0019 |
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
 | [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |
 | [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted, amended by 0017 |
@@ -28,3 +28,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0016](0016-writes-store-a-write-id.md) | Model writes store a random write id (`_wid`), so a retry recognises its own earlier attempt | Accepted |
 | [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted, amended by 0018 |
 | [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted |
+| [0019](0019-missing-attributes-read-as-none-or-empty-sets.md) | A missing attribute reads as `None` or an empty set where the field can hold one, not as the field's default | Accepted |
