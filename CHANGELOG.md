@@ -19,6 +19,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 ### Changed
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
+- [**breaking**] `client.transact_get(...)` returns a tuple instead of a list, and type checkers
+  know the model of each item for up to six reads: `customer, order = await
+  client.transact_get(Get(Customer, ...), Get(Order, ...))` gives `Customer | None` and
+  `Order | None` instead of `Any`. Code that unpacks or indexes the result works as before; compare
+  it with a tuple, or call `list()` on it to change it.
 
 ### Fixed
 
@@ -44,6 +49,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
   CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
   the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
+- pyright (and so VS Code's Pylance) and mypy did not type the constructor or `create()` of a
+  `PydanticModel`: `Wallet(wallet_id="w1", owner=3)`, a missing required field or a misspelt one
+  passed their checks, though they flag the same mistakes on a plain pydantic model (pyrefly
+  caught them). The model metaclass now declares pydantic's `dataclass_transform` itself, which
+  checkers do not inherit from a base metaclass. mypy also types the items of
+  `client.collection(A, B)` as `A | B` now, not as their common base class.
 - A write that removed or changed a unique value deleted the value's guard item even when another
   item owned it, so when two items held one value (items stored before the field became
   `unique=True`, or written by other tools), deleting or changing one of them silently removed

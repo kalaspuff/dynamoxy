@@ -1,0 +1,5 @@
+{
+  "include": [".", "../../examples"],
+  "pythonVersion": "3.12",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}
