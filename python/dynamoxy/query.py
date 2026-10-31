@@ -220,8 +220,11 @@ class _Reader[T]:
             )
 
     def _check_filter_of_held_projection(self) -> None:
-        """A scan of a local index that projects only what the index holds reads no items from the
-        table, so its filter sees the entries: one on other attributes would never match."""
+        """Refuses a scan filter that would never match: a projection of what the index holds.
+
+        Such a scan of a local index reads no items from the table, so its filter sees the
+        entries, where other attributes are missing.
+        """
         projected = self._projected
         if projected is None or self._filter is None:
             return
