@@ -474,6 +474,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `DescribeTable` after it and `ACTIVE` from the next on (the waiter polls it without sleeping),
   so tests catch a missing wait. `table.add_index()` without `billing=`
   gives an index added to a provisioned table the table's capacity (DynamoDB refused it).
+  `ensure_tables()` described the Time to Live of a table another process was still creating,
+  which DynamoDB refuses ("Cannot describe time to live while table is in CREATING state"): it
+  waits for the table first, and the in-memory backend refuses it too.
 
 ### Security
 
