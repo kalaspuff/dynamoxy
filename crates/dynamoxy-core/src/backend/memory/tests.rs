@@ -1260,6 +1260,74 @@ async fn partiql_order_by_runs_one_query_per_partition_key_value() {
 }
 
 #[tokio::test]
+async fn partiql_pages_continue_after_the_last_evaluated_key() {
+    // A NextToken stands for the last item a page evaluated (its LastEvaluatedKey), as a query's
+    // ExclusiveStartKey does: rows deleted or inserted before it do not shift the next page.
+    let backend = backend_with_table().await;
+    for sk in 0..8 {
+        put(&backend, item([("pk", s("p")), ("sk", n(sk)), ("status", s("open")), ("rank", n(100 - sk))])).await;
+    }
+    let select = |text: &str, next_token: Option<String>| {
+        let input = ExecuteStatementInput { statement: text.into(), limit: Some(2), next_token, ..Default::default() };
+        backend.execute_statement(input)
+    };
+    let sort_keys = |output: &ExecuteStatementOutput| -> Vec<String> {
+        output
+            .items
+            .iter()
+            .map(|item| match &item["sk"] {
+                AttributeValue::N(sk) => sk.as_str().to_owned(),
+                other => panic!("unexpected sort key {other:?}"),
+            })
+            .collect()
+    };
+    let delete = |sk: i64| {
+        let key = item([("pk", s("p")), ("sk", n(sk))]);
+        backend.delete_item(DeleteItemInput { table_name: "items".into(), key, ..Default::default() })
+    };
+    for (statement, pages) in [
+        ("SELECT * FROM items WHERE pk = 'p'", [["0", "1"], ["2", "3"], ["4", "5"]]),
+        ("SELECT * FROM items WHERE pk = 'p' ORDER BY sk DESC", [["7", "6"], ["5", "4"], ["3", "2"]]),
+        // The local index orders by rank (100 - sk), the global one by status and sk.
+        ("SELECT * FROM items.\"by_rank\" WHERE pk = 'p'", [["7", "6"], ["5", "4"], ["3", "2"]]),
+        ("SELECT * FROM items.\"by_status\" WHERE status = 'open'", [["0", "1"], ["2", "3"], ["4", "5"]]),
+        ("SELECT * FROM items", [["0", "1"], ["2", "3"], ["4", "5"]]),
+    ] {
+        let first = select(statement, None).await.unwrap();
+        assert_eq!(sort_keys(&first), pages[0], "{statement}");
+        let last = first.items.last().unwrap();
+        let mut last_key = item([("pk", last["pk"].clone()), ("sk", last["sk"].clone())]);
+        if statement.contains("by_rank") {
+            last_key.insert("rank".into(), last["rank"].clone());
+        } else if statement.contains("by_status") {
+            last_key.insert("status".into(), s("open"));
+        }
+        assert_eq!(first.last_evaluated_key, Some(last_key), "{statement}");
+        // Delete what the first page returned: the second page starts where it would have.
+        for row in sort_keys(&first) {
+            delete(row.parse().unwrap()).await.unwrap();
+        }
+        let second = select(statement, first.next_token.clone()).await.unwrap();
+        assert_eq!(sort_keys(&second), pages[1], "{statement}");
+        // Items written again before the position are not read again.
+        for row in sort_keys(&first) {
+            let sk: i64 = row.parse().unwrap();
+            put(&backend, item([("pk", s("p")), ("sk", n(sk)), ("status", s("open")), ("rank", n(100 - sk))])).await;
+        }
+        let third = select(statement, second.next_token.clone()).await.unwrap();
+        assert_eq!(sort_keys(&third), pages[2], "{statement}");
+        // Put the table back for the next statement.
+        for sk in 0..8 {
+            put(&backend, item([("pk", s("p")), ("sk", n(sk)), ("status", s("open")), ("rank", n(100 - sk))])).await;
+        }
+    }
+    for token in ["offset:2", "key:zz", "key", "key:706b.S70"] {
+        let error = select("SELECT * FROM items WHERE pk = 'p'", Some(token.into())).await.unwrap_err();
+        assert_eq!(message(&error), "Invalid NextToken", "{token}");
+    }
+}
+
+#[tokio::test]
 async fn partiql_selects_of_a_local_index_fetch_what_it_does_not_hold() {
     // Like a query, a SELECT of a local index reads each item from the table when it names an
     // attribute the index does not hold, and is charged a read of each. The WHERE clause still
