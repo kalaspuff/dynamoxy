@@ -947,7 +947,7 @@ impl Client {
         exists: bool,
         timeout: Duration,
     ) -> Result<Option<TableDescription>> {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + timeout.min(crate::config::MAX_DURATION);
         let mut round = 0;
         loop {
             round += 1;

@@ -46,6 +46,51 @@ def test_invalid_retry_policies(options: dict[str, Any], message: str) -> None:
         dynamoxy.RetryPolicy(**options)
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"batch_concurrency": 2.5},
+        {"batch_concurrency": True},
+        {"batch_max_rounds": 2.0},
+        {"event_buffer": "10"},
+        {"retry": "fast"},
+    ],
+)
+def test_counts_and_policies_of_the_wrong_type_fail_early(options: dict[str, Any]) -> None:
+    name = next(iter(options))
+    with pytest.raises(TypeError, match=rf"^{name} must be an? "):
+        dynamoxy.Client(**options)
+
+
+def test_retry_policies_validate_counts_and_convert_durations() -> None:
+    with pytest.raises(TypeError, match=r"^max_attempts must be an int, got float 2\.5$"):
+        dynamoxy.RetryPolicy(max_attempts=2.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"^max_attempts must be at least 1 \(1 disables retries\), got 0$"):
+        dynamoxy.RetryPolicy(max_attempts=0)
+    with pytest.raises(ValueError, match=r"^max_attempts must be at most 4294967295"):
+        dynamoxy.RetryPolicy(max_attempts=2**32)
+    policy = dynamoxy.RetryPolicy(base_delay=timedelta(milliseconds=10), max_delay=timedelta(seconds=2))
+    assert (policy.base_delay, policy.max_delay) == (0.01, 2.0)
+    assert policy.to_core()["base_delay"] == 0.01
+    assert dynamoxy.RetryPolicy(base_delay=timedelta(milliseconds=10)).max_delay == 5.0
+    with pytest.raises(ValueError, match="max_delay"):
+        dynamoxy.RetryPolicy(base_delay=timedelta(seconds=10), max_delay=timedelta(seconds=1))
+
+
+async def test_huge_durations_mean_no_limit() -> None:
+    # Durations past what the core's clock can add (about 1.8e19 seconds) panicked in the core.
+    retry = dynamoxy.RetryPolicy(max_attempts=2, base_delay=1e300, max_delay=1e300)
+    client = testing.memory_client(timeout=1e20, connect_timeout=1e300, retry=retry)
+    async with client:
+        await client.create_tables(Event)
+        table = client.table("events")
+        assert (await table.wait_until_active(timeout=1e19)).name == client.table_name("events")
+        assert await table.get({"stream": "s", "seq": 1}) is None
+        await table.wait_until_active(timeout=timedelta(seconds=5))
+        with pytest.raises(ValueError, match="timeout must be a non-negative number of seconds"):
+            await table.wait_until_active(timeout=-1)
+
+
 def test_core_configuration_and_secrets() -> None:
     credentials = dynamoxy.Credentials("AKIDEXAMPLE", "very-secret", "token-secret")
     client = dynamoxy.Client(

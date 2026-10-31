@@ -227,6 +227,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   before the position repeated rows, so a "select a page, delete it, continue" cleanup loop
   missed items. `NextToken` now stands for the key of the last item the page evaluated, which
   pages also return as `last_evaluated_key`, as DynamoDB's do.
+- Client options that pass validation failed later. `RetryPolicy(base_delay=timedelta(...))`
+  raised `TypeError`, and with both delays as `timedelta` every client using the policy failed
+  to connect with `ConfigurationError`, although durations accept `timedelta`: the policy now
+  stores them as float seconds. `max_attempts=2.5`, `batch_concurrency=2.5` (and `bool` or `str`
+  counts) were accepted and failed at the first call; counts must now be `int`s, and
+  `Client(retry=...)` a `RetryPolicy`, or the constructor raises `TypeError`. Huge but finite
+  durations (`timeout=1e20`, `RetryPolicy(base_delay=1e300, max_delay=1e300)`,
+  `wait_until_active(timeout=1e19)`) panicked in the core (`internal error: a dynamoxy task
+  panicked`); durations longer than about 31 years now mean no limit. `wait_until_active()` and
+  `wait_until_deleted()` take a `timedelta` too.
 
 ### Security
 

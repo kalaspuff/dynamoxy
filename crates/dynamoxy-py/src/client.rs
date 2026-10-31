@@ -42,10 +42,14 @@ fn optional_constant<T>(value: Option<&str>, parse: impl FnOnce(&str) -> PyResul
     value.map(parse).transpose()
 }
 
+/// A duration in seconds, non-negative; longer than [`dynamoxy_core::config::MAX_DURATION`] (about 31 years) is capped.
 fn duration(seconds: f64, name: &str) -> PyResult<Duration> {
-    Duration::try_from_secs_f64(seconds).map_err(|_| {
-        ValidationError::new_err(format!("{name} must be a non-negative number of seconds, got {seconds}"))
-    })
+    if seconds.is_nan() || seconds < 0.0 {
+        return Err(ValidationError::new_err(format!(
+            "{name} must be a non-negative number of seconds, got {seconds}"
+        )));
+    }
+    Ok(dynamoxy_core::config::duration(seconds))
 }
 
 fn names(names: Option<BTreeMap<String, String>>) -> BTreeMap<String, String> {
