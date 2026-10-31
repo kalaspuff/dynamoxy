@@ -138,12 +138,29 @@ uv add 'dynamoxy[otel]'       # OpenTelemetry
 | [Examples](https://github.com/kalaspuff/dynamoxy/blob/main/examples/README.md) | Runnable programs |
 | [Reference](https://github.com/kalaspuff/dynamoxy/blob/main/docs/reference/configuration.md) | Configuration, [errors](https://github.com/kalaspuff/dynamoxy/blob/main/docs/reference/errors.md), [events](https://github.com/kalaspuff/dynamoxy/blob/main/docs/reference/events.md) |
 | [Architecture](https://github.com/kalaspuff/dynamoxy/blob/main/docs/architecture.md) | How it works, invariants, [decisions](https://github.com/kalaspuff/dynamoxy/blob/main/docs/adr/README.md) |
+| [Parity with DynamoDB](https://github.com/kalaspuff/dynamoxy/blob/main/docs/parity/README.md) | DynamoDB's answers next to the in-memory backend's, MiniStack's and LocalStack's |
 | [Changelog](https://github.com/kalaspuff/dynamoxy/blob/main/CHANGELOG.md) | Release notes |
 
 **AI agents**: run `dynamoxy guide` (or read [AGENT_GUIDE.md](https://github.com/kalaspuff/dynamoxy/blob/main/python/dynamoxy/AGENT_GUIDE.md))
 before writing code with dynamoxy; application repositories can copy the skill in
 [skills/dynamoxy](https://github.com/kalaspuff/dynamoxy/blob/main/skills/dynamoxy/SKILL.md). Agents changing dynamoxy itself start with
 [AGENTS.md](https://github.com/kalaspuff/dynamoxy/blob/main/AGENTS.md).
+
+## Tested against DynamoDB
+
+The in-memory backend is checked against DynamoDB itself, not only against emulators. A probe
+runs dynamoxy's operations on real DynamoDB and on each backend, and compares what comes back:
+results, error codes and messages, size limits, transaction payload sizes and table states.
+
+| | Answers like DynamoDB | Used for |
+| --- | --- | --- |
+| In-memory backend | Every probed fact | Your tests, and dynamoxy's |
+| [MiniStack](https://pypi.org/project/ministack/) | Most results; accepts much of what DynamoDB refuses (filters on attributes an index does not hold, size limits, changes to a table being created) | dynamoxy's end-to-end tests and CI |
+| [LocalStack](https://www.localstack.cloud/) | Closer than MiniStack (DynamoDB Local inside); its free edition lacks backups and point-in-time recovery | dynamoxy's end-to-end tests, locally |
+
+So a request DynamoDB would refuse fails in your tests on the in-memory backend too, while an
+emulator that accepts a request is no proof that DynamoDB will. Every answer, with the probe that asked it, is
+in [docs/parity](https://github.com/kalaspuff/dynamoxy/blob/main/docs/parity/README.md).
 
 ## How it works
 

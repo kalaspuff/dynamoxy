@@ -254,7 +254,6 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: dynamoxy ${{ needs.verify.outputs.version }}
           body_path: RELEASE_NOTES.md
-          prerelease: ${{ startsWith(needs.verify.outputs.version, '0.') }}
           files: dist/*
 
   pypi:
