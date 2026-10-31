@@ -36,7 +36,7 @@ renaming one needs a data migration.
 
 `template="ORDER#{order_id}"` renders the key from other fields with their stored form (enums as
 values, datetimes as ISO text, numbers as text). Numbers are rendered as DynamoDB stores them
-(`Decimal("1.50")` as `1.5`) and datetimes formatted with a spec (`{placed_at:%Y-%m}`) are
+(`Decimal("1.50")` as `1.5`, also in union and `Any` fields) and datetimes formatted with a spec (`{placed_at:%Y-%m}`) are
 formatted in UTC, so an item read back renders the same key. Templated fields:
 
 - are never passed to the constructor and are recomputed on every write;

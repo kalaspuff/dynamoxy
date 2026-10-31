@@ -23,9 +23,11 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 from uuid import UUID
 
+from dynamoxy import _core
 from dynamoxy._utils import MISSING, number_text
 from dynamoxy.codecs import (
     _UNCHANGED,
+    AnyCodec,
     Codec,
     DateTimeCodec,
     DecimalCodec,
@@ -151,9 +153,14 @@ class KeyTemplate:
             stored = codec.encode(value) if codec is not None else value
             if isinstance(stored, bytes):
                 raise ValueError(f"key template {self.template!r}: {name} is binary and cannot be part of a text key")
-            if isinstance(stored, Decimal) and codec is not None and type(_inner_codec(codec)) is DecimalCodec:
-                text += number_text(stored)
-                continue
+            inner = _inner_codec(codec) if codec is not None else None
+            if isinstance(stored, (float, Decimal)) and isinstance(inner, (DecimalCodec, AnyCodec)):
+                # The number as the field reads it back: DynamoDB stores `Decimal("1.50")` as
+                # `1.5`, and a union or `Any` field decodes the stored number by its own rules.
+                stored = inner.decode(_core.value_from_wire({"N": number_text(stored)}))
+                if isinstance(stored, Decimal):
+                    text += number_text(stored)
+                    continue
             text += str(stored)
         return text
 
