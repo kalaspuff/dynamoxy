@@ -885,13 +885,13 @@ fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<At
     let set = || -> PyResult<Vec<Bound<'_, PyAny>>> {
         let elements = elements()?;
         if elements.is_empty() {
-            // DynamoDB's wording ("An string set  may not be empty"), for every kind of set.
+            // DynamoDB's wording, as the in-memory backend's (`AttributeValue::validate`).
             return Err(ValidationError::new_err(format!(
-                "{path}: One or more parameter values were invalid: An {} set  may not be empty",
+                "{path}: One or more parameter values were invalid: {}",
                 match kind.as_str() {
-                    "SS" => "string",
-                    "NS" => "number",
-                    _ => "binary",
+                    "SS" => "An string set  may not be empty",
+                    "NS" => "An number set  may not be empty",
+                    _ => "Binary sets should not be empty",
                 }
             )));
         }

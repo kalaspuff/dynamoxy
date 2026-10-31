@@ -186,7 +186,7 @@ def test_base64_binary_for_json() -> None:
         ({"NULL": 1}, "Null attribute value types must have the value of true"),
         ({"SS": []}, "An string set  may not be empty"),
         ({"NS": []}, "An number set  may not be empty"),
-        ({"BS": []}, "An binary set  may not be empty"),
+        ({"BS": []}, "Binary sets should not be empty"),
         ({"N": 5}, '"N" must be text, got int'),
         ({"S": 5}, '"S" must be text, got int'),
         ({"BOOL": 1}, '"BOOL" must be true or false, got int'),
