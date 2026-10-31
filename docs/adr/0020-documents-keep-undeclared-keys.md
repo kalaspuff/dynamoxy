@@ -28,5 +28,8 @@ application replaced (`user.address = Address(...)`), which belong to the old ad
 
 * Applications can add fields to documents with rolling deploys, as they can to models.
 * The remembered keys live in the instance's `__dict__`, outside its fields: they do not take
-  part in `==`, `repr()` or pydantic's serialization, and exact copies (`copy.copy()`,
-  `copy.deepcopy()`, pydantic's `model_copy()`) keep them.
+  part in `==`, `repr()` or pydantic's serialization. Copies of a document keep them: exact
+  copies (`copy.copy()`, `copy.deepcopy()`, pydantic's `model_copy()`), and the documents of
+  `item.copy()`, which copies the item's values to a new, unsaved instance. Such a copy written
+  to another key (moving an item) keeps the documents' keys, but not the item's undeclared
+  top-level attributes, which belong to the stored item rather than to the instance's values.
