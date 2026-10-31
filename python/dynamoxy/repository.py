@@ -1633,10 +1633,10 @@ class Repository[M]:
         if explain[0] == "owned guard":
             _, spec, value = explain
             owned = UniqueConstraintError(
-                f"{self.model_class.__name__}.{spec.name}: the stored value's guard item belongs to another item, "
-                f"which holds the same value (see .value, and the guard's owner in .item['_owner']); "
-                f"the stored data breaks the unique constraint, and this {write.mode} would remove the other "
-                "item's guard: change the value of one of the items",
+                f"{self.model_class.__name__}.{spec.name}: the stored value's guard item belongs to another item "
+                f"(see .value, and the owner's key in .item['_owner']), so this {write.mode} does not delete it; "
+                "the stored data breaks the unique constraint: if the owner holds the same value, change the value "
+                "of one of the items, and if it is gone or holds another value, delete the guard item (.item)",
                 model=self.model_class,
                 field=spec.name,
                 value=spec.codec.decode(value),
