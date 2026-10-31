@@ -7,6 +7,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -39,6 +40,30 @@ def test_deprecated_apis_fail_the_checks_once_due(monkeypatch: pytest.MonkeyPatc
     if due:
         assert "Client.repository is deprecated and due for removal in 0.5.0" in problems[0]
     assert check_consistency.version_tuple("0.5.0-rc.1+build.7") == (0, 5, 0)
+
+
+@pytest.mark.parametrize(
+    ("edit", "problem"),
+    [
+        (
+            lambda init: init.replace("from dynamoxy import errors as errors\n", ""),
+            "must import `from dynamoxy import errors as errors`",
+        ),
+        (
+            lambda init: init + "\n\ndef __getattr__(name: str) -> object:\n    raise AttributeError(name)\n",
+            "must define __getattr__ under `if not TYPE_CHECKING:`",
+        ),
+    ],
+)
+def test_submodules_the_type_checkers_cannot_see_fail_the_checks(
+    monkeypatch: pytest.MonkeyPatch, edit: Callable[[str], str], problem: str
+) -> None:
+    check_consistency = load("check_consistency")
+    read = check_consistency.read
+    init = edit(read("python/dynamoxy/__init__.py"))
+    assert init != read("python/dynamoxy/__init__.py")
+    monkeypatch.setattr(check_consistency, "read", lambda path: init if path.endswith("__init__.py") else read(path))
+    assert [problem in found for found in check_consistency.submodules_typed()] == [True]
 
 
 def test_generated_reference_is_current() -> None:
