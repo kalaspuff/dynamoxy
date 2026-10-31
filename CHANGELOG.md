@@ -130,6 +130,19 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   ten items of 300 KB came back in one page for 1 read unit. Such reads now fetch the items,
   count each, rounded up to 4 KB, towards the page, and charge a read of each to the table, as
   DynamoDB does.
+- Reads by key and index queries skipped the field's validators and constraints, which writes
+  run, so a validator that normalizes made items unreachable: with
+  `email = field(unique=True, validators=(str.lower,))` and `GlobalIndex(partition_key=email)`,
+  `query(index=User.by_email, email="Ada@Example.com")` returned nothing for the item stored with
+  `ada@example.com`, and `get("Ada")` missed the item whose partition key a validator stored as
+  `"ada"`. Key values given to `get()`, `exists()`, `batch_get()`, `query()` (table and index
+  keys), collection queries, `Model.key()`, `Get()` and writes by key are now validated like
+  stored values. A value the field refuses raises `ValueError` before any request, where such
+  reads found nothing (an item whose key predates the rule is still read with a stored key:
+  `batch_get([{"user_id": ...}])`), and so does `None`, which templated keys sent to DynamoDB.
+  Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
+  they are, and conditions compare with the value as given. Pydantic models still check key
+  values against the field's type only.
 - Deletes of models with unique attributes ignored their `condition=` when no item was stored:
   `delete(key, condition=...)` returned `None`, and `tx.delete(...)` was left out of the
   transaction, so a delete used as the guard of a transaction let the rest commit. As for other

@@ -48,6 +48,19 @@ class Refund(Model, table="ledger", entity="Refund"):
     by_state = GlobalIndex("gsi1", partition_key=gsi1pk, projection=Projection.include("state"))
 
 
+class Profile(Model, table="people", entity="Profile"):
+    """Two entities sharing a partition key whose validator normalizes values."""
+
+    person: Attr[str] = partition_key(validators=(str.lower,))
+    sk: Attr[str] = sort_key(template="PROFILE")
+
+
+class Note(Model, table="people", entity="Note"):
+    person: Attr[str] = partition_key(validators=(str.lower,))
+    sk: Attr[str] = sort_key(template="NOTE#{note_id}")
+    note_id: Attr[str]
+
+
 @pytest.fixture
 async def app(client: dynamoxy.Client) -> dynamoxy.Client:
     created = await client.create_tables(Customer, Order)
@@ -116,6 +129,14 @@ async def test_collections_decode_mixed_partitions(app: dynamoxy.Client) -> None
     assert len(everything) == 3
     with pytest.raises(TypeError, match="share one table"):
         app.collection(Customer, dynamoxy.Model)  # type: ignore[arg-type]
+
+
+async def test_collections_validate_key_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Profile, Note)
+    await client.model(Profile).create(Profile(person="Ada"))
+    await client.model(Note).create(Note(person="ADA", note_id="n1"))
+    items = await client.collection(Profile, Note).query(person="Ada").all()
+    assert sorted(type(item).__name__ for item in items) == ["Note", "Profile"]
 
 
 async def test_collections_read_consistently(app: dynamoxy.Client) -> None:

@@ -342,6 +342,16 @@ template uses: `orders.get(customer_id="c1", order_id="o1")`. `User.key("u1")` b
 key for APIs that take one. `User.get(client, ...)` and `User.query(client, ...)` take the same
 arguments as the repository's `get` and `query`, after the client.
 
+Key values (of `get`, `query` and index queries, `User.key(...)`, writes by key) are validated
+like stored values: a normalizing validator applies (`field(validators=(str.lower,))` makes
+`email="Ada@Example.com"` find `ada@example.com`), and a value the field refuses raises
+`ValueError` before any request; conditions (`where()`, `filter()`) compare the value as given.
+Stored keys (`{"user_id": "u1"}`, `User.key(...)`) are used as they are by the calls that take
+one: `batch_get`, `update`, `delete`, `batch_delete` and transaction operations, but not `get`,
+`exists` or `query`. Read an item whose key predates a constraint or validator with
+`users.batch_get([{"user_id": "Ada"}])`. Pydantic models check key values against the field's
+type only: normalize them before the lookup as their validators would.
+
 ### Queries
 
 A query reads one partition of the table or of an index:
