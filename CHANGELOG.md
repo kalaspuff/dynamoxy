@@ -36,6 +36,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
   CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
   the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
+- On a free-threaded CPython (3.13t, 3.14t), the extension built from source declared that it
+  runs safely without the GIL, which PyO3 0.28 and newer assume unless a module opts out, so
+  dynamoxy ran without the GIL although it was never tested that way. The extension now declares
+  that it needs the GIL: the interpreter turns the GIL on when it imports dynamoxy, with a
+  `RuntimeWarning`, until dynamoxy is tested without it.
 
 ## [0.4.0] - 2026-10-31
 

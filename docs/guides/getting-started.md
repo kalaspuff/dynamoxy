@@ -12,6 +12,10 @@ dynamoxy supports CPython 3.12 and newer on Linux (x86_64 and aarch64, glibc and
 (Apple silicon and Intel) and Windows. Wheels contain the compiled Rust core; nothing else is
 installed.
 
+On a free-threaded CPython (3.13t, 3.14t) pip builds dynamoxy from source, which needs Rust, and
+the interpreter turns the GIL back on when it imports dynamoxy, with a `RuntimeWarning`: dynamoxy
+is not yet tested without the GIL. `PYTHON_GIL=0` keeps the GIL off at your own risk.
+
 ## A first model
 
 ```python
