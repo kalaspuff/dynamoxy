@@ -220,3 +220,16 @@ def test_values_left_out_always_pickle() -> None:
     error = dynamoxy.ItemNotFoundError("missing")
     error.history = cycle  # pyrefly: ignore[missing-attribute]
     assert round_trip(error).history == [None, 2, None]
+
+
+def test_errors_that_hold_themselves_pickle() -> None:
+    error = dynamoxy.ItemNotFoundError("missing")
+    error.me = error  # pyrefly: ignore[missing-attribute]
+    copy = round_trip(error)
+    assert copy.me is copy
+    for history in ([lambda: 1, error], [error, lambda: 1]):
+        error.me = None  # pyrefly: ignore[missing-attribute]
+        error.history = history  # pyrefly: ignore[missing-attribute]
+        copy = round_trip(error)
+        assert type(copy) is dynamoxy.ItemNotFoundError
+        assert len(vars(copy)["history"]) == 2

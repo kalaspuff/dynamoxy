@@ -34,6 +34,7 @@ import copy
 import copyreg
 import dataclasses
 import pickle
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -402,9 +403,24 @@ def _reduce_error(error: BaseException) -> tuple[Any, ...]:
     # defined in functions) are left out under it too, so that a process that has cloudpickle
     # loaded still sends errors through ``pickle``.
     state = vars(error)
-    if not _round_trips(state):
-        state = {name: _picklable(value) for name, value in state.items()}
+    # The check pickles the state with a pickler of its own, which does not know the objects the
+    # outer one has seen: an error met again inside its own check (an error that holds itself)
+    # gives its state unchecked, the inner pickler's memo resolves the cycle, and the outer check
+    # handles what fails.
+    checking: set[int] = _checking.__dict__.setdefault("errors", set())
+    if id(error) not in checking:
+        checking.add(id(error))
+        try:
+            if not _round_trips(state):
+                state = {name: _picklable(value) for name, value in state.items()}
+        finally:
+            checking.discard(id(error))
     return (copyreg.__newobj__, (type(error), *error.args), state)  # pyrefly: ignore[missing-attribute]
+
+
+# The errors whose pickle this thread is checking (pickles run in several threads: a
+# multiprocessing queue's feeder thread, a thread pool).
+_checking = threading.local()
 
 
 def _blank[E: BaseException](error: E, args: tuple[Any, ...]) -> E:
