@@ -67,8 +67,8 @@ plain repository per model, on first use, and returns it afterwards.
    automatic fields (`created_at`, `updated_at`, `version`) and derived (templated) attributes.
    A write of a loaded instance refuses a changed key or immutable value, and keeps the
    attributes of the stored item that no field declares. Updates render derived attributes from
-   the values they set (`updated_at` included), or, for arithmetic, functions and the version,
-   from the update evaluated on the item as last read (`_core._apply_update`).
+   the values they set (`updated_at` and the version token included), or, for arithmetic and
+   functions, from the update evaluated on the item as last read (`_core._apply_update`).
 2. **Python, `_plan_*`**: build a `_WritePlan`: one operation (put, update or delete with its
    condition: key existence for `create`, version for `save`, the caller's condition) or, for
    models with unique attributes, a transaction with guard puts and deletes

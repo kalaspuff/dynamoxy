@@ -17,7 +17,7 @@ keeping the count in `put()` would not cover delete-and-create.
 * A version is a random token (64 bits as 16 hex digits, from the operating system's random
   source), new on every write; version fields are declared `Attr[str]`
   (`Annotated[str | None, Version()]` in pydantic models), and other types are refused with a
-  `TypeError` when the model is defined.
+  `TypeError` when the model is used (its schema is built).
 * Updates set the new token (`SET version = :token`) instead of adding 1, so the new version is
   known without reading the item, also to templates that render it.
 * The operations of a transaction with an idempotency token derive their tokens from the token
