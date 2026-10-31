@@ -130,7 +130,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   pickling one failed with `PicklingError`: an error raised in a `ProcessPoolExecutor` worker,
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
-  not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+  not be unpickled. They now name `dynamoxy.errors`, where they are documented, and pickle with
+  their attributes; tracebacks show `dynamoxy.errors.AccessDeniedError` like those of the
+  Python-defined errors (`dynamoxy.errors.ItemAlreadyExistsError`), not `_core.AccessDeniedError`.
 - A field with a codec of its own refused `None` although its annotation allowed it:
   `Attr[datetime | None] = field(default=None, codec=DateTimeCodec("iso_z"))` and
   `Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())` failed on construction
@@ -463,6 +465,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   during a long backfill), and `create_tables`/`ensure_tables(wait=False)` enabled Time to Live
   on a table DynamoDB was still creating: each step now waits for the one before it, and Time to
   Live is enabled before indexes are added, so that it does not wait for their backfills.
+- Type checkers typed `dynamoxy.errors.AccessDeniedError` as `Any` after a plain
+  `import dynamoxy` (Pylance and pyright resolved `dynamoxy.errors` and `dynamoxy.events` through
+  the package's `__getattr__`), and every misspelled name of the package too. The public
+  submodules are now attributes of the package with their types, and type checkers report names
+  the package does not define.
 - Reads of an index that name attributes it does not hold passed in tests and failed against
   DynamoDB, which refuses a query filter on them, for local indexes too and also when the query
   reads the items from the table, and a projection of a global index naming them
