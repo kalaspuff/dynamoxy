@@ -77,7 +77,12 @@ pub fn batch_get_item(
                 output
                     .unprocessed_keys
                     .entry(table_name.clone())
-                    .or_insert_with(|| KeysAndAttributes { keys: Vec::new(), ..request.clone() })
+                    .or_insert_with(|| KeysAndAttributes {
+                        keys: Vec::new(),
+                        consistent_read: request.consistent_read,
+                        projection_expression: request.projection_expression.clone(),
+                        expression_attribute_names: request.expression_attribute_names.clone(),
+                    })
                     .keys
                     .push(key.clone());
                 continue;

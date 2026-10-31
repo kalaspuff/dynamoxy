@@ -507,7 +507,9 @@ async def test_writes_keep_the_guards_of_other_items(client: dynamoxy.Client) ->
         lambda: users.put(Current(user_id="u1", email="ada@new.example.com")),
     ]
     for attempt in attempts:
-        with pytest.raises(dynamoxy.UniqueConstraintError, match="belongs to another item") as caught:
+        with pytest.raises(
+            dynamoxy.UniqueConstraintError, match=r"belongs to another item.*change or delete the owner first"
+        ) as caught:
             await attempt()
         error = caught.value
         assert (error.model, error.field, error.value) == (Current, "email", "ada@example.com")
