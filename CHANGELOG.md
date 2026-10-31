@@ -298,6 +298,17 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   (an undefined name raises a `TypeError` that names it), `RootModel` fields are stored as their
   root value, and such factories get the data (upserts by key pass the key's fields and the
   values the update sets).
+- Unique guards could get out of step with their items. An upsert that set a unique value and
+  found no item did not require that the item was still missing: when another writer created it
+  between the read and the write, the upsert overwrote its value and never deleted its guard,
+  so the value stayed taken forever. It now requires that, and reads the item again and writes
+  once more when another writer created it (a transaction cancels and says to retry). A unique
+  `float` field of an instance read back could not be written: the plan compared the stored
+  `Decimal("0.1")` with `0.1` and deleted and put the same guard item, which DynamoDB refuses,
+  so `save()`, `put()` and `update(latitude.set(0.1))` failed with the value unchanged. And
+  `unique=True` was accepted on set, list and map fields, whose guard key was the value's text
+  (a set's depends on the hash seed of the process): it is now a `TypeError`, and a collection
+  in a unique `Any` field raises `ValueError` before any write.
 
 ### Security
 

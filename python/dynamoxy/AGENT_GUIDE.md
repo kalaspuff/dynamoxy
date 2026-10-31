@@ -551,6 +551,7 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
 
 - Change unique values with `set(...)` or `remove()` (or `set(None)`; dynamoxy needs the new
   value). Numbers are guarded as DynamoDB stores them: `5`, `5.0` and `Decimal("5.00")` collide.
+  Only strings, numbers, binary values and booleans can be unique (not sets, lists or maps).
 - Writes of unique models are transactions: twice the write capacity, plus one guard write per
   changed value. Batch writes are refused for them.
 - When another writer changed the unique values of a loaded instance, `put()`, and `save()`,
