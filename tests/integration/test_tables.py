@@ -309,3 +309,71 @@ async def test_writes_return_item_collection_metrics(client: dynamoxy.Client, ba
         assert {table: collections(metrics) for table, metrics in transaction["item_collection_metrics"].items()} == {
             name: [{"stream": "u"}]
         }
+
+
+class Visit(Model, table="visits"):
+    visit_id: Attr[str] = partition_key()
+    user: Attr[str] = field(default="")
+    page: Attr[str] = field(default="")
+    expires_at: Attr[datetime | None] = ttl(default=None)
+
+    by_user = GlobalIndex(partition_key=user)
+    by_page = GlobalIndex(partition_key=page)
+
+
+def record_operations(client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The operations of the client's calls, and ``wait`` where a table waiter ran."""
+    operations: list[str] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        operations.append(request.operation)
+        return await call_next(request)
+
+    client.use(record)
+    wait_until_active = dynamoxy.table.Table.wait_until_active
+
+    async def recorded_wait(table: dynamoxy.table.Table, **options: Any) -> dynamoxy.TableDescription:
+        operations.append("wait")
+        return await wait_until_active(table, **options)
+
+    monkeypatch.setattr(dynamoxy.table.Table, "wait_until_active", recorded_wait)
+    return operations
+
+
+async def test_steps_without_waiting_wait_for_the_step_before(
+    client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # DynamoDB changes a table one step at a time, and Time to Live needs an active table: with
+    # wait=False, the second index was added while the first was being created, and Time to Live
+    # enabled on a table that was still being created.
+    operations = record_operations(client, monkeypatch)
+    await client.ensure_tables(Visit, wait=False)
+    assert operations == ["DescribeTable", "CreateTable", "wait", "DescribeTimeToLive", "UpdateTimeToLive"]
+    await client.table("visits").delete_table()
+    await client.table("visits").create(partition_key=("visit_id", "S"))
+    operations.clear()
+    await client.ensure_tables(Visit, wait=False)
+    changes = [operation for operation in operations if operation in ("wait", "UpdateTable", "UpdateTimeToLive")]
+    assert changes == ["UpdateTimeToLive", "UpdateTable", "wait", "UpdateTable"], "the last step is not waited for"
+    assert await client.ensure_tables(Visit, wait=False) == []
+
+
+async def test_switching_to_provisioned_billing_gives_global_indexes_capacity(client: dynamoxy.Client) -> None:
+    await client.create_tables(Visit)
+    table = client.table("visits")
+    sent: list[dict[str, Any]] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        if request.operation == "UpdateTable":
+            sent.append(dict(request.params))
+        return await call_next(request)
+
+    client.use(record)
+    description = await table.update_settings(billing=dynamoxy.Billing.provisioned(10, 5))
+    assert (description.billing_mode, description.read_capacity, description.write_capacity) == ("PROVISIONED", 10, 5)
+    updates = sorted(sent[0]["global_secondary_index_updates"], key=lambda update: update["update"]["index_name"])
+    assert updates == [
+        {"update": {"index_name": name, "provisioned_throughput": (10, 5)}} for name in ("by_page", "by_user")
+    ]
+    await table.update_settings(billing=dynamoxy.Billing.provisioned(20, 5))  # already provisioned: the table only
+    assert "global_secondary_index_updates" not in sent[1]

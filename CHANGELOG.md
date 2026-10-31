@@ -446,6 +446,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `SCORE#00000025`), also for versioned models updated by key. Such updates now read the item
   first and require that the fields the attribute is rendered from are unchanged; when another
   writer changed them, `update()` reads the item again and renders it from that.
+- `table.update_settings(billing=Billing.provisioned(...))` of an on-demand table sent capacity
+  for the table only, although DynamoDB needs it for every global index too; it now gives each
+  global index the table's capacity. `ensure_tables(wait=False)` added a second missing index
+  while DynamoDB was still creating the first (also when an earlier call's waiter had given up
+  during a long backfill), and `create_tables`/`ensure_tables(wait=False)` enabled Time to Live
+  on a table DynamoDB was still creating: each step now waits for the one before it, and Time to
+  Live is enabled before indexes are added, so that it does not wait for their backfills.
 
 ### Security
 
