@@ -390,9 +390,10 @@ reused. `where()` takes the one sort key condition DynamoDB allows: a comparison
 condition dynamoxy adds. Entries of a `KEYS_ONLY` or `INCLUDE` global index hold only some
 attributes: model reads of one need `.hydrate()` (the full items) or `.project(...)` (dicts of the
 attributes it holds) and raise `ValueError` otherwise, before any request; `count()` and
-`exists()` need neither. Local indexes read the missing attributes from the table. A filter on an
-attribute an index does not hold (global or local), and a `.project(...)` of one from a global
-index without `.hydrate()`, raise `ValueError`: DynamoDB refuses them.
+`exists()` need neither. Local indexes read the missing attributes from the table. A query filter
+on an attribute an index does not hold (global or local), a scan filter of such a global index,
+and a `.project(...)` of one from a global index without `.hydrate()`, raise `ValueError`:
+DynamoDB refuses them (or would never match).
 
 Reads are eventually consistent by default. `consistent=True` on `query`, `scan` and `count` (as
 on `get`) reflects every write that succeeded before the read, at twice the read cost: use it to
