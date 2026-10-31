@@ -382,7 +382,7 @@ def test_values_outside_instances_run_the_fields_schema() -> None:
     # the instance): one of mode="after" wraps the model, one of mode="before" its fields.
     assert schema.key_from(("t1",), {}) == {"tree_id": "T1"}
     assert schema.fields["address"].validate({"street": "Main"}) == Address(street="Main")
-    with pytest.raises(ValueError, match="Field required"):
+    with pytest.raises(ValueError, match=r"street: Field required"):  # where, for nested values
         schema.fields["address"].validate({"city": "Oslo"})
     parent = Tree(tree_id="p", label="x")
     assert schema.fields["parent"].validate(parent) is parent
@@ -398,3 +398,12 @@ def test_core_schemas_of_another_layout_leave_the_type_check(monkeypatch: pytest
 
     monkeypatch.setattr(Note, "__pydantic_core_schema__", {"type": "model"})  # no "schema"
     assert schema_of(Note).key_from(("n1",), {}) == {"note_id": "n1"}
+
+
+def test_pydantic_errors_of_values_outside_instances_say_where() -> None:
+    class Shelf(dynamoxy.PydanticModel, table="shelves"):
+        shelf_id: Annotated[str, dynamoxy.PartitionKey()]
+        sizes: list[Annotated[int, pydantic.Field(ge=0)]] = []  # noqa: RUF012 - a field: pydantic copies its default
+
+    with pytest.raises(ValueError, match=r"^1: Input should be greater than or equal to 0$"):
+        schema_of(Shelf).fields["sizes"].validate([1, -1])
