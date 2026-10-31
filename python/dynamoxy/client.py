@@ -98,7 +98,9 @@ class RetryPolicy:
             have been applied already: transactions (with their idempotency token) and writes
             that apply once even when sent twice are sent again; other writes, and answers that
             the earlier attempt may have caused (a failed condition, old values), raise
-            ``WriteOutcomeUnknownError``.
+            ``WriteOutcomeUnknownError``. When ``False``, nothing is sent again after a
+            timeout or a lost connection: writes raise ``WriteOutcomeUnknownError``, reads,
+            batch writes and table operations a retryable ``TransportError``.
     """
 
     max_attempts: int = 4
