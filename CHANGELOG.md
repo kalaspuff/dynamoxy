@@ -348,6 +348,20 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   table's requests unprocessed. A `TransactWriteItems` replayed with the same client request
   token reported no consumed capacity; it now reports what DynamoDB bills a replay, a
   transactional read of the items the first call wrote.
+- The in-memory DynamoDB accepted queries and writes that DynamoDB refuses. A key condition with
+  an empty string or binary value (`pk = :p` with `""`) returned nothing instead of raising
+  `ValidationError` ("The AttributeValue for a key attribute cannot contain an empty string
+  value. Key: pk"). A query's `ExclusiveStartKey` was checked only for the table key: an index
+  start key with a number for a string key, or with an extra attribute, restarted at the first
+  item, and start keys in another partition or outside the sort key condition were accepted;
+  they now fail with DynamoDB's messages ("The provided starting key is invalid", "... is
+  outside query boundaries based on provided conditions", "... does not match the range key
+  predicate", ...), as captured against DynamoDB by dynoxide-rs, and an index scan names the
+  index of a start key of the wrong type. Secondary index key values had no size limit (a
+  3,000-byte global index partition key was accepted): they now have the 2,048- and 1,024-byte
+  limits of table keys. `TransactWriteItems` counted only `Put` items towards its 4 MB limit, so
+  eleven updates that store 390 KB items each were accepted; updates now count with the item
+  they store.
 
 ### Security
 

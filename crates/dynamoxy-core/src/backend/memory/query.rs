@@ -12,8 +12,8 @@ use crate::expr::{
     Comparator, Condition, ExpressionInput, Path, Projector, SortKeyCondition, condition_paths, evaluate,
     key_condition, parse_request, sort_key_matches,
 };
-use crate::types::{ProjectionType, QueryInput, QueryOutput, ReturnConsumedCapacity, ScanInput, Select};
-use crate::value::Item;
+use crate::types::{ProjectionType, QueryInput, QueryOutput, ReturnConsumedCapacity, ScalarType, ScanInput, Select};
+use crate::value::{AttributeValue, Item};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
@@ -59,17 +59,58 @@ impl<'a> Target<'a> {
     }
 
     /// The position of an `ExclusiveStartKey` in iteration order.
-    fn start_position(&self, start: &Item) -> Result<(StoredKey, Option<StoredKey>)> {
-        let bad =
-            || invalid("The provided starting key is invalid: The provided key element does not match the schema");
-        let table_key = self.table.key.exact_key(&self.table.key.key_of(start)).map_err(|_| bad())?;
-        match self.index {
-            None => {
-                if start.len() != self.table.key.names().len() {
+    ///
+    /// The start key holds the table's key attributes and, for an index, the index's, and
+    /// nothing else, each of its type; DynamoDB answers anything else with "The provided starting
+    /// key is invalid" (an index key of another type in a `Scan` names the index). Table key
+    /// values may not be empty. Captured against DynamoDB by dynoxide-rs
+    /// (`tests/query_start_key_and_key_conditions.rs`).
+    fn start_position(&self, start: &Item, scan: bool) -> Result<(StoredKey, Option<StoredKey>)> {
+        let bad = || invalid("The provided starting key is invalid");
+        let mut names = self.table.key.names();
+        if let Some(index) = self.index {
+            for name in index.key.names() {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        if start.len() != names.len() || names.iter().any(|name| !start.contains_key(*name)) {
+            return Err(bad());
+        }
+        if let Some(index) = self.index {
+            for attribute in index.key.attributes() {
+                let value = &start[&attribute.name];
+                if value.value_type() != attribute.kind.value_type() {
+                    if scan {
+                        return Err(invalid(format!(
+                            "One or more parameter values were invalid: Type mismatch for Index Key {} Expected: {} \
+                             Actual: {} IndexName: {}",
+                            attribute.name,
+                            attribute.kind.as_str(),
+                            value.value_type().as_str(),
+                            index.name
+                        )));
+                    }
                     return Err(bad());
                 }
-                Ok((table_key, None))
             }
+        }
+        for attribute in self.table.key.attributes() {
+            let kind = match &start[&attribute.name] {
+                AttributeValue::S(text) if text.is_empty() && attribute.kind == ScalarType::S => "string",
+                AttributeValue::B(bytes) if bytes.is_empty() && attribute.kind == ScalarType::B => "binary",
+                _ => continue,
+            };
+            return Err(invalid(format!(
+                "One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain \
+                 an empty {kind} value. Key: {}",
+                attribute.name
+            )));
+        }
+        let table_key = self.table.key.exact_key(&self.table.key.key_of(start)).map_err(|_| bad())?;
+        match self.index {
+            None => Ok((table_key, None)),
             Some(index) => {
                 let index_key = index.entry_key(start).ok_or_else(bad)?;
                 Ok((index_key, Some(table_key)))
@@ -217,11 +258,20 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
     let table = state.table(&input.table_name)?;
     let target = Target::new(table, input.index_name.as_deref(), input.consistent_read)?;
     let key = target.key();
+    let start = match &input.exclusive_start_key {
+        Some(start) => Some((start, target.start_position(start, false)?)),
+        None => None,
+    };
     let condition = key_condition(
         parsed.key_condition.as_ref().ok_or_else(|| invalid("missing key condition"))?,
         (&key.partition.name, key.partition.kind.value_type()),
         key.sort.as_ref().map(|sort| (sort.name.as_str(), sort.kind.value_type())),
     )?;
+    check_key_condition_values(&condition)?;
+    if let Some((start, _)) = start {
+        check_start_within_condition(start, &condition, target.index.is_none() && key.sort.is_none())?;
+    }
+    let start = start.map(|(_, position)| position);
     if let Some(filter) = &parsed.filter {
         for path in condition_paths(filter) {
             if key.names().contains(&path.root()) {
@@ -242,10 +292,6 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
         sort_condition.is_none_or(|(name, sort_condition)| {
             item.get(name).is_some_and(|value| sort_key_matches(value, sort_condition))
         })
-    };
-    let start = match &input.exclusive_start_key {
-        Some(start) => Some(target.start_position(start)?),
-        None => None,
     };
     let request = PageRequest {
         filter: parsed.filter.as_ref(),
@@ -286,6 +332,55 @@ pub fn query(state: &State, input: &QueryInput) -> Result<QueryOutput> {
             if forward { page(&target, candidates, &request) } else { page(&target, candidates.rev(), &request) }
         }
     })
+}
+
+/// Refuses empty strings and binary values in a key condition: no key attribute can hold one.
+fn check_key_condition_values(condition: &crate::expr::KeyCondition) -> Result<()> {
+    let mut values = vec![(condition.partition_name.as_str(), &condition.partition_value)];
+    if let Some((name, sort)) = &condition.sort {
+        match sort {
+            SortKeyCondition::Compare(_, value) | SortKeyCondition::BeginsWith(value) => values.push((name, value)),
+            SortKeyCondition::Between(low, high) => values.extend([(name.as_str(), low), (name.as_str(), high)]),
+        }
+    }
+    for (name, value) in values {
+        let kind = match value {
+            AttributeValue::S(text) if text.is_empty() => "string",
+            AttributeValue::B(bytes) if bytes.is_empty() => "binary",
+            _ => continue,
+        };
+        return Err(invalid(format!(
+            "One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain an \
+             empty {kind} value. Key: {name}"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a start key that the key condition could not have returned, as DynamoDB does: one
+/// outside the sort key condition, then one of another partition ("at most one row" with a sort
+/// key condition; on a table without a sort key the start key is "invalid"). Captured against
+/// DynamoDB by dynoxide-rs (`check_start_key_within_condition` in `src/actions/query.rs`).
+fn check_start_within_condition(
+    start: &Item,
+    condition: &crate::expr::KeyCondition,
+    table_without_sort_key: bool,
+) -> Result<()> {
+    if let Some((name, sort)) = &condition.sort
+        && start.get(name).is_some_and(|value| !sort_key_matches(value, sort))
+    {
+        return Err(invalid("The provided starting key does not match the range key predicate"));
+    }
+    if start.get(&condition.partition_name) != Some(&condition.partition_value) {
+        return Err(invalid(if condition.sort.is_some() {
+            "The query can return at most one row and cannot be restarted"
+        } else if table_without_sort_key {
+            "The provided exclusive start key is invalid"
+        } else {
+            "The provided starting key is outside query boundaries based on provided conditions"
+        }));
+    }
+    Ok(())
 }
 
 /// The bounds of a range of keys, narrowed step by step (an empty range has no bounds).
@@ -454,7 +549,7 @@ pub fn scan(state: &State, input: &ScanInput) -> Result<QueryOutput> {
         _ => true,
     };
     let start = match &input.exclusive_start_key {
-        Some(start) => Some(target.start_position(start)?),
+        Some(start) => Some(target.start_position(start, true)?),
         None => None,
     };
     let request = PageRequest {
