@@ -165,6 +165,7 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
         await users.create(User(user_id="u1", email="bob@example.com", name="Bob"))
         await entries.batch_put(ledger("a1", 100))
         keys = itertools.count()
+        many_keys = [{"user_id": f"missing{index}"} for index in range(10_000)]
 
         async def save() -> object:
             loaded.visits += 1
@@ -184,6 +185,7 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
             MEMORY_QUERY: lambda: entries.query(account_id="a1").all(),
             "table.query, 100 items -> dicts": lambda: client.table("entries").query(F("account_id") == "a1").all(),
             "transaction of two writes": transaction,
+            "batch_get(), 10,000 missing keys": lambda: client.table("users").batch_get(many_keys),
         }
         counts = {name: await calls_in(seconds, call) for name, call in cases.items()}
         means: dict[str, list[float]] = {name: [] for name in cases}
