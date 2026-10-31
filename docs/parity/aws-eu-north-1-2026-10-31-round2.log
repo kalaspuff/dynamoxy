@@ -1,0 +1,270 @@
+# dynamoxy DynamoDB probes, round 2, 2026-10-31T15:59:02Z, region eu-north-1, aws-cli/2.37.6 Python/3.14.6 Darwin/27.0.0 script-exe/arm64
+tables: dynamoxy-probe-76a30b-*
+### setup: create dynamoxy-probe-76a30b-idx
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "gk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-76a30b-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T16:59:03.216000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-idx", "TableId": "32a07223-4c9d-4256-b6cc-160f2e0d5fac", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "CREATING", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-idx/index/gsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-76a30b-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-76a30b-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T16:59:03.746000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-lsi", "TableId": "a1994b37-db81-4e55-953e-9b15d7c778d9", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-lsi/index/lsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-76a30b-keys
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-76a30b-keys", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T16:59:04.271000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-keys", "TableId": "c133780e-bf0d-479f-b6d1-86e612aa6334", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-keys/index/lsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-76a30b-big
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-76a30b-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T16:59:04.800000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-big", "TableId": "6ae84640-0ca0-4d5c-9d49-55f07d7a78f8", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-76a30b-big-with-a-longer-name
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-76a30b-big-with-a-longer-name", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T16:59:05.309000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-76a30b-big-with-a-longer-name", "TableId": "b2b48254-a478-40f1-83a2-121bff750563", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+tables active
+## 106: more reads of attributes an index does not project
+### setup: item
+exit: 0
+
+### 106-lsi-scan-all-filter: Scan KEYS_ONLY local index, Select=ALL_ATTRIBUTES, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"secret": {"S": "s"}, "lsk": {"S": "x"}, "note": {"S": "o"}, "gk": {"S": "g"}, "pk": {"S": "a"}, "m": {"M": {"x": {"S": "s"}}}, "sk": {"S": "1"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-projection-filter: Scan KEYS_ONLY local index, projection and filter of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-nested: Query local index, filter on a nested path of an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [m]
+
+### 106-lsi-filter-size: Query local index, size() of an attribute it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]
+
+### 106-lsi-filter-two: Query local index, filter on two attributes it does not project (secret, then note)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret, note]
+
+### 106-lsi-filter-two-reversed: same, note first
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [note, secret]
+
+### 106-lsi-filter-mixed: Query local index, filter on a projected and an unprojected attribute
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [gk, secret]
+
+### 106-gsi-projection-several: Query global index, projection of several attributes it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Query operation: One or more parameter values were invalid: Global secondary index gsi does not project [note, m, secret]
+
+### 106-gsi-scan-projection-filter: Scan global index, filter and projection of attributes it does not project
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the Scan operation: One or more parameter values were invalid: Global secondary index gsi does not project [secret]
+
+## 93: the 400 KB limit with local index entries, at the byte
+### 93-all-204690: PutItem of a 204690-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204700: PutItem of a 204700-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204740: PutItem of a 204740-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204750: PutItem of a 204750-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204751: PutItem of a 204751-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204760: PutItem of a 204760-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204790: PutItem of a 204790-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204800: PutItem of a 204800-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204801: PutItem of a 204801-byte item that an ALL local index holds
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-all-204850: PutItem of a 204850-byte item that an ALL local index holds
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-keys-409480: PutItem of a 409480-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409488: PutItem of a 409488-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409489: PutItem of a 409489-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409500: PutItem of a 409500-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409580: PutItem of a 409580-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409588: PutItem of a 409588-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-keys-409589: PutItem of a 409589-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-keys-409600: PutItem of a 409600-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### 93-plain-409600: control: PutItem of a 409600-byte item, table without indexes
+exit: 0
+
+### 93-plain-409601: control: PutItem of a 409601-byte item, table without indexes
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+## 93: what TransactWriteItems counts as its payload
+### 93-tx-base: TransactWriteItems, variant base
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393455"}'
+
+### 93-tx-expression: TransactWriteItems, variant expression
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393719"}'
+
+### 93-tx-long-table: TransactWriteItems, variant long-table
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393455"}'
+
+### 93-tx-long-key: TransactWriteItems, variant long-key
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393488"}'
+
+### 93-tx-condition: TransactWriteItems, variant condition
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4394258"}'
+
+### 93-tx-names: TransactWriteItems, variant names
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393455"}'
+
+### 93-tx-puts: TransactWriteItems, variant puts
+exit: 254
+body: b'{"__type":"com.amazon.coral.validate#ValidationException","message":"Transaction payload size cannot exceed 4MB. Payload Size: 4393125"}'
+
+### 93-tx-decimal: TransactWriteItems, variant decimal
+exit: 0
+body: b'{}'
+
+## 93: what TransactGetItems counts towards 4 MB
+### setup: binary item 0
+exit: 0
+
+### setup: string item 0
+exit: 0
+
+### setup: binary item 1
+exit: 0
+
+### setup: string item 1
+exit: 0
+
+### setup: binary item 2
+exit: 0
+
+### setup: string item 2
+exit: 0
+
+### setup: binary item 3
+exit: 0
+
+### setup: string item 3
+exit: 0
+
+### setup: binary item 4
+exit: 0
+
+### setup: string item 4
+exit: 0
+
+### setup: binary item 5
+exit: 0
+
+### setup: string item 5
+exit: 0
+
+### setup: binary item 6
+exit: 0
+
+### setup: string item 6
+exit: 0
+
+### setup: binary item 7
+exit: 0
+
+### setup: string item 7
+exit: 0
+
+### setup: binary item 8
+exit: 0
+
+### setup: string item 8
+exit: 0
+
+### setup: binary item 9
+exit: 0
+
+### setup: string item 9
+exit: 0
+
+### setup: binary item 10
+exit: 0
+
+### setup: string item 10
+exit: 0
+
+### 93-get-binary: TransactGetItems of eleven 300 KB binary items (3.3 MB of items, 4.4 MB of base64)
+exit: 0
+out: 11
+body: b'{"Responses":[{"Item":{"sk":{"S":"00"},"pk":{"S":"bin"},"blobby":{"B":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJ
+
+### 93-get-decimal: TransactGetItems of eleven 363,700-byte string items (4,000,900 bytes, under 4 MiB)
+exit: 0
+out: 11
+body: b'{"Responses":[{"Item":{"sk":{"S":"00"},"filler":{"S":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+
+## 97: long names elsewhere
+### 97-map-key-65536: an item with a map key of 65536 bytes
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: Attribute name is too large, must be less than 65536 bytes
+
+### 97-update-name-65535: UpdateItem SET of an attribute name of 65535 bytes, through a placeholder
+exit: 0
+
+### 97-update-name-65536: UpdateItem SET of an attribute name of 65536 bytes, through a placeholder
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the UpdateItem operation: 1 validation error detected: Attribute name is too large, must be less than 65536 bytes for key #n
+
+### 97-write-long-placeholder: PutItem with a 256-byte #name placeholder in its condition
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: ExpressionAttributeNames contains invalid key: The expression attribute map contains a key that is too long; size of key: 256
+
+### 97-write-dash-placeholder: PutItem with a #a-b placeholder in its condition
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: ExpressionAttributeNames contains invalid key: Syntax error; key: "#a-b"
+
+### 97-write-attribute-type-path: PutItem with attribute_type(a, b) in its condition
+exit: 254
+err: aws: [ERROR]: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}
+
+## cleanup
+deleted dynamoxy-probe-76a30b-idx
+deleted dynamoxy-probe-76a30b-lsi
+deleted dynamoxy-probe-76a30b-keys
+deleted dynamoxy-probe-76a30b-big
+deleted dynamoxy-probe-76a30b-big-with-a-longer-name

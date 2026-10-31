@@ -1198,8 +1198,13 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
         by_kind.filter(Event.expires_at.exists())
     assert len(await by_kind.filter(Event.payload["a"] == 1).all()) == 1
+    # A scan of a local index reads the items from the table (Select=ALL_ATTRIBUTES), and its
+    # filter sees them; one that projects only what the index holds would never match.
+    scanned = events.scan(index="by_kind_local").filter(Event.expires_at.exists())
+    if backend == "memory":  # MiniStack never reads the table for local indexes
+        assert [event.seq for event in await scanned.all()] == [1]
     with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
-        events.scan(index="by_kind_local").filter(Event.expires_at.exists())
+        await scanned.project("kind").all()
 
 
 async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client: dynamoxy.Client) -> None:

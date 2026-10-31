@@ -489,10 +489,8 @@ async fn index_reads_refuse_or_never_match_attributes_the_index_does_not_hold() 
     // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): a query filter on
     // attributes the index does not hold is refused, for local indexes too and whatever the query
     // returns, naming each place the filter reads one; a projection of a global index naming them
-    // is refused in queries and scans. A scan's filter sees the index entries, so it matches
-    // nothing on them; that it does so when the scan fetches the items from the table too (the
-    // last two scans) is assumed from DynamoDB's PartiQL SELECT, until round 2 of the probes
-    // measures it.
+    // is refused in queries and scans. A scan's filter sees what the scan returns: the index
+    // entries, where it matches nothing on them, or the items it fetches from the table.
     let backend = backend_with_table().await;
     seed_query_data(&backend).await;
     let local = QueryInput {
@@ -541,6 +539,16 @@ async fn index_reads_refuse_or_never_match_attributes_the_index_does_not_hold() 
         message(&error),
         "One or more parameter values were invalid: Global secondary index by_status does not project [secret, rank]"
     );
+    // Top-level names, in the order of the expression; held ones left out (round 2).
+    let error = backend
+        .query(QueryInput {
+            index_name: Some("by_rank".into()),
+            filter_expression: Some("size(secret) > :n AND m.x = :n AND sk = :n".into()),
+            ..query("pk = :p", values(&[(":p", s("p")), (":n", n(0))]))
+        })
+        .await
+        .unwrap_err();
+    assert!(message(&error).ends_with("does not project one or more filter attributes: [secret, m]"), "{error}");
     let scan = |index: &str, filter: Option<&str>, projection: Option<&str>, select: Option<Select>| ScanInput {
         table_name: "items".into(),
         index_name: Some(index.into()),
@@ -559,14 +567,14 @@ async fn index_reads_refuse_or_never_match_attributes_the_index_does_not_hold() 
         message(&error),
         "One or more parameter values were invalid: Global secondary index by_status does not project [secret]"
     );
-    for (index, projection, select) in [
-        ("by_status", None, None),
-        ("by_rank", None, None),
-        ("by_rank", None, Some(Select::AllAttributes)),
-        ("by_rank", Some("pk, secret"), None),
+    for (index, projection, select, matched) in [
+        ("by_status", None, None, 0),
+        ("by_rank", None, None, 0),
+        ("by_rank", None, Some(Select::AllAttributes), 10),
+        ("by_rank", Some("pk, secret"), None, 10),
     ] {
         let scanned = backend.scan(scan(index, Some("secret = :s"), projection, select)).await.unwrap();
-        assert_eq!((scanned.count, scanned.scanned_count), (0, 10), "{index} {projection:?} {select:?}");
+        assert_eq!((scanned.count, scanned.scanned_count), (matched, 10), "{index} {projection:?} {select:?}");
     }
     let fetched = backend.scan(scan("by_rank", None, Some("pk, secret"), None)).await.unwrap();
     assert!(fetched.items.iter().all(|item| item.contains_key("secret")), "a local index fetches its projection");
@@ -2642,6 +2650,19 @@ async fn placeholders_names_and_operands_are_refused_like_dynamodb() {
     );
     let error = backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_536))]))).await.unwrap_err();
     assert_eq!(message(&error), "Attribute name is too large, must be less than 65536 bytes for key #n");
+    let map = AttributeValue::M(item([(&"n".repeat(65_536), s("v"))]));
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: item([("pk", s("names")), ("sk", n(1)), ("m", map)]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes"
+    );
     backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_535))]))).await.unwrap();
 
     // attribute_type with a path as the type.
