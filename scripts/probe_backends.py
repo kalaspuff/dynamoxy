@@ -511,7 +511,8 @@ async def tables(probe: Probe) -> None:
         table.add_index(IndexDefinition("by_a", "global", ("a", "S")), billing=dynamoxy.Billing(), wait=False),
     )
     await table.wait_until_active()
-    await table.add_index(IndexDefinition("by_a", "global", ("a", "S")), wait=False)
+    # Another name: emulators take the first index while the table is being created.
+    await table.add_index(IndexDefinition("by_c", "global", ("c", "S")), wait=False)
     await probe.fact(
         "second_index_while_creating",
         table.add_index(IndexDefinition("by_b", "global", ("b", "S")), billing=dynamoxy.Billing(), wait=False),
@@ -687,11 +688,21 @@ def make_client(target: str, prefix: str, args: argparse.Namespace) -> dynamoxy.
 
 
 async def delete_tables(client: dynamoxy.Client, prefix: str) -> list[str]:
+    """Deletes the tables named with ``prefix``, waiting for each to be active first.
+
+    A table that cannot be deleted is reported on stderr and left: ``cleanup`` deletes it later.
+    """
     deleted = []
     for name in await client.list_tables():
-        if name.startswith(prefix):
-            table = client.table(name.removeprefix(client.table_prefix))
+        if not name.startswith(prefix):
+            continue
+        table = client.table(name.removeprefix(client.table_prefix))
+        try:
+            await table.wait_until_active(timeout=900)
             await table.delete_table(missing_ok=True)
+        except dynamoxy.DynamoxyError as error:
+            print(f"could not delete {name} ({error}): run cleanup later", file=sys.stderr)
+        else:
             deleted.append(name)
     return deleted
 
@@ -711,8 +722,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             except Exception as error:  # noqa: BLE001 - a scenario that breaks is a fact too
                 probe.facts[scenario]["scenario_failed"] = probe.error(error)
     finally:
-        await delete_tables(client, prefix)
-        await client.close()
+        try:
+            await delete_tables(client, prefix)
+        finally:
+            await client.close()
     return {"target": args.target, "dynamoxy": dynamoxy.__version__, "facts": probe.facts}
 
 

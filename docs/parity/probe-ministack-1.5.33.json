@@ -248,13 +248,32 @@
       "ttl_after_created_again": "DISABLED"
     },
     "tables": {
+      "index_capacity_on_demand": [
+        0,
+        0
+      ],
+      "index_capacity_on_on_demand": {
+        "ok": true
+      },
       "index_while_creating": {
         "ok": true
       },
-      "scenario_failed": {
+      "index_without_capacity_on_provisioned": {
+        "ok": true
+      },
+      "on_demand_again": {
+        "ok": true
+      },
+      "provisioned": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Attempting to create a duplicate index: by_a"
+        "message": "The provisioned throughput for the table will not change. The requested value equals the current value."
+      },
+      "provisioned_without_index_capacity": {
+        "ok": true
+      },
+      "second_index_while_creating": {
+        "ok": true
       },
       "ttl_while_creating": {
         "ok": true

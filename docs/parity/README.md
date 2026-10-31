@@ -47,8 +47,8 @@ A run on AWS takes about 15 minutes and costs cents; its tables are named `dynam
 deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs of the
 in-memory backend, MiniStack and LocalStack are kept here
 ([memory](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json),
-[LocalStack](probe-localstack-2026.3.0.json)). The in-memory backend and LocalStack differ in 44
-facts, each one of LocalStack's differences listed below; besides what the CLI probes asked, the
+[LocalStack](probe-localstack-2026.3.0.json)). The in-memory backend differs from LocalStack in
+40 facts and from MiniStack in 44, each one an emulator difference listed below; besides what the CLI probes asked, the
 library probe asks how conditions, deletes and condition checks count toward a transaction's
 payload, and whether a query filter that also names an attribute the index holds lists it.
 
