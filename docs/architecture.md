@@ -73,7 +73,11 @@ plain repository per model, on first use, and returns it afterwards.
    condition: key existence for `create`, version for `save`, the caller's condition) or, for
    models with unique attributes, a transaction with guard puts and deletes
    (`constraints.py`). Unique writes of instances that were not loaded first read the stored
-   item (one consistent `GetItem`) to learn the old values.
+   item (one consistent `GetItem`) to learn the old values. A write outside a transaction whose
+   plan a failed condition shows to be outdated (guards of the values an instance was loaded
+   with, and no version or condition of its own; or a read that found no item, and one is
+   stored now) reads the item and is planned once more (`_WritePlan.outdated`); upserts are
+   not, and their error, like a transaction's, says to `refresh()` the instance.
 3. **Python, `expressions.py`**: render conditions and update actions to expression strings
    with `#aN`/`:vN` placeholders. No user value ever appears in an expression string.
 4. **Python, `client.call`**: middleware chain (skipped when there is none) → OpenTelemetry span

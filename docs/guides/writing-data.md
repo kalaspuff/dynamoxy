@@ -225,6 +225,11 @@ replaces the item, as before.
 transaction. Deleting a loaded versioned instance checks its version. A deleted instance is no
 longer loaded but stays bound to its repository.
 
+As in DynamoDB, a `condition=` also applies when nothing is stored:
+`await users.delete("u1", condition=User.visits == 0)` raises `ConditionalCheckFailedError` when
+there is no item `u1` (and cancels a transaction that has it), while `User.visits.not_exists()`
+holds for a missing item.
+
 ## Time to Live
 
 Set a `ttl(default=None)` field to a `datetime`; DynamoDB deletes expired items within a few

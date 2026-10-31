@@ -149,6 +149,7 @@ class _WritePlan:
         old: dict[str, Any] | None = None,
         prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
         stale: bool = False,
+        absent: bool = False,
         write_id: str | None = None,
         loaded: bool = False,
     ) -> None:
@@ -165,19 +166,33 @@ class _WritePlan:
         # The guard conditions use the unique values the instance was loaded with: a failure may
         # only mean that another writer changed them since (no version, no caller's condition).
         self.stale = stale
+        # The read found no item, and the write requires that there still is none: a failure that
+        # returns an item means that another writer stored one since.
+        self.absent = absent
         # The id this write stores in the item (None: the model stores none, or a delete).
         self.write_id = write_id
         # Whether the instance was loaded (a save of one without a version expects no version).
         self.loaded = loaded
 
+    def outdated(self, item: dict[str, Any] | None) -> bool:
+        """Whether a failed condition of the item, which returned ``item``, means the plan is outdated.
+
+        The stored item is then no longer the one the plan was made from, and a plan made from
+        the item as stored now is the write that was asked for.
+        """
+        return self.stale or (self.absent and item is not None)
+
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
 
         Returns the item attributes the single operation returned (``ALL_NEW`` for updates,
-        ``ALL_OLD`` for deletes), or ``None`` for transactions.
+        ``ALL_OLD`` for deletes), or ``None`` for transactions and plans without operations.
         """
         repository = self.repository
         client = repository.client
+        if not self.plan.operations:  # nothing to write: a delete of an item that is not stored
+            await self.finalize(None)
+            return None
         if len(self.plan.operations) == 1:
             operation = dict(self.plan.operations[0])
             kind = operation.pop("kind")
@@ -841,7 +856,7 @@ class Repository[M]:
         try:
             await write.execute()
         except ConditionalCheckFailedError as error:
-            if not write.stale or type(error) is not ConditionalCheckFailedError:
+            if type(error) is not ConditionalCheckFailedError or not write.outdated(error.item):
                 raise
             # Another writer changed the unique values since the instance was loaded: plan the
             # guards again from the item as stored now (the write itself is unchanged).
@@ -887,15 +902,19 @@ class Repository[M]:
         upsert: bool,
         *,
         standalone: bool = False,
+        fresh: bool = False,
     ) -> _WritePlan:
-        """Plans an update; a ``standalone`` one (not part of a transaction) stores a write id."""
+        """Plans an update; a ``standalone`` one (not part of a transaction) stores a write id.
+
+        A ``fresh`` plan is made again, from the item as stored now (its hooks ran already).
+        """
         schema = self.schema
         instance = target if isinstance(target, self.model_class) else None
         actions_list = list(actions)
         if not actions_list:
             raise ValueError("update() needs at least one action, e.g. User.visits.add(1)")
         hooks = self.client.hooks
-        if instance is not None and hooks.has("before_update", type(instance)):
+        if not fresh and instance is not None and hooks.has("before_update", type(instance)):
             await hooks.run("before_update", instance, self._context("update"))
         key = self._target_key(target)
         state = schema.state(instance) if instance is not None else None
@@ -975,7 +994,8 @@ class Repository[M]:
             provided = self._field_values_of(target) if instance is None else {}
             completion_actions, completion = self._upsert_completion(instance, touched, provided)
             actions_list.extend(completion_actions)
-        stored_old = state.stored if state is not None and state.loaded else None
+        loaded = state.stored if state is not None and state.loaded and not fresh else None
+        stored_old = loaded
         unique_touched = [spec for spec in schema.unique_fields if spec.name in touched] if schema.unique_fields else []
         for spec in unique_touched:
             if spec.name not in literals:
@@ -1051,6 +1071,8 @@ class Repository[M]:
         user_condition = as_condition(condition)
         if user_condition is not None:
             parts.append(user_condition)
+        # Guards of the values the instance was loaded with, and no version or caller's condition.
+        stale = bool(unique_touched) and loaded is not None and expected is None and user_condition is None
         write_id = new_write_id() if standalone and schema.write_ids else None
         if write_id is not None:
             actions_list.append(F(WRITE_ID_ATTRIBUTE).set(write_id))
@@ -1085,7 +1107,16 @@ class Repository[M]:
                 await hooks.run("after_update", instance, self._context("update"))
 
         return _WritePlan(
-            self, plan, "update", key, expected, finalize, upsert=upsert, instance=instance, write_id=write_id
+            self,
+            plan,
+            "update",
+            key,
+            expected,
+            finalize,
+            upsert=upsert,
+            instance=instance,
+            stale=stale,
+            write_id=write_id,
         )
 
     def _field_values_of(self, target: Any) -> dict[str, Any]:
@@ -1224,7 +1255,18 @@ class Repository[M]:
                 loaded and its key changed since.
         """
         write = await self._plan_update(target, actions, condition, upsert, standalone=True)
-        attributes = await write.execute()
+        try:
+            attributes = await write.execute()
+        except ConditionalCheckFailedError as error:
+            # Not upserts, whose error says to refresh the instance: planned again after another
+            # writer deleted the item, one would create it without the unique values that the
+            # instance had and the actions do not set.
+            if type(error) is not ConditionalCheckFailedError or upsert or not write.outdated(error.item):
+                raise
+            # Another writer changed the unique values since the instance was loaded: plan the
+            # update again from the item as stored now.
+            write = await self._plan_update(target, actions, condition, upsert, standalone=True, fresh=True)
+            attributes = await write.execute()
         if attributes is None:  # executed as a transaction (unique attributes): read the result
             attributes = await self._get_raw(write.key)
             if attributes is None:
@@ -1236,12 +1278,20 @@ class Repository[M]:
             return target
         return self._load_written(attributes, "update")
 
-    async def _plan_delete(self, target: Any, condition: Condition | bool | None) -> _WritePlan | None:
+    async def _plan_delete(self, target: Any, condition: Condition | bool | None, *, fresh: bool = False) -> _WritePlan:
+        """Plans a delete; a ``fresh`` plan is made again, from the item as stored now (its hooks ran already).
+
+        Models with unique attributes delete the guards of the stored item: the item the instance
+        was loaded with, or the one a read finds. When none is stored, the plan has no operations,
+        unless a condition applies (the caller's, or the version): then it deletes the key on
+        condition that still no item is stored, so the condition holds or fails for the missing
+        item as it does for other models.
+        """
         schema = self.schema
         instance = target if isinstance(target, self.model_class) else None
         key = self._target_key(target)
         hooks = self.client.hooks
-        if instance is not None and hooks.has("before_delete", type(instance)):
+        if not fresh and instance is not None and hooks.has("before_delete", type(instance)):
             await hooks.run("before_delete", instance, self._context("delete"))
         parts: list[Condition] = []
         expected: Any = None
@@ -1253,25 +1303,33 @@ class Repository[M]:
         if user_condition is not None:
             parts.append(user_condition)
         old: dict[str, Any] | None = None
+        stale = absent = False
         if schema.unique_fields:
-            state = schema.state(instance) if instance is not None else None
-            old = state.stored if state is not None and state.loaded else await self._get_raw(key)
-            if old is None:
-                return None
-            parts.extend(self._guard_conditions(old, schema.unique_fields))
+            loaded = self._stored(instance) if instance is not None and not fresh else None
+            old = loaded if loaded is not None else await self._get_raw(key)
+            stale = loaded is not None and not parts  # guards of the values as loaded, and nothing else
+
+            if old is not None:
+                parts.extend(self._guard_conditions(old, schema.unique_fields))
+            elif parts:
+                # An item stored after the read has guards that this plan does not delete.
+                assert schema.partition_key is not None
+                parts.append(schema._path(schema.partition_key.attribute).not_exists())
+                absent = True
         plan = _Plan()
-        builder = ExpressionBuilder()
-        plan.add(
-            {
-                "kind": "delete",
-                "table_name": self.table_name,
-                "key": key,
-                "condition_expression": builder.condition(and_(*parts)) if parts else None,
-                "return_values_on_condition_check_failure": "ALL_OLD",
-                **builder.arguments(),
-            },
-            ("item", "delete"),
-        )
+        if old is not None or absent or not schema.unique_fields:  # else nothing is stored, nor checked
+            builder = ExpressionBuilder()
+            plan.add(
+                {
+                    "kind": "delete",
+                    "table_name": self.table_name,
+                    "key": key,
+                    "condition_expression": builder.condition(and_(*parts)) if parts else None,
+                    "return_values_on_condition_check_failure": "ALL_OLD",
+                    **builder.arguments(),
+                },
+                ("item", "delete"),
+            )
         if old is not None:
             self._plan_guards(plan, old, None, key, schema.unique_fields)
 
@@ -1284,7 +1342,7 @@ class Repository[M]:
                 if hooks.has("after_delete", type(instance)):
                     await hooks.run("after_delete", instance, self._context("delete"))
 
-        return _WritePlan(self, plan, "delete", key, expected, finalize, old=old)
+        return _WritePlan(self, plan, "delete", key, expected, finalize, old=old, stale=stale, absent=absent)
 
     async def delete(
         self, target: M | Mapping[str, Any] | Any, /, *, condition: Condition | bool | None = None
@@ -1292,7 +1350,9 @@ class Repository[M]:
         """Deletes an item and returns it (``None`` when nothing was stored under the key).
 
         ``target`` is an instance (its version is checked for versioned models), a stored key,
-        a partition value or a ``(partition, sort)`` tuple.
+        a partition value or a ``(partition, sort)`` tuple. As in DynamoDB, ``condition`` also
+        applies when nothing is stored: ``User.name == "Ada"`` fails then, and
+        ``User.name.not_exists()`` holds.
 
         Raises:
             VersionConflictError: The instance's version is stale.
@@ -1300,10 +1360,16 @@ class Repository[M]:
             ValueError: The instance was loaded and its key changed since.
         """
         write = await self._plan_delete(target, condition)
-        if write is None:
-            return None
-        deleted = await write.execute()
-        if deleted is None:
+        try:
+            deleted = await write.execute()
+        except ConditionalCheckFailedError as error:
+            if type(error) is not ConditionalCheckFailedError or not write.outdated(error.item):
+                raise
+            # Another writer changed or deleted the item since the instance was loaded (or stored
+            # one since the read found none): plan the delete again from the item as stored now.
+            write = await self._plan_delete(target, condition, fresh=True)
+            deleted = await write.execute()
+        if deleted is None and len(write.plan.operations) > 1:  # transactions return no item
             deleted = write.old
         return self._load_written(deleted, "delete") if deleted is not None else None
 
@@ -1376,6 +1442,8 @@ class Repository[M]:
             message += (
                 " (the unique values stored may have changed since the instance was loaded: refresh() it and retry)"
             )
+        elif write.absent and item is not None:
+            message += " (another writer stored the item after it was read: retry)"
         failed = ConditionalCheckFailedError(message)
         failed.item = item
         for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
