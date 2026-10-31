@@ -2615,6 +2615,59 @@ async fn placeholders_names_and_operands_are_refused_like_dynamodb() {
     }
     let error = backend.get_item(get("status", Names::new())).await.unwrap_err();
     assert!(message(&error).starts_with("Invalid ProjectionExpression: "), "{error}");
+    // Placeholder errors and update path checks are in the envelope too (dynoxide-rs: every
+    // parse-time error of a single-item write), in each of the three writes.
+    let update = |expression: &str, names: Names, vals: Values| UpdateItemInput {
+        table_name: "items".into(),
+        key: key(),
+        update_expression: Some(expression.into()),
+        expression_attribute_names: names,
+        expression_attribute_values: vals,
+        ..Default::default()
+    };
+    for (input, expected) in [
+        (update("SET a = :v, a = :v", Names::new(), values(&[(":v", n(1))])), "Two document paths conflict"),
+        (update("SET a = :v, a.b = :v", Names::new(), values(&[(":v", n(1))])), "Two document paths overlap"),
+        (update("ADD a :v", Names::new(), values(&[(":v", s("x"))])), "Incorrect operand type"),
+        (update("SET a = :v", names(&[("#a-b", "x")]), values(&[(":v", n(1))])), "Syntax error; key: \"#a-b\""),
+        (update("SET a = :v", names(&[("#u", "x")]), values(&[(":v", n(1))])), "unused in expressions"),
+        (
+            update("SET a = :w", Names::new(), values(&[(":v", n(1))])),
+            "attribute value used in expression is not defined",
+        ),
+    ] {
+        let error = backend.update_item(input).await.unwrap_err();
+        assert!(message(&error).starts_with("1 validation error detected: "), "{error}");
+        assert!(message(&error).contains(expected), "{error}");
+    }
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: key(),
+            condition_expression: Some("attribute_not_exists(pk)".into()),
+            expression_attribute_values: values(&[(":unused", n(1))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        message(&error).starts_with("1 validation error detected: Value provided in ExpressionAttributeValues unused"),
+        "{error}"
+    );
+    let error = backend
+        .delete_item(DeleteItemInput {
+            table_name: "items".into(),
+            key: key(),
+            condition_expression: Some("attribute_exists(#n)".into()),
+            expression_attribute_names: names(&[("#n", &"n".repeat(65_536))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes for key #n"
+    );
     let error = backend
         .update_item(UpdateItemInput {
             table_name: "items".into(),
