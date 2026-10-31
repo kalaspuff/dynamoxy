@@ -26,6 +26,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- `ensure_tables()` accepted an existing index whose projection holds less than the models
+  declare (`KEYS_ONLY` or `INCLUDE` where they expect `ALL`, or an `INCLUDE` without an attribute
+  they include), so every model read through it later failed with an `ItemDecodeError` naming a
+  missing attribute. It now raises `TypeError` naming the index and both projections, before it
+  changes anything; an index that projects more than the models declare is still accepted.
 
 ## [0.4.0] - 2026-10-31
 

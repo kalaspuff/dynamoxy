@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from dynamoxy.client import Client
     from dynamoxy.expressions import Path
+    from dynamoxy.results import IndexDescription
 
 __all__ = ["Billing", "IndexDefinition", "Table", "TableDefinition", "definitions_for"]
 
@@ -218,6 +219,32 @@ def definitions_for(models: Iterable[type]) -> list[TableDefinition]:
             )
         )
     return definitions
+
+
+def _projection_gap(
+    existing: IndexDescription, index: IndexDefinition, table_keys: tuple[str | None, ...]
+) -> str | None:
+    """What ``existing`` lacks of ``index``'s projection (``None`` when it holds all of it).
+
+    Keys of the table and of the index are in every projection, so they are never lacking.
+    """
+    wanted = index.projection
+    if existing.projection == "ALL" or wanted.type == "KEYS_ONLY":
+        return None
+    if wanted.type == "ALL":
+        if existing.projection == "KEYS_ONLY":
+            return "every attribute but the keys"
+        return "every attribute it does not include"
+    keys = {name for name in table_keys if name is not None}
+    keys |= {key[0] for key in (index.partition_key, index.sort_key) if key is not None}
+    held = set(existing.projected_attributes) if existing.projection == "INCLUDE" else set()
+    missing = [name for name in wanted.attributes if name not in keys and name not in held]
+    return ", ".join(repr(name) for name in missing) if missing else None
+
+
+def _describe_projection(kind: str, attributes: Iterable[str]) -> str:
+    names = list(attributes)
+    return f"{kind} ({', '.join(names)})" if kind == "INCLUDE" and names else kind
 
 
 def _describe_key(key: Sequence[tuple[str, str] | None]) -> str:
@@ -578,7 +605,9 @@ class Table:
 
         Raises:
             TypeError: The table's keys, the key of one of its indexes or its TTL attribute differ
-                from the definition (none of them can be changed in place).
+                from the definition, or an index holds fewer attributes than the definition
+                projects (none of them can be changed in place). An index that holds more is
+                accepted. Nothing is changed when it raises.
         """
         description = await self.describe()
         types = description.attribute_types
@@ -611,6 +640,20 @@ class Table:
                         f"{_describe_key(found[1:])}, the models expect a {wanted[0]} index with "
                         f"{_describe_key(wanted[1:])}; an index's key cannot change: give the new index another "
                         "name (and delete the old one with delete_index())"
+                    )
+                lacking = _projection_gap(existing, index, (description.partition_key, description.sort_key))
+                if lacking is not None:
+                    remedy = (
+                        "give the new index another name (and delete the old one with delete_index())"
+                        if index.kind == "global"
+                        else "local indexes can only be created with the table (create a new table and migrate)"
+                    )
+                    raise TypeError(
+                        f"table {self.physical_name} has the {index.kind} index {index.name!r} with the projection "
+                        f"{_describe_projection(existing.projection, existing.projected_attributes)}, the models "
+                        f"expect {_describe_projection(index.projection.type, index.projection.attributes)}: "
+                        f"the index lacks {lacking}, so reads through it cannot decode the models; an index's "
+                        f"projection cannot change: {remedy}"
                     )
                 continue
             if index.kind == "local":

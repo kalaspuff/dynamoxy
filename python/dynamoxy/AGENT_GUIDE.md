@@ -697,8 +697,9 @@ await table.restore_to("events-yesterday", at=some_datetime)
 ```
 
 `ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key, the key
-of an index with the same name or the TTL attribute differs from the models (create a new table
-or index and migrate). Local indexes can only be created with the table. In production, prefer
+of an index with the same name or the TTL attribute differs from the models, or when an index
+projects less than the models declare (`KEYS_ONLY`/`INCLUDE` where they expect `ALL`), before it
+changes anything (create a new table or index and migrate). An index that projects more is fine. Local indexes can only be created with the table. In production, prefer
 infrastructure as code for tables and call `ensure_tables()` only in development and tests.
 
 `Client(table_prefix="dev-")` separates environments sharing an account (`users` →
