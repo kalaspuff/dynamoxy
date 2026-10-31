@@ -48,11 +48,13 @@ formatted in UTC, so an item read back renders the same key. Templated fields:
 - are never passed to the constructor and are recomputed on every write;
 - are recomputed by `update()` when a field they use changes, including `updated_at` and
   `version` (dynamoxy reads the item first if the update does not set every field the template
-  needs). Changes by arithmetic or functions
-  (`add`, `increment`, `set(path + 1)`, `set_if_not_exists`) are evaluated on the item as
-  dynamoxy last read it. That is exact for versioned models (a stale instance fails the version
-  check); for other models, a concurrent change between that read and the write can leave the
-  templated attribute behind, so give models whose keys follow counters a `version()` field;
+  needs; an instance that was not loaded counts as a key, since its values need not be the
+  stored ones). Changes by arithmetic or functions (`add`, `increment`, `set(path + 1)`,
+  `set_if_not_exists`) are evaluated on the item as dynamoxy last read it, and the update
+  requires that the fields it took from that item are unchanged (for a loaded versioned instance,
+  its version check does, and a stale one raises `VersionConflictError`). When another writer
+  changed them since, `update()` reads the item again and renders the attribute from it; in a
+  transaction the operation fails (`ConditionalCheckFailedError` among the cancellation reasons);
 - accept the fields they use in reads: `orders.get(customer_id="c1", order_id="o1")`,
   `orders.query(customer_id="c1")`, `Order.key(customer_id=..., order_id=...)`. A sort key may
   repeat fields of the partition key (`"ORG#{org_id}"` and `"MEMBER#{org_id}#{user_id}"`):
