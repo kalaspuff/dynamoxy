@@ -47,6 +47,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   caught them). The model metaclass now declares pydantic's `dataclass_transform` itself, which
   checkers do not inherit from a base metaclass. mypy also types the items of
   `client.collection(A, B)` as `A | B` now, not as their common base class.
+- `ensure_tables()` accepted an existing index whose projection holds less than the models
+  declare (`KEYS_ONLY` or `INCLUDE` where they expect `ALL`, or an `INCLUDE` without an attribute
+  they include), so every model read through it later failed with an `ItemDecodeError` naming a
+  missing attribute. It now raises `TypeError` naming the index and both projections, before it
+  changes that table; an index that projects more than the models declare is still accepted.
 
 ## [0.4.0] - 2026-10-31
 
