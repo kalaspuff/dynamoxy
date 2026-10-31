@@ -513,6 +513,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   held to 400 KB by that charge before the item is read, and item collection metrics report
   whole gigabytes (`[0.0, 1.0]` for a small collection) as DynamoDB does, instead of the exact
   fraction.
+- A PartiQL `INSERT` of an item that exists raised a plain `ServiceError` against LocalStack,
+  whose DynamoDB Local sends the code `DuplicateItem` instead of `DuplicateItemException`: both
+  raise `DuplicateItemError` now. dynamoxy's end-to-end tests pass against LocalStack too
+  (`docs/parity`).
 
 ### Security
 

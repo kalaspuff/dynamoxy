@@ -6,6 +6,8 @@
   free port (no Docker: it is a pip package in the test dependency group).
 * ``backend`` / ``client_factory`` / ``client``: integration scenarios run once per backend - the
   in-memory DynamoDB and the emulator (marked ``e2e``, so ``pytest -m "not e2e"`` skips it).
+  ``target`` tells which emulator it is (MiniStack, or LocalStack through
+  ``DYNAMOXY_TEST_ENDPOINT_URL``; docs/parity shows how to run it).
   Emulator clients get a unique ``table_prefix`` per test, and their tables are deleted after it.
 """
 
@@ -16,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -93,6 +96,32 @@ def emulator_endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
 @pytest.fixture(params=["memory", pytest.param("emulator", marks=pytest.mark.e2e)])
 def backend(request: pytest.FixtureRequest) -> str:
     return str(request.param)
+
+
+@pytest.fixture(scope="session")
+def emulator_kind(emulator_endpoint: str) -> str:
+    """``"ministack"`` or ``"localstack"`` (DynamoDB Local inside): what the emulator is.
+
+    MiniStack answers LocalStack's health path too, so it is told apart by its own.
+    """
+    try:
+        with urllib.request.urlopen(f"{emulator_endpoint}{HEALTH_PATH}", timeout=2) as response:
+            return "ministack" if response.status == 200 else "localstack"
+    except urllib.error.HTTPError as error:  # LocalStack: 501
+        error.close()
+        return "localstack"
+    except OSError:
+        return "localstack"
+
+
+@pytest.fixture
+def target(backend: str, request: pytest.FixtureRequest) -> str:
+    """What a test runs against: ``"memory"``, ``"ministack"`` or ``"localstack"``.
+
+    For the gaps of an emulator (docs/parity): LocalStack's free edition has no backups or
+    point-in-time recovery, for example.
+    """
+    return "memory" if backend == "memory" else str(request.getfixturevalue("emulator_kind"))
 
 
 type ClientFactory = Callable[..., dynamoxy.Client]

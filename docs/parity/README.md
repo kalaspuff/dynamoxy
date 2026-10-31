@@ -189,4 +189,12 @@ not refused (DynamoDB's answer to them was not measured).
   ```
 
   It downloads a JDK and DynamoDB Local on its first start (about 20 s, then 2-3 s).
-  `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4566 uv run pytest` runs the suite against it.
+  `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4566 uv run pytest -m e2e` runs the suite
+  against it, and `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4566 cargo test -p dynamoxy-core
+  --test emulator` the Rust parity scenarios; both pass. The tests' `target` fixture
+  (`"memory"`, `"ministack"` or `"localstack"`) skips what LocalStack's free edition lacks
+  (backups, point-in-time restores, item collection metrics, `LastEvaluatedKey` of PartiQL pages).
+  LocalStack also keeps the Time to Live of a table deleted and created again, sends
+  `DuplicateItem` where DynamoDB sends `DuplicateItemException` (dynamoxy reads both as
+  `DuplicateItemError`), and gives a duplicate `INSERT` in `ExecuteTransaction` the reason
+  `ValidationError` where DynamoDB gives `DuplicateItem` (round 3).
