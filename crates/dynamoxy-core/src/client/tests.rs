@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::*;
-use crate::backend::memory::{Fault, FaultKind};
+use crate::backend::memory::{Fault, FaultKind, MemoryBackend};
 use crate::config::RetryConfig;
 use crate::events::EventKind;
 use crate::expr::Names;
@@ -25,9 +25,14 @@ fn config() -> ClientConfig {
 async fn client_with_table(config: ClientConfig) -> Client {
     let client = Client::memory(config, None).unwrap();
     client.events().set_enabled(EventKind::ALL);
+    create_table(&client, "items").await;
+    client
+}
+
+async fn create_table(client: &Client, name: &str) {
     client
         .create_table(CreateTableInput {
-            table_name: "items".into(),
+            table_name: name.into(),
             attribute_definitions: vec![AttributeDefinition { name: "pk".into(), attribute_type: ScalarType::S }],
             key_schema: KeySchema { partition_key: "pk".into(), sort_key: None },
             local_secondary_indexes: vec![],
@@ -44,7 +49,6 @@ async fn client_with_table(config: ClientConfig) -> Client {
         .await
         .result
         .unwrap();
-    client
 }
 
 fn throttle(operation: &str, times: u32) -> Fault {
@@ -530,6 +534,161 @@ async fn batches_report_items_still_unprocessed_after_the_last_round() {
     let result = client.batch_write(writes, ReturnConsumedCapacity::None).await.result.unwrap();
     assert_eq!(result.unprocessed.len(), 1);
     assert_eq!(kinds(&client), [EventKind::BatchUnprocessed, EventKind::BatchIncomplete]);
+}
+
+/// `count` puts of keys `{prefix}{index}` into `table`.
+fn puts(table: &str, prefix: &str, count: usize) -> Vec<(String, WriteRequest)> {
+    (0..count)
+        .map(|index| {
+            (table.to_owned(), WriteRequest::Put(item([("pk", AttributeValue::s(format!("{prefix}{index}")))])))
+        })
+        .collect()
+}
+
+/// The keys `{prefix}{index}` of `table` (`BatchGetItem` request items).
+fn keys(table: &str, prefix: &str, count: usize) -> BTreeMap<String, KeysAndAttributes> {
+    let keys = (0..count).map(|index| item([("pk", AttributeValue::s(format!("{prefix}{index}")))])).collect();
+    BTreeMap::from([(table.to_owned(), KeysAndAttributes { keys, ..Default::default() })])
+}
+
+fn tables_of(writes: &[(String, WriteRequest)]) -> Vec<&str> {
+    writes.iter().map(|(table, _)| table.as_str()).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_request_that_fails_after_its_attempts_is_sent_again_in_the_next_round() {
+    let client = client_with_table(config()).await;
+    kinds(&client);
+    // Every attempt (3) of the first chunk's request is throttled.
+    client.memory_backend().unwrap().inject_fault(throttle("BatchWriteItem", 3));
+    let call = client.batch_write(puts("items", "k", 60), ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(result, BatchWriteResult::default());
+    assert_eq!(call.stats.requests, 4, "3 chunks, the first sent again");
+    assert_eq!(call.stats.throttles, 3);
+    assert!(stored(&client, "k0").await.is_some());
+    assert!(stored(&client, "k59").await.is_some());
+    assert_eq!(kinds(&client).iter().filter(|kind| **kind == EventKind::BatchUnprocessed).count(), 1);
+
+    client.memory_backend().unwrap().inject_fault(throttle("BatchGetItem", 3));
+    let call = client.batch_get(keys("items", "k", 150), ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(result.items["items"].len(), 60);
+    assert!(result.unprocessed.is_empty());
+    assert_eq!(result.error, None);
+    assert_eq!(call.stats.requests, 3, "2 chunks, the first sent again");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_reports_the_writes_of_a_request_that_failed_in_every_round_and_makes_the_others() {
+    let client = client_with_table(ClientConfig { batch_max_rounds: 2, ..config() }).await;
+    create_table(&client, "other").await;
+    let memory = client.memory_backend().unwrap();
+    memory.inject_fault(Fault { table: Some("other".into()), ..throttle("BatchWriteItem", 6) });
+    let mut writes = puts("items", "a", 25);
+    writes.extend(puts("other", "b", 25));
+    writes.extend(puts("items", "c", 10));
+    let result = client.batch_write(writes, ReturnConsumedCapacity::None).await.result.unwrap();
+    assert_eq!(tables_of(&result.unprocessed), ["other"; 25], "the throttled chunk, and only it");
+    assert_eq!(result.error.as_ref().and_then(Error::kind), Some(ErrorKind::Throttling));
+    assert!(stored(&client, "a0").await.is_some());
+    assert!(stored(&client, "c9").await.is_some(), "the chunk after the failed one is written");
+
+    memory.inject_fault(Fault { table: Some("other".into()), ..throttle("BatchGetItem", 6) });
+    let mut request = keys("items", "a", 100);
+    request.extend(keys("other", "b", 5));
+    let result = client.batch_get(request, ReturnConsumedCapacity::None).await.result.unwrap();
+    assert_eq!(result.items["items"].len(), 25);
+    assert_eq!(result.unprocessed["other"].keys.len(), 5);
+    assert_eq!(result.error.as_ref().and_then(Error::kind), Some(ErrorKind::Throttling));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_error_that_is_not_retried_stops_a_batch_and_reports_what_is_left() {
+    let client = client_with_table(config()).await;
+    let mut writes = puts("items", "a", 25);
+    writes.extend(puts("missing", "b", 25));
+    writes.extend(puts("items", "c", 10));
+    let call = client.batch_write(writes, ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(result.error.as_ref().and_then(Error::kind), Some(ErrorKind::ResourceNotFound));
+    let mut expected = vec!["missing"; 25];
+    expected.extend(["items"; 10]);
+    assert_eq!(tables_of(&result.unprocessed), expected, "the failed chunk, then the one never sent");
+    assert_eq!(call.stats.requests, 2);
+    assert!(stored(&client, "a24").await.is_some(), "the chunk before is written");
+    assert!(stored(&client, "c0").await.is_none());
+
+    let mut request = keys("items", "a", 100);
+    request.extend(keys("missing", "b", 100));
+    request.extend(keys("other", "c", 3));
+    let result = client.batch_get(request, ReturnConsumedCapacity::None).await.result.unwrap();
+    assert_eq!(result.items["items"].len(), 25);
+    assert_eq!(result.unprocessed["missing"].keys.len(), 100);
+    assert_eq!(result.unprocessed["other"].keys.len(), 3, "never sent");
+    assert_eq!(result.error.as_ref().and_then(Error::kind), Some(ErrorKind::ResourceNotFound));
+}
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_chunks_in_flight_finish_when_another_fails() {
+    // Through `with_backend`, the client sends the chunks concurrently (it does not know the
+    // backend applies them one at a time).
+    let memory = MemoryBackend::default();
+    let client =
+        Client::with_backend(Arc::new(memory.clone()), ClientConfig { batch_concurrency: 2, ..config() }).unwrap();
+    create_table(&client, "items").await;
+    memory.inject_fault(Fault {
+        operation: Some("BatchWriteItem".into()),
+        table: Some("items".into()),
+        kind: FaultKind::Latency(Duration::from_secs(5)),
+        times: 1,
+    });
+    let mut writes = puts("items", "a", 25);
+    writes.extend(puts("missing", "b", 25));
+    writes.extend(puts("items", "c", 10));
+    let result = client.batch_write(writes, ReturnConsumedCapacity::None).await.result.unwrap();
+    assert_eq!(result.error.as_ref().and_then(Error::kind), Some(ErrorKind::ResourceNotFound));
+    let mut expected = vec!["missing"; 25];
+    expected.extend(["items"; 10]);
+    assert_eq!(tables_of(&result.unprocessed), expected, "the failed chunk, then the one never sent");
+    assert!(stored(&client, "a0").await.is_some(), "the slow chunk in flight finished");
+    assert!(stored(&client, "c0").await.is_none(), "no chunk is sent after the failure");
+
+    memory.inject_fault(Fault {
+        operation: Some("BatchGetItem".into()),
+        table: Some("items".into()),
+        kind: FaultKind::Latency(Duration::from_secs(5)),
+        times: 1,
+    });
+    let mut request = keys("items", "a", 100);
+    request.extend(keys("missing", "b", 100));
+    request.extend(keys("other", "c", 3));
+    let result = client.batch_get(request, ReturnConsumedCapacity::None).await.result.unwrap();
+    assert_eq!(result.items["items"].len(), 25, "the slow chunk in flight finished");
+    assert_eq!(result.unprocessed["missing"].keys.len(), 100);
+    assert_eq!(result.unprocessed["other"].keys.len(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn keys_left_by_the_response_size_limit_are_requested_again_at_once() {
+    let client = client_with_table(ClientConfig { batch_max_rounds: 1, ..config() }).await;
+    let large = "x".repeat(350 * 1024);
+    let writes = (0..50)
+        .map(|index| {
+            let item = item([("pk", AttributeValue::s(format!("k{index}"))), ("data", AttributeValue::s(&large))]);
+            ("items".to_owned(), WriteRequest::Put(item))
+        })
+        .collect();
+    assert!(client.batch_write(writes, ReturnConsumedCapacity::None).await.result.unwrap().unprocessed.is_empty());
+    kinds(&client);
+    let started = Instant::now();
+    let call = client.batch_get(keys("items", "k", 50), ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(result.items["items"].len(), 50, "in one round although the first response stopped at 16 MB");
+    assert!(result.unprocessed.is_empty());
+    assert_eq!(call.stats.requests, 2);
+    assert_eq!(started.elapsed(), Duration::ZERO, "no backoff");
+    assert!(kinds(&client).iter().all(|kind| *kind != EventKind::BatchUnprocessed));
 }
 
 #[tokio::test(start_paused = true)]

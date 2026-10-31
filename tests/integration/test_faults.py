@@ -357,6 +357,58 @@ async def test_batches_report_what_stays_unprocessed() -> None:
         assert len(emitted) == 1
 
 
+async def test_a_batch_request_that_fails_after_its_attempts_is_sent_again(client: dynamoxy.Client) -> None:
+    events = client.model(Event)
+    # Every attempt (3) of the first chunk's request is throttled; the next round writes it.
+    testing.inject_fault(client, operation="BatchWriteItem", error="throttling", times=3)
+    with testing.capture_events(client, "batch.*") as emitted:
+        await events.batch_put([event(seq) for seq in range(40)])
+    assert await events.count() == 40
+    assert [entry.kind for entry in emitted] == [dynamoxy.EventKind.BATCH_UNPROCESSED]
+    testing.inject_fault(client, operation="BatchGetItem", error="internal", times=3)
+    assert len(await events.batch_get([Event.key("s", seq) for seq in range(40)])) == 40
+
+
+async def test_batches_report_the_requests_that_failed_in_every_round() -> None:
+    async with testing.memory_client(batch_max_rounds=2) as client:
+        await client.create_tables(Event)
+        events = client.model(Event)
+        testing.inject_fault(client, operation="BatchWriteItem", error="throttling", times=1000)
+        with dynamoxy.collect() as collected, pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
+            await events.batch_put([event(seq) for seq in range(3)])
+        assert isinstance(caught.value.error, dynamoxy.ThrottlingError)
+        assert caught.value.__cause__ is caught.value.error
+        assert caught.value.retryable
+        assert sorted(item["seq"] for _, item in caught.value.unprocessed) == [0, 1, 2]
+        assert "ProvisionedThroughputExceededException" in str(caught.value)
+        assert [record.error for record in collected.records] == ["UnprocessedItemsError"]
+        client.store.clear_faults()  # type: ignore[union-attr]
+        await events.batch_put([event(seq) for seq in range(3)])
+        testing.inject_fault(client, operation="BatchGetItem", error="internal", times=1000)
+        with pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
+            await events.batch_get([Event.key("s", seq) for seq in range(3)])
+        assert isinstance(caught.value.error, dynamoxy.InternalServerError)
+        assert [kind for kind, _ in caught.value.unprocessed] == ["get"] * 3
+
+
+async def test_an_error_that_is_not_retried_stops_a_batch_and_reports_what_is_left() -> None:
+    SAVED.clear()
+    async with testing.memory_client() as client:
+        await client.create_tables(Note)
+        notes = [Note(note_id=f"n{index:02}") for index in range(60)]
+        # The first chunk (25 writes) goes through, the second is refused, the third never sent.
+        testing.inject_fault(client, operation="BatchWriteItem", latency=0.0)
+        testing.inject_fault(client, operation="BatchWriteItem", error="access_denied")
+        with pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
+            await client.model(Note).batch_put(notes)
+        assert isinstance(caught.value.error, dynamoxy.AccessDeniedError)
+        assert not caught.value.retryable
+        assert len(caught.value.unprocessed) == 35
+        assert [note.note_id for note in notes[:25]] == SAVED, "the written instances are finalized"
+        assert [note.is_loaded for note in notes] == [True] * 25 + [False] * 35
+        assert len(await client.table("notes").scan().all()) == 25
+
+
 async def test_failed_operations_are_collected_and_counted(client: dynamoxy.Client) -> None:
     users = client.model(User)
     await users.create(User(user_id="u1", email="a@example.com", name="Ada"))
@@ -395,16 +447,25 @@ async def test_failed_flushes_keep_the_other_writes() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Note)
         batch = client.batch_writer(flush_size=3)
-        await batch.put(Note(note_id="a"))
+        a, c = Note(note_id="a"), Note(note_id="c")
+        await batch.put(a)
         await batch.put(Note(note_id="b", text="refused"))
         with pytest.raises(ValueError, match="refused by before_save"):
-            await batch.put(Note(note_id="c"))  # the third write flushes
+            await batch.put(c)  # the third write flushes
         assert len(batch) == 2, "a and c stay queued; b is reported by the exception"
-        testing.inject_fault(client, operation="BatchWriteItem", error="internal", times=10)
-        with pytest.raises(dynamoxy.InternalServerError):
+        # The request fails in every round: its writes are reported, as unprocessed ones are.
+        testing.inject_fault(client, operation="BatchWriteItem", error="internal", times=1000)
+        with pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
             await batch.flush()
-        assert len(batch) == 2, "a request that failed keeps its writes queued (they are unconditional)"
+        assert isinstance(caught.value.error, dynamoxy.InternalServerError)
+        assert caught.value.__cause__ is caught.value.error
+        assert caught.value.retryable
+        assert sorted(item["note_id"] for _, item in caught.value.unprocessed) == ["a", "c"]
+        assert len(batch) == 0, "the exception reports the writes of the request that failed"
+        assert (a.is_loaded, c.is_loaded) == (False, False)
         client.store.clear_faults()  # type: ignore[union-attr]
+        await batch.put(a)
+        await batch.put(c)
         await batch.flush()
         assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "c"]
         assert batch.written == 2
@@ -414,7 +475,7 @@ async def test_blocks_that_raise_keep_their_writes_queued() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Note)
         # The block ends with the exception of a failed automatic flush: nothing more is written,
-        # and what that flush and the block queued stays in the writer.
+        # and the exception reports what that flush did not write.
         batch = client.batch_writer(flush_size=2)
 
         async def flushing_block() -> None:
@@ -422,11 +483,12 @@ async def test_blocks_that_raise_keep_their_writes_queued() -> None:
                 await batch.put(Note(note_id="a"))
                 await batch.put(Note(note_id="b"))  # flushes, and fails
 
-        testing.inject_fault(client, operation="BatchWriteItem", error="internal", times=10)
-        with pytest.raises(dynamoxy.InternalServerError):
+        testing.inject_fault(client, operation="BatchWriteItem", error="access_denied")
+        with pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
             await flushing_block()
-        assert len(batch) == 2
-        client.store.clear_faults()  # type: ignore[union-attr]
+        assert isinstance(caught.value.error, dynamoxy.AccessDeniedError)
+        assert not caught.value.retryable
+        assert len(batch) == 0, "the exception reports what the flush did not write"
         other = client.batch_writer()
 
         async def raising_block() -> None:
@@ -438,7 +500,8 @@ async def test_blocks_that_raise_keep_their_writes_queued() -> None:
             await raising_block()
         assert len(other) == 1
         assert await client.table("notes").scan().all() == [], "a block that raises writes nothing"
-        await batch.flush()  # written on request
+        for _, item in caught.value.unprocessed:  # written again on request
+            await batch.put_item("notes", item, key={"note_id": item["note_id"]})
         await other.flush()
         assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "b", "c"]
         assert (len(batch), len(other)) == (0, 0)

@@ -75,6 +75,14 @@ fn finish<T: Send + 'static>(
     })
 }
 
+/// The error that left requests of a managed batch unprocessed, as an exception object, or `None`.
+fn batch_error(py: Python<'_>, error: Option<dynamoxy_core::Error>) -> Bound<'_, PyAny> {
+    match error {
+        Some(error) => error_in(py, error).into_value(py).into_bound(py).into_any(),
+        None => py.None().into_bound(py),
+    }
+}
+
 /// A dict of output fields (the keys are interned: `intern!(py, "items")`).
 fn dict<'py>(py: Python<'py>, entries: &[(&Bound<'py, PyString>, Bound<'py, PyAny>)]) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
@@ -847,6 +855,7 @@ impl PyCoreClient {
                         (intern!(py, "items"), items.into_any()),
                         (intern!(py, "unprocessed_keys"), unprocessed.into_any()),
                         (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "error"), batch_error(py, output.error)),
                     ],
                 )
             })
@@ -881,6 +890,7 @@ impl PyCoreClient {
                     &[
                         (intern!(py, "unprocessed"), unprocessed.into_any()),
                         (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
+                        (intern!(py, "error"), batch_error(py, output.error)),
                     ],
                 )
             })

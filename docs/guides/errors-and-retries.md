@@ -138,6 +138,21 @@ above; reads, batch writes and table operations raise the attempt's `TransportEr
 
 ## Batches
 
-Managed batches retry unprocessed items for `batch_max_rounds` rounds. If items remain,
-`UnprocessedItemsError.unprocessed` lists `(kind, item_or_key)` pairs; nothing is silently
-dropped.
+Managed batches retry unprocessed items for `batch_max_rounds` rounds. A chunk whose request
+fails with a retryable error (throttling, 5xx, a lost connection) after its attempts is sent
+again in the next round, while the other chunks go on. A request that fails with an error that
+is not retried (validation, access denied, a missing table) stops the batch: no other chunk is
+sent, and the requests in flight finish. Either way, if items remain, `UnprocessedItemsError`
+is raised: `.unprocessed` lists the `(kind, item_or_key)` pairs that were not done (everything
+else was), and `.error` (also `__cause__`) holds the request's error, `None` when DynamoDB
+returned the items unprocessed. `.retryable` follows that error. Nothing is silently dropped,
+and since batch writes are unconditional, writing `.unprocessed` again is safe.
+
+```python
+try:
+    await events.batch_put(items)
+except dynamoxy.UnprocessedItemsError as error:
+    if isinstance(error.error, dynamoxy.ResourceNotFoundError):
+        ...  # the table is missing: nothing of .unprocessed was written
+    left = [item for kind, item in error.unprocessed]
+```

@@ -36,6 +36,18 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
   CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
   the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
+- A managed batch (`batch_put()`, `batch_delete()`, `batch_get()`, `BatchWriter.flush()`,
+  `table.batch_write()`) whose chunk's request failed after its attempts (throttling with nothing
+  processed, a 5xx, a lost connection) failed as a whole with that error and aborted the chunks in
+  flight, so the caller could not tell which items were written. A chunk that fails with a
+  retryable error is now sent again in the next round while the others go on; an error that is
+  not retried (validation, access denied, a missing table) stops the batch once the requests in
+  flight finished, and no other chunk is sent. Either way, what is left raises
+  `UnprocessedItemsError`: `.unprocessed` lists exactly the items not written or read, and the new
+  `.error` (also `__cause__`) holds the request's error, whose `.retryable` it takes. A
+  `BatchWriter` flush no longer requeues the writes of a request that failed: its
+  `UnprocessedItemsError` reports them. Keys that `BatchGetItem` left for its 16 MB response limit
+  are requested again at once, without backoff or a new round.
 
 ## [0.4.0] - 2026-10-31
 

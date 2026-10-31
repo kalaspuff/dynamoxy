@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
 from dynamoxy._utils import LoopLocal, count, deprecated, seconds
-from dynamoxy.errors import DynamoxyError, ResourceInUseError, UnprocessedItemsError
+from dynamoxy.errors import DynamoxyError, ResourceInUseError, UnprocessedItemsError, unprocessed_items_error
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
 from dynamoxy.results import CallStats, ConsumedCapacity, MetricsSnapshot, OperationRecord, capacity_split
@@ -1009,10 +1009,7 @@ def _incomplete(method: str, output: Any, stats: tuple[int, int, int, float]) ->
     unprocessed = _unprocessed(method, output)
     if not unprocessed:
         return None
-    error = UnprocessedItemsError(
-        f"{len(unprocessed)} {'keys' if method == 'batch_get' else 'writes'} stayed unprocessed (throttling)",
-        unprocessed=unprocessed,
-    )
+    error = unprocessed_items_error("keys" if method == "batch_get" else "writes", unprocessed, output.get("error"))
     error.attempts, error.throttles, error.requests, error.duration = stats
     return error
 

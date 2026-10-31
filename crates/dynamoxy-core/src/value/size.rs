@@ -8,6 +8,9 @@ use super::{AttributeValue, Item};
 /// Largest item DynamoDB stores: 400 KB, attribute names included.
 pub const MAX_ITEM_SIZE: usize = 400 * 1024;
 
+/// Most data one `BatchGetItem` response returns (16 MB); the keys past it come back unprocessed.
+pub const BATCH_GET_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
+
 /// Size of one value in bytes (without its attribute name).
 ///
 /// Strings and binaries count their bytes; numbers 1 byte per two significant digits plus 1;

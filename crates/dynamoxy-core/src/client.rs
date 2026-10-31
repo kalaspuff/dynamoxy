@@ -51,7 +51,7 @@ use crate::types::{
     TransactWriteItemsInput, TransactWriteItemsOutput, UpdateItemInput, UpdateTableInput, UpdateTimeToLiveInput,
     WriteItemOutput, WriteRequest,
 };
-use crate::value::Item;
+use crate::value::{BATCH_GET_RESPONSE_LIMIT, Item, MAX_ITEM_SIZE, item_size};
 
 /// What one call cost.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -155,10 +155,14 @@ no_capacity!(
 /// The result of [`Client::batch_write`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BatchWriteResult {
-    /// Writes still unprocessed after `batch_max_rounds` rounds (normally empty).
+    /// Writes not made (normally empty): still unprocessed after `batch_max_rounds` rounds, those
+    /// of a request that failed, and, after an error that is not retried, those never sent.
+    /// Batch writes are unconditional, so sending them again is safe.
     pub unprocessed: Vec<(String, WriteRequest)>,
     /// Consumed capacity, summed per table.
     pub consumed_capacity: Vec<ConsumedCapacity>,
+    /// Why writes are left, when a request failed (see [`BatchGetResult::error`]).
+    pub error: Option<Error>,
 }
 
 /// The result of [`Client::batch_get`].
@@ -166,10 +170,17 @@ pub struct BatchWriteResult {
 pub struct BatchGetResult {
     /// Items found, per table (in no particular order).
     pub items: BTreeMap<String, Vec<Item>>,
-    /// Keys still unprocessed after `batch_max_rounds` rounds (normally empty).
+    /// Keys not read (normally empty): still unprocessed after `batch_max_rounds` rounds, those of
+    /// a request that failed, and, after an error that is not retried, those never sent.
     pub unprocessed: BTreeMap<String, KeysAndAttributes>,
     /// Consumed capacity, summed per table.
     pub consumed_capacity: Vec<ConsumedCapacity>,
+    /// Why keys are left, when a request failed: an error that is not retried (validation, access
+    /// denied, a missing table), which stopped the batch (requests in flight finished, no other was
+    /// sent), else the last retryable error (throttling, 5xx, transport) of a request that failed
+    /// after its attempts in the last round. `None` when DynamoDB returned the requests
+    /// unprocessed.
+    pub error: Option<Error>,
 }
 
 /// The core client. Cheap to clone; clones share the backend, events and metrics.
@@ -188,9 +199,54 @@ struct Inner {
     closed: AtomicBool,
 }
 
-/// What one chunk of a managed batch did: what remains (or was found) and the consumed capacity,
-/// or the error, with the chunk's stats.
-type ChunkOutcome<T> = (Result<(T, Vec<ConsumedCapacity>)>, OperationStats);
+/// What one chunk of a managed batch did.
+struct ChunkDone<T> {
+    /// What remains unprocessed (and, for reads, the items found).
+    left: T,
+    /// Consumed capacity of the chunk's requests.
+    consumed: Vec<ConsumedCapacity>,
+    /// The error of the chunk's last request, when it failed: the requests it carried are part of
+    /// `left`. After an error that is not retried, the chunk stopped there.
+    error: Option<Error>,
+}
+
+/// What one chunk of a managed batch did, with the chunk's stats.
+type ChunkOutcome<T> = (ChunkDone<T>, OperationStats);
+
+/// Keeps the error a managed batch reports: the first one that is not retried (which ends the
+/// batch), else the last retryable one.
+fn keep_error(kept: &mut Option<Error>, error: Option<Error>) {
+    let Some(error) = error else { return };
+    if kept.as_ref().is_none_or(Error::is_retryable) {
+        *kept = Some(error);
+    }
+}
+
+fn add_stats(stats: &mut OperationStats, chunk: &OperationStats) {
+    stats.attempts += chunk.attempts;
+    stats.throttles += chunk.throttles;
+    stats.requests += chunk.requests;
+}
+
+/// The write requests of a `BatchWriteItem` request, as `(table, request)` pairs.
+fn flatten_writes(request_items: BTreeMap<String, Vec<WriteRequest>>) -> Vec<(String, WriteRequest)> {
+    request_items
+        .into_iter()
+        .flat_map(|(table, requests)| requests.into_iter().map(move |request| (table.clone(), request)))
+        .collect()
+}
+
+/// Merges the unprocessed keys of a chunk of a managed `BatchGetItem` into `all`.
+fn merge_keys(all: &mut BTreeMap<String, KeysAndAttributes>, keys: BTreeMap<String, KeysAndAttributes>) {
+    for (table, keys) in keys {
+        match all.entry(table) {
+            Entry::Vacant(entry) => {
+                entry.insert(keys);
+            }
+            Entry::Occupied(mut entry) => entry.get_mut().keys.extend(keys.keys),
+        }
+    }
+}
 
 /// Splits `BatchGetItem` keys into requests of at most `size` keys, in order, each table keeping
 /// its read settings. Keys are moved, and only the settings are cloned for each chunk.
@@ -683,14 +739,36 @@ impl Client {
 
     /// `BatchGetItem` (one request; see [`Self::batch_get`] for any number of keys).
     pub async fn batch_get_item(&self, input: BatchGetItemInput) -> Call<BatchGetItemOutput> {
+        self.send_batch_get(&input).await
+    }
+
+    /// `BatchGetItem`, keeping the input (a managed batch resends it when the request fails).
+    async fn send_batch_get(&self, input: &BatchGetItemInput) -> Call<BatchGetItemOutput> {
         let table = input.request_items.keys().next().cloned();
-        call!(self, BatchGetItem, table.as_deref(), batch_get_item(input))
+        let backend = Arc::clone(&self.inner.backend);
+        self.run(Operation::BatchGetItem, table.as_deref(), Safety::resendable(), || {
+            let backend = Arc::clone(&backend);
+            let input = input.clone();
+            async move { backend.batch_get_item(input).await }
+        })
+        .await
     }
 
     /// `BatchWriteItem` (one request; see [`Self::batch_write`] for any number of writes).
     pub async fn batch_write_item(&self, input: BatchWriteItemInput) -> Call<BatchWriteItemOutput> {
+        self.send_batch_write(&input).await
+    }
+
+    /// `BatchWriteItem`, keeping the input (a managed batch resends it when the request fails).
+    async fn send_batch_write(&self, input: &BatchWriteItemInput) -> Call<BatchWriteItemOutput> {
         let table = input.request_items.keys().next().cloned();
-        call!(self, BatchWriteItem, table.as_deref(), batch_write_item(input))
+        let backend = Arc::clone(&self.inner.backend);
+        self.run(Operation::BatchWriteItem, table.as_deref(), Safety::resendable(), || {
+            let backend = Arc::clone(&backend);
+            let input = input.clone();
+            async move { backend.batch_write_item(input).await }
+        })
+        .await
     }
 
     /// `TransactGetItems`.
@@ -1057,8 +1135,12 @@ impl Client {
     /// Writes any number of items with `BatchWriteItem`: chunks of 25, `batch_concurrency`
     /// requests in parallel, unprocessed items resent with backoff.
     ///
-    /// Not atomic: on error, some chunks may have been written. Requests must not contain the
-    /// same key twice (DynamoDB rejects such a chunk).
+    /// Not atomic. Every write ends made or in [`BatchWriteResult::unprocessed`]: a request that
+    /// fails with a retryable error after its attempts leaves its writes unprocessed for the next
+    /// round, and one that fails with an error that is not retried stops the batch (requests in
+    /// flight finish, no other is sent) with [`BatchWriteResult::error`] set. The call itself only
+    /// fails when a chunk's task did not finish. Requests must not contain the same key twice
+    /// (DynamoDB rejects such a chunk).
     pub async fn batch_write(
         &self,
         requests: Vec<(String, WriteRequest)>,
@@ -1079,52 +1161,29 @@ impl Client {
             requests: 0,
             duration: Duration::ZERO,
         };
-        let mut merge = |(outcome, chunk_stats): ChunkOutcome<Vec<(String, WriteRequest)>>,
-                         stats: &mut OperationStats| {
-            stats.attempts += chunk_stats.attempts;
-            stats.throttles += chunk_stats.throttles;
-            stats.requests += chunk_stats.requests;
-            outcome.map(|(unprocessed, consumed)| {
-                result.unprocessed.extend(unprocessed);
-                merge_capacity(&mut capacity, consumed);
-            })
-        };
-        if self.sequential_chunks(chunks.len()) {
-            for chunk in chunks {
-                let done = self.write_chunk(chunk, return_consumed_capacity).await;
-                if let Err(error) = merge(done, &mut stats) {
-                    stats.duration = started.elapsed();
-                    return Call { result: Err(error), stats };
-                }
-            }
-        } else {
-            let mut tasks = JoinSet::new();
-            let mut pending = chunks.into_iter();
-            let concurrency = self.inner.config.batch_concurrency;
-            loop {
-                while tasks.len() < concurrency
-                    && let Some(chunk) = pending.next()
-                {
-                    let client = self.clone();
-                    tasks.spawn(async move { client.write_chunk(chunk, return_consumed_capacity).await });
-                }
-                let Some(joined) = tasks.join_next().await else { break };
-                let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchWriteItem", message: error.to_string(), retryable: false };
-                    (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
-                });
-                if let Err(error) = merge(done, &mut stats) {
-                    tasks.abort_all();
-                    stats.duration = started.elapsed();
-                    return Call { result: Err(error), stats };
-                }
-            }
-        }
-        drop(merge);
-        result.consumed_capacity = capacity.into_values().collect();
+        let sent = self
+            .run_chunks(
+                "BatchWriteItem",
+                chunks,
+                move |client, chunk| async move { client.write_chunk(chunk, return_consumed_capacity).await },
+                |(done, chunk_stats): ChunkOutcome<Vec<(String, WriteRequest)>>| {
+                    add_stats(&mut stats, &chunk_stats);
+                    result.unprocessed.extend(done.left);
+                    merge_capacity(&mut capacity, done.consumed);
+                    keep_error(&mut result.error, done.error);
+                    result.error.as_ref().is_some_and(|error| !error.is_retryable())
+                },
+            )
+            .await;
         stats.duration = started.elapsed();
-        Call { result: Ok(result), stats }
+        match sent {
+            Ok(unsent) => {
+                result.unprocessed.extend(unsent.into_iter().flatten());
+                result.consumed_capacity = capacity.into_values().collect();
+                Call { result: Ok(result), stats }
+            }
+            Err(error) => Call { result: Err(error), stats },
+        }
     }
 
     /// Whether the chunks of a managed batch are sent one after the other from the calling task:
@@ -1132,6 +1191,60 @@ impl Client {
     /// task is spawned, so in-memory batches finish without a thread hop).
     fn sequential_chunks(&self, chunks: usize) -> bool {
         chunks <= 1 || self.inner.config.batch_concurrency <= 1 || self.inner.memory.is_some()
+    }
+
+    /// Sends the chunks of a managed batch with `send`, `batch_concurrency` at a time (or one
+    /// after the other, see [`Self::sequential_chunks`]), and passes each one's outcome to
+    /// `merge`. Once `merge` says stop (an error that is not retried), no other chunk is sent:
+    /// the chunks in flight are awaited, so their outcome is known, and the chunks never sent are
+    /// returned. Fails only when a chunk's task did not finish (it panicked or was cancelled),
+    /// after the others did.
+    async fn run_chunks<C, T, F, Fut>(
+        &self,
+        operation: &'static str,
+        chunks: Vec<C>,
+        send: F,
+        mut merge: impl FnMut(ChunkOutcome<T>) -> bool,
+    ) -> Result<Vec<C>>
+    where
+        C: Send + 'static,
+        T: Send + 'static,
+        F: Fn(Client, C) -> Fut,
+        Fut: Future<Output = ChunkOutcome<T>> + Send + 'static,
+    {
+        let mut pending = chunks.into_iter();
+        if self.sequential_chunks(pending.len()) {
+            for chunk in pending.by_ref() {
+                if merge(send(self.clone(), chunk).await) {
+                    break;
+                }
+            }
+            return Ok(pending.collect());
+        }
+        let mut tasks = JoinSet::new();
+        let concurrency = self.inner.config.batch_concurrency;
+        let mut stopped = false;
+        let mut failure = None;
+        loop {
+            while !stopped
+                && tasks.len() < concurrency
+                && let Some(chunk) = pending.next()
+            {
+                tasks.spawn(send(self.clone(), chunk));
+            }
+            let Some(joined) = tasks.join_next().await else { break };
+            match joined {
+                Ok(done) => stopped |= merge(done),
+                Err(error) => {
+                    stopped = true;
+                    failure.get_or_insert(Error::Transport { operation, message: error.to_string(), retryable: false });
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(pending.collect()),
+        }
     }
 
     async fn write_chunk(
@@ -1147,6 +1260,7 @@ impl Client {
             duration: Duration::ZERO,
         };
         let mut consumed = Vec::new();
+        let mut error = None;
         let rounds = self.inner.config.batch_max_rounds;
         for round in 1..=rounds {
             let mut request_items: BTreeMap<String, Vec<WriteRequest>> = BTreeMap::new();
@@ -1155,29 +1269,40 @@ impl Client {
             }
             let input =
                 BatchWriteItemInput { request_items, return_consumed_capacity, return_item_collection_metrics: false };
-            let call = self.batch_write_item(input).await;
-            stats.attempts += call.stats.attempts;
-            stats.throttles += call.stats.throttles;
-            stats.requests += 1;
-            let output = match call.result {
-                Ok(output) => output,
-                Err(error) => return (Err(error), stats),
-            };
-            consumed.extend(output.consumed_capacity);
-            chunk = output
-                .unprocessed_items
-                .into_iter()
-                .flat_map(|(table, requests)| requests.into_iter().map(move |request| (table.clone(), request)))
-                .collect();
+            let call = self.send_batch_write(&input).await;
+            add_stats(&mut stats, &call.stats);
+            match call.result {
+                Ok(output) => {
+                    consumed.extend(output.consumed_capacity);
+                    chunk = flatten_writes(output.unprocessed_items);
+                    error = None;
+                }
+                Err(failed) => {
+                    // Nothing of a request DynamoDB rejected was applied; a request that timed
+                    // out may have been, and writing its items again is harmless.
+                    chunk = flatten_writes(input.request_items);
+                    let retryable = failed.is_retryable();
+                    error = Some(failed);
+                    if !retryable {
+                        return (ChunkDone { left: chunk, consumed, error }, stats);
+                    }
+                }
+            }
             if chunk.is_empty() {
-                return (Ok((Vec::new(), consumed)), stats);
+                return (ChunkDone { left: chunk, consumed, error: None }, stats);
             }
             if round == rounds {
                 break;
             }
             let count = chunk.len();
+            let failed = error.is_some();
             self.emit(EventKind::BatchUnprocessed, || {
-                Event::new(EventKind::BatchUnprocessed, format!("{count} unprocessed writes, sending them again"))
+                let message = if failed {
+                    format!("a request of {count} writes failed, sending them again")
+                } else {
+                    format!("{count} unprocessed writes, sending them again")
+                };
+                Event::new(EventKind::BatchUnprocessed, message)
                     .field("operation", "BatchWriteItem")
                     .field("count", count)
                     .field("round", round)
@@ -1190,11 +1315,15 @@ impl Client {
                 .field("operation", "BatchWriteItem")
                 .field("count", count)
         });
-        (Ok((chunk, consumed)), stats)
+        (ChunkDone { left: chunk, consumed, error }, stats)
     }
 
     /// Reads any number of keys with `BatchGetItem`: chunks of 100 keys, `batch_concurrency`
-    /// requests in parallel, unprocessed keys resent with backoff.
+    /// requests in parallel, unprocessed keys resent with backoff (at once when DynamoDB left
+    /// them for its 16 MB response limit).
+    ///
+    /// Every key ends read or in [`BatchGetResult::unprocessed`], with the rules of
+    /// [`Self::batch_write`].
     pub async fn batch_get(
         &self,
         request_items: BTreeMap<String, KeysAndAttributes>,
@@ -1211,61 +1340,35 @@ impl Client {
             requests: 0,
             duration: Duration::ZERO,
         };
-        let mut merge = |(outcome, chunk_stats): ChunkOutcome<GotChunk>, stats: &mut OperationStats| {
-            stats.attempts += chunk_stats.attempts;
-            stats.throttles += chunk_stats.throttles;
-            stats.requests += chunk_stats.requests;
-            outcome.map(|((items, unprocessed), consumed)| {
-                for (table, found) in items {
-                    result.items.entry(table).or_default().extend(found);
-                }
-                for (table, keys) in unprocessed {
-                    match result.unprocessed.entry(table) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(keys);
-                        }
-                        Entry::Occupied(mut entry) => entry.get_mut().keys.extend(keys.keys),
+        let sent = self
+            .run_chunks(
+                "BatchGetItem",
+                chunks,
+                move |client, chunk| async move { client.get_chunk(chunk, return_consumed_capacity).await },
+                |(done, chunk_stats): ChunkOutcome<GotChunk>| {
+                    add_stats(&mut stats, &chunk_stats);
+                    let (items, unprocessed) = done.left;
+                    for (table, found) in items {
+                        result.items.entry(table).or_default().extend(found);
                     }
-                }
-                merge_capacity(&mut capacity, consumed);
-            })
-        };
-        if self.sequential_chunks(chunks.len()) {
-            for chunk in chunks {
-                let done = self.get_chunk(chunk, return_consumed_capacity).await;
-                if let Err(error) = merge(done, &mut stats) {
-                    stats.duration = started.elapsed();
-                    return Call { result: Err(error), stats };
-                }
-            }
-        } else {
-            let mut tasks = JoinSet::new();
-            let mut pending = chunks.into_iter();
-            let concurrency = self.inner.config.batch_concurrency;
-            loop {
-                while tasks.len() < concurrency
-                    && let Some(chunk) = pending.next()
-                {
-                    let client = self.clone();
-                    tasks.spawn(async move { client.get_chunk(chunk, return_consumed_capacity).await });
-                }
-                let Some(joined) = tasks.join_next().await else { break };
-                let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchGetItem", message: error.to_string(), retryable: false };
-                    (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
-                });
-                if let Err(error) = merge(done, &mut stats) {
-                    tasks.abort_all();
-                    stats.duration = started.elapsed();
-                    return Call { result: Err(error), stats };
-                }
-            }
-        }
-        drop(merge);
-        result.consumed_capacity = capacity.into_values().collect();
+                    merge_keys(&mut result.unprocessed, unprocessed);
+                    merge_capacity(&mut capacity, done.consumed);
+                    keep_error(&mut result.error, done.error);
+                    result.error.as_ref().is_some_and(|error| !error.is_retryable())
+                },
+            )
+            .await;
         stats.duration = started.elapsed();
-        Call { result: Ok(result), stats }
+        match sent {
+            Ok(unsent) => {
+                for chunk in unsent {
+                    merge_keys(&mut result.unprocessed, chunk);
+                }
+                result.consumed_capacity = capacity.into_values().collect();
+                Call { result: Ok(result), stats }
+            }
+            Err(error) => Call { result: Err(error), stats },
+        }
     }
 
     async fn get_chunk(
@@ -1282,36 +1385,62 @@ impl Client {
         };
         let mut consumed = Vec::new();
         let mut items: BTreeMap<String, Vec<Item>> = BTreeMap::new();
+        let mut error;
         let rounds = self.inner.config.batch_max_rounds;
-        for round in 1..=rounds {
+        let mut round = 1;
+        loop {
             let input = BatchGetItemInput { request_items: std::mem::take(&mut chunk), return_consumed_capacity };
-            let call = self.batch_get_item(input).await;
-            stats.attempts += call.stats.attempts;
-            stats.throttles += call.stats.throttles;
-            stats.requests += 1;
-            let output = match call.result {
-                Ok(output) => output,
-                Err(error) => return (Err(error), stats),
-            };
-            consumed.extend(output.consumed_capacity);
-            for (table, found) in output.responses {
-                items.entry(table).or_default().extend(found);
+            let call = self.send_batch_get(&input).await;
+            add_stats(&mut stats, &call.stats);
+            let mut returned = None;
+            match call.result {
+                Ok(output) => {
+                    consumed.extend(output.consumed_capacity);
+                    chunk = output.unprocessed_keys.into_iter().filter(|(_, keys)| !keys.keys.is_empty()).collect();
+                    if !chunk.is_empty() {
+                        returned = Some(output.responses.values().flatten().map(item_size).sum::<usize>());
+                    }
+                    for (table, found) in output.responses {
+                        items.entry(table).or_default().extend(found);
+                    }
+                    error = None;
+                }
+                Err(failed) => {
+                    chunk = input.request_items.into_iter().filter(|(_, keys)| !keys.keys.is_empty()).collect();
+                    let retryable = failed.is_retryable();
+                    error = Some(failed);
+                    if !retryable {
+                        return (ChunkDone { left: (items, chunk), consumed, error }, stats);
+                    }
+                }
             }
-            chunk = output.unprocessed_keys.into_iter().filter(|(_, keys)| !keys.keys.is_empty()).collect();
             if chunk.is_empty() {
-                return (Ok(((items, BTreeMap::new()), consumed)), stats);
+                return (ChunkDone { left: (items, chunk), consumed, error: None }, stats);
+            }
+            // A response that holds more than the limit less one item stopped at DynamoDB's
+            // 16 MB response limit, not because of throttling: the rest is requested at once,
+            // in no new round (each such response returns more than 15 MB, so this ends).
+            if returned.is_some_and(|size| size + MAX_ITEM_SIZE > BATCH_GET_RESPONSE_LIMIT) {
+                continue;
             }
             if round == rounds {
                 break;
             }
             let count: usize = chunk.values().map(|keys| keys.keys.len()).sum();
+            let failed = error.is_some();
             self.emit(EventKind::BatchUnprocessed, || {
-                Event::new(EventKind::BatchUnprocessed, format!("{count} unprocessed keys, requesting them again"))
+                let message = if failed {
+                    format!("a request of {count} keys failed, requesting them again")
+                } else {
+                    format!("{count} unprocessed keys, requesting them again")
+                };
+                Event::new(EventKind::BatchUnprocessed, message)
                     .field("operation", "BatchGetItem")
                     .field("count", count)
                     .field("round", round)
             });
             tokio::time::sleep(backoff_at_least(&self.inner.config.retry, round, Duration::from_millis(10))).await;
+            round += 1;
         }
         let count: usize = chunk.values().map(|keys| keys.keys.len()).sum();
         self.emit(EventKind::BatchIncomplete, || {
@@ -1319,7 +1448,7 @@ impl Client {
                 .field("operation", "BatchGetItem")
                 .field("count", count)
         });
-        (Ok(((items, chunk), consumed)), stats)
+        (ChunkDone { left: (items, chunk), consumed, error }, stats)
     }
 }
 

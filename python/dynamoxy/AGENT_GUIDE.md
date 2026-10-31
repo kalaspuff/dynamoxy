@@ -532,10 +532,12 @@ async with client.batch_writer() as batch:  # buffers and flushes every 100 oper
 Batch writes are unconditional and not atomic, and DynamoDB allows no two writes to the same key
 in one request: `batch_put()`, `batch_delete()` and the batch writer keep the last one. They are
 refused for models with unique attributes (guard items need transactions). If items stay
-unprocessed after every retry round, `UnprocessedItemsError.unprocessed` lists them; only the
-writes that were made update their instances and run `after_*` hooks. A batch writer flush that
-fails before its request (a hook or validation raised), or whose request fails, keeps the other
-writes queued. A block that raises writes nothing more; `await batch.flush()` writes what is still
+unprocessed after every retry round, or their request failed (a retryable error in every round,
+or one that is not retried, which stops the batch), `UnprocessedItemsError.unprocessed` lists
+them and `.error` holds the request's error; only the writes that were made update their
+instances and run `after_*` hooks. A batch writer flush that fails before its request (a hook or
+validation raised) keeps the other writes queued; what its `UnprocessedItemsError` reports is no
+longer queued. A block that raises writes nothing more; `await batch.flush()` writes what is still
 queued.
 
 A write of a loaded instance (`save()`, `put()`, batch puts) keeps the stored attributes that no
@@ -881,7 +883,7 @@ Every error derives from `dynamoxy.DynamoxyError` and has `.retryable`. Service 
 | `ThrottlingError` | Throughput exceeded after every retry | Back off; raise capacity |
 | `ResourceNotFoundError` | The table or index does not exist | Create it (`ensure_tables`) |
 | `ResourceInUseError` | The table exists or is being changed | Wait or skip |
-| `UnprocessedItemsError` | A batch still had unprocessed items after every round | Retry `.unprocessed` later |
+| `UnprocessedItemsError` | A batch left items unprocessed after every round, or a request of it failed (`.error`) | Retry `.unprocessed` later; check `.error` when `.retryable` is false |
 | `ItemDecodeError` | A stored item does not match its model (another type, a fraction in an `int`) | Fix the data, or declare the stored types (`int \| str`) |
 | `TransportError` | Network failure or timeout (retried first) | Retry later |
 | `WriteOutcomeUnknownError` | A write may have been applied, and no answer said whether (a `TransportError`; `.item`) | Read the item, then decide; never repeat an increment blindly |

@@ -88,7 +88,7 @@ Metrics:
 `returned_rows` counts the items that reads return (`GetItem`, `Query`, `Scan`, `BatchGetItem`,
 `TransactGetItems`, PartiQL `SELECT`s); writes, PartiQL ones included, record none. Capacity of PartiQL statements counts
 as reads for `SELECT` and as writes otherwise, also when DynamoDB reports only a total. A
-managed batch that leaves items unprocessed after every round (`UnprocessedItemsError`) is a
+managed batch that leaves items unprocessed (`UnprocessedItemsError`) is a
 failed operation: its span has status `ERROR`, its metrics carry `error.type`, and it emits
 `operation.failed`.
 
