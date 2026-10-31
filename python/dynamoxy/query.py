@@ -256,7 +256,8 @@ class _Reader[T]:
         if not paths:
             raise ValueError("project() needs at least one attribute")
         projected = tuple(path_of(path) for path in paths)
-        reader = self._replace(projection=projected, hydrate=False, decode_page=None)
+        # A hydrate() before or after projects the full items.
+        reader = self._replace(projection=projected, decode_page=None)
         requested = frozenset(str(path.elements[0]) for path in projected)
         reader._decode = _projection_decoder(self._model, requested)  # type: ignore[assignment]
         return reader  # type: ignore[return-value]

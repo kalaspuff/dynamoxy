@@ -261,6 +261,7 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client, backen
     with pytest.raises(ValueError, match=r"does not hold 'amount'.*add \.hydrate\(\)"):
         await open_payments.project("sk", "amount").all()
     assert [row["amount"] for row in await open_payments.project("amount").hydrate().all()] == [5]
+    assert [row["amount"] for row in await open_payments.hydrate().project("amount").all()] == [5]
     # A table whose index does not hold the entity type (created by other tools, or before
     # dynamoxy projected it): DynamoDB refuses queries that filter on it (ADR 0021), and its
     # scans' filters see entries without one.

@@ -40,9 +40,11 @@ for new questions, and keep their logs here.
 | `Query` or `Scan` of a global index, `ProjectionExpression` naming `secret` | refused: `Global secondary index gsi does not project [secret]` | returns what the index holds | same as DynamoDB |
 | `Query` or `Scan` of a local index, `ProjectionExpression` naming `secret` | returns `secret`, read from the table | returns what the index holds | same as DynamoDB |
 | `Scan` of a local or global index, `FilterExpression` on `secret` | matches nothing (filters the entries) | returns the item | returns the item |
+| the same, the scan fetching the items (`ALL_ATTRIBUTES`, or a projection of `secret`) | not measured yet (round 2 asks); PartiQL `SELECT`s filter the entries (dynoxide-rs) | returns the item | returns the item |
 
-The in-memory backend answers like DynamoDB, and model reads refuse these filters and projections
-before any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
+The in-memory backend answers like DynamoDB (and, until round 2 says otherwise, filters the entries
+in scans that fetch the items too), and model reads refuse these filters and projections before
+any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 
 ### Expression limits (#97)
 

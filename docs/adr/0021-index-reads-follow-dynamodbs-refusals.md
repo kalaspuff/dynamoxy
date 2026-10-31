@@ -18,13 +18,16 @@ more filter attributes: [secret]", naming each place the filter reads such an at
 (`[_type, _type]` for the entity filter). A `ProjectionExpression` of a global index naming them
 is refused in queries and scans ("Global secondary index gsi does not project [secret]"). A
 `Scan` filter on them matches nothing, and a local index fetches the attributes of a projection
-from the table.
+from the table. Whether a scan's filter still sees the index entries when the scan fetches the
+items (`ALL_ATTRIBUTES`, or a projection of what a local index does not hold) was not measured;
+DynamoDB's PartiQL `SELECT` does (captured by dynoxide-rs), and the second round of probes asks.
 
 ## Decision
 
 * The in-memory backend refuses and evaluates these reads like DynamoDB, with its messages: query
   filters on attributes an index does not hold, projections of a global index naming them, and
-  scan filters that see the index entries also when the scan fetches the items.
+  scan filters that see the index entries, also (assumed, like PartiQL) when the scan fetches the
+  items.
 * Model reads raise `ValueError` before any request for a filter on an attribute a partial index
   does not hold, local indexes included, and for `.project(...)` of a global index naming one,
   unless the query adds `.hydrate()`: then the index is read for the keys alone and the

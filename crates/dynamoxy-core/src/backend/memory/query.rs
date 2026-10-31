@@ -235,8 +235,10 @@ fn page<'a>(target: &Target<'_>, candidates: impl Iterator<Item = &'a Item>, req
         read.entry(&visible);
         output.scanned_count += 1;
         last = Some(item);
-        // The filter sees the index entry, also when the read fetches the item from the table
-        // (a scan's filter on attributes the index does not hold matches nothing).
+        // The filter sees the index entry: a scan's filter on attributes the index does not hold
+        // matches nothing (measured, docs/parity). That it does so also when the scan fetches the
+        // items from the table is assumed from DynamoDB's PartiQL SELECT, which does (round 2 of
+        // scripts/probe_dynamodb.sh asks DynamoDB).
         let matches = request.filter.is_none_or(|filter| evaluate(filter, &visible));
         let evaluated = if request.fetch {
             read.fetch(item);
