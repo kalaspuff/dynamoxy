@@ -22,12 +22,12 @@
       "attribute_type_path_filter": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {FS,NS,L,M,DECIMALSET,DOUBLE,FLOAT,NULL,BS,DICT,HD,S,SS,HDS,INTSET,B,DOUBLESET,N,DECIMAL,BOOL,INT}"
+        "message": "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
       },
       "attribute_type_path_update": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {FS,NS,L,M,DECIMALSET,DOUBLE,FLOAT,NULL,BS,DICT,HD,S,SS,HDS,INTSET,B,DOUBLESET,N,DECIMAL,BOOL,INT}"
+        "message": "Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
       },
       "dash_placeholder_put": {
         "code": "ValidationException",
@@ -215,20 +215,85 @@
         "error": "ValidationError",
         "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393224"
       },
+      "payload_updates_condition_and": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393719"
+      },
+      "payload_updates_condition_attribute_type": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ConditionExpression: Invalid attribute type name found; type: w, valid types: {N,BS,L,B,NULL,M,S,SS,NS,BOOL}"
+      },
+      "payload_updates_condition_begins_with": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393466"
+      },
+      "payload_updates_condition_between": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
       "payload_updates_condition_compare": {
         "code": "ValidationException",
         "error": "ValidationError",
         "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393334"
+      },
+      "payload_updates_condition_compare_longer_value": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393356"
+      },
+      "payload_updates_condition_compare_paths": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393334"
+      },
+      "payload_updates_condition_compare_size": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393400"
+      },
+      "payload_updates_condition_contains": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393433"
       },
       "payload_updates_condition_exists_long": {
         "code": "ValidationException",
         "error": "ValidationError",
         "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393532"
       },
+      "payload_updates_condition_exists_nested": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393477"
+      },
       "payload_updates_condition_exists_pk": {
         "code": "ValidationException",
         "error": "ValidationError",
         "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393444"
+      },
+      "payload_updates_condition_in": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393422"
+      },
+      "payload_updates_condition_not": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
+      "payload_updates_condition_not_equal": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393345"
+      },
+      "payload_updates_condition_or": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393708"
       },
       "payload_updates_longer_key": {
         "code": "ValidationException",

@@ -187,7 +187,47 @@
         "error": "ValidationError",
         "message": "Transaction request exceeds the 4MB transaction size limit"
       },
+      "payload_updates_condition_and": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_attribute_type": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_begins_with": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_between": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
       "payload_updates_condition_compare": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_longer_value": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_paths": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_size": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_contains": {
         "code": "ValidationException",
         "error": "ValidationError",
         "message": "Transaction request exceeds the 4MB transaction size limit"
@@ -197,7 +237,32 @@
         "error": "ValidationError",
         "message": "Transaction request exceeds the 4MB transaction size limit"
       },
+      "payload_updates_condition_exists_nested": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
       "payload_updates_condition_exists_pk": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_in": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_not": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_not_equal": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_or": {
         "code": "ValidationException",
         "error": "ValidationError",
         "message": "Transaction request exceeds the 4MB transaction size limit"

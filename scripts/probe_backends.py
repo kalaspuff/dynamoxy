@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 PREFIX = "dynamoxy-probe-"
+WAIT = 1500  # seconds: DynamoDB took up to 506 s to backfill a global index of one item
 KB = 1024
 DEFAULT_ENDPOINTS = {"localstack": "http://127.0.0.1:4566"}
 
@@ -428,8 +429,9 @@ async def sizes(probe: Probe) -> None:
             }
             if condition is not None:
                 operation["condition_expression"] = condition
-                if ":w" in condition:
-                    operation["expression_attribute_values"] = {":v": filler, ":w": "w"}
+                used = {":w": "w", ":ww": "ww"}
+                extra = {name: value for name, value in used.items() if re.search(rf"{name}\b", condition)}
+                operation["expression_attribute_values"] = {":v": filler, **extra}
             operations.append(operation)
         return operations
 
@@ -449,7 +451,20 @@ async def sizes(probe: Probe) -> None:
     for label, condition in (
         ("exists_pk", "attribute_exists(pk)"),
         ("exists_long", "attribute_exists(abcdefghij)"),
+        ("exists_nested", "attribute_exists(ab.cd)"),
         ("compare", "note = :w"),
+        ("compare_longer_value", "note = :ww"),
+        ("compare_paths", "note = alt"),
+        ("compare_size", "size(note) > :w"),
+        ("not_equal", "note <> :w"),
+        ("begins_with", "begins_with(note, :w)"),
+        ("contains", "contains(note, :w)"),
+        ("attribute_type", "attribute_type(note, :w)"),
+        ("between", "note BETWEEN :w AND :w"),
+        ("in", "note IN (:w, :w)"),
+        ("and", "attribute_exists(pk) AND attribute_exists(pk)"),
+        ("or", "attribute_exists(pk) OR attribute_exists(pk)"),
+        ("not", "NOT attribute_exists(pk)"),
     ):
         await probe.fact(
             f"payload_updates_condition_{label}",
@@ -510,14 +525,14 @@ async def tables(probe: Probe) -> None:
         "index_while_creating",
         table.add_index(IndexDefinition("by_a", "global", ("a", "S")), billing=dynamoxy.Billing(), wait=False),
     )
-    await table.wait_until_active()
+    await table.wait_until_active(timeout=WAIT)
     # Another name: emulators take the first index while the table is being created.
     await table.add_index(IndexDefinition("by_c", "global", ("c", "S")), wait=False)
     await probe.fact(
         "second_index_while_creating",
         table.add_index(IndexDefinition("by_b", "global", ("b", "S")), billing=dynamoxy.Billing(), wait=False),
     )
-    await table.wait_until_active()
+    await table.wait_until_active(timeout=WAIT)
 
     billed = await probe.table(
         "billing", partition_key=("pk", "S"), indexes=[IndexDefinition("gsi1", "global", ("gk", "S"))]
@@ -533,7 +548,7 @@ async def tables(probe: Probe) -> None:
             provisioned_throughput=(1, 1),
         ),
     )
-    await billed.wait_until_active()
+    await billed.wait_until_active(timeout=WAIT)
     await probe.fact("provisioned", billed.update_settings(billing=dynamoxy.Billing.provisioned(1, 1)))
     await probe.fact(
         "index_without_capacity_on_provisioned",
@@ -547,7 +562,7 @@ async def tables(probe: Probe) -> None:
             ],
         ),
     )
-    await billed.wait_until_active()
+    await billed.wait_until_active(timeout=WAIT)
     await probe.fact("on_demand_again", billed.update_settings(billing=dynamoxy.Billing()))
     described = await probe.call("describe_table", "DescribeTable", table_name=name)
     capacity = described["global_secondary_indexes"][0]["provisioned_throughput"]
@@ -561,7 +576,7 @@ async def tables(probe: Probe) -> None:
             global_secondary_index_updates=[{"update": {"index_name": "gsi1", "provisioned_throughput": (1, 1)}}],
         ),
     )
-    await billed.wait_until_active()
+    await billed.wait_until_active(timeout=WAIT)
 
 
 async def partiql(probe: Probe) -> None:
@@ -675,7 +690,10 @@ def make_client(target: str, prefix: str, args: argparse.Namespace) -> dynamoxy.
     if target == "memory":
         return testing.memory_client(table_prefix=prefix)
     if target == "aws":
-        return dynamoxy.Client(region=args.region, table_prefix=prefix)
+        # A new on-demand table throttles bursts of large writes (eleven 390 KB items at once):
+        # more attempts, longer backoff.
+        retry = dynamoxy.RetryPolicy(max_attempts=12, base_delay=0.5, max_delay=20)
+        return dynamoxy.Client(region=args.region, table_prefix=prefix, retry=retry)
     endpoint = args.endpoint or DEFAULT_ENDPOINTS.get(target)
     if endpoint is None:
         raise SystemExit(f"--endpoint is needed for {target}")

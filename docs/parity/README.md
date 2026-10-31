@@ -44,13 +44,19 @@ uv run python scripts/probe_backends.py iam-policy --account <account-id>  # wha
 ```
 
 A run on AWS takes about 15 minutes and costs cents; its tables are named `dynamoxy-probe-*` and
-deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs of the
-in-memory backend, MiniStack and LocalStack are kept here
-([memory](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json),
-[LocalStack](probe-localstack-2026.3.0.json)). The in-memory backend differs from LocalStack in
-40 facts and from MiniStack in 44, each one an emulator difference listed below; besides what the CLI probes asked, the
-library probe asks how conditions, deletes and condition checks count toward a transaction's
-payload, and whether a query filter that also names an attribute the index holds lists it.
+deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs are
+kept here: [DynamoDB](probe-aws-eu-north-1-2026-10-31.json) (eu-north-1, 2026-10-31),
+[the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
+[LocalStack](probe-localstack-2026.3.0.json).
+
+Every fact the DynamoDB run holds, the in-memory backend's run holds alike. That run stopped two
+scenarios early: on-demand throttling of eleven 390 KB writes to a new table ended `sizes` before
+its `TransactGetItems` and `UpdateItem` facts, and a backfill longer than the 300-second wait ended
+`tables` before its billing facts (the probe now retries and waits longer). It also showed that
+DynamoDB refuses `DescribeTimeToLive` of a table it is still creating, and how conditions, deletes
+and checks count toward a transaction's payload. Later variants of the `sizes` scenario (the other
+condition forms) have no DynamoDB answer yet. MiniStack differs from DynamoDB in 63 facts and
+LocalStack in 58, each an emulator difference listed below.
 
 ## What DynamoDB answered
 
@@ -171,7 +177,7 @@ value its size, `size(p)` 22 more than its path, and on top of its operands `att
 | Request | DynamoDB | MiniStack | LocalStack |
 | --- | --- | --- | --- |
 | `UpdateTimeToLive` of a table still `CREATING` | `ResourceNotFoundException: Requested resource not found: Table: <name> not found` | accepted (tables are active at once) | accepted (active at once) |
-| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's own probe on AWS, `tables.ttl_while_creating`, kept with that probe) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | not probed | not probed |
+| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's own probe, `tables.ttl_while_creating`) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | accepted (tables are active at once) | accepted |
 | `UpdateTable` of a table still `CREATING` | `ResourceInUseException: Attempt to change a resource which is still in use: Table is being created: <name>` | accepted | accepted |
 | switch to `PROVISIONED` with capacity for the table only (one global index) | `One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1` | accepted, the index at 0/0 | `InternalFailure` |
 | add a global index without `ProvisionedThroughput` to a provisioned table | `One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2` | accepted | `InternalFailure` |
