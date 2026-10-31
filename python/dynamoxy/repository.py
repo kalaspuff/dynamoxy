@@ -1816,12 +1816,13 @@ def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
 
 
 def _unchanged_conditions(values: Mapping[str, Any]) -> list[Condition]:
-    """Conditions that attributes still have the stored ``values`` (``MISSING``: no attribute)."""
+    """Conditions that attributes still have the stored ``values`` (``MISSING``: no attribute).
+
+    No attribute and DynamoDB's ``NULL`` both read as ``None``: either one holds for the other.
+    """
     return [
-        F(attribute).not_exists()
-        if value is MISSING
-        else F(attribute).is_type("NULL")
-        if value is None
+        F(attribute).not_exists() | F(attribute).is_type("NULL")
+        if value is MISSING or value is None
         else F(attribute) == value
         for attribute, value in values.items()
     ]

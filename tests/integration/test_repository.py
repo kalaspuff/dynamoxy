@@ -1246,3 +1246,32 @@ async def test_updates_of_loaded_instances_render_derived_keys_from_an_item_chan
     assert isinstance(error, dynamoxy.ConditionalCheckFailedError)
     assert "another writer changed the fields derived attributes are rendered from" in str(error)
     assert (await climbers.get_or_raise("c1")).score == 17
+
+
+class Badge(Model, table="badges"):
+    badge_id: Attr[str] = partition_key()
+    group: Attr[str | None] = field(default=None)
+    count: Attr[int] = field(default=0)
+    slot: Attr[str | None] = field(template="{group}#{count:04d}")
+
+
+async def test_derived_keys_read_a_null_and_a_missing_attribute_alike(client: dynamoxy.Client) -> None:
+    # A field stored as DynamoDB's NULL reads as None, like a missing one: another writer removing
+    # it does not change what the update renders, and must not make it fail.
+    await client.create_tables(Badge)
+    badges = client.model(Badge)
+    await badges.table.put({"badge_id": "b", "group": None, "count": 1})
+    removed = False
+
+    async def remove_after_the_read(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        nonlocal removed
+        response = await call_next(request)
+        if request.operation == "GetItem" and not removed:
+            removed = True
+            await badges.table.update({"badge_id": "b"}, F("group").remove())
+        return response
+
+    client.use(remove_after_the_read)
+    updated = await badges.update(Badge.key("b"), Badge.count.increment(1))
+    assert (updated.group, updated.count, updated.slot) == (None, 2, None)
+    assert removed
