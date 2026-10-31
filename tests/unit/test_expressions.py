@@ -102,6 +102,10 @@ def test_raw_conditions_are_renamed_to_avoid_clashes() -> None:
         check(condition=text, names=names, values=values)
     text, _, _ = compile_condition(grouped & (F("n") > 1))
     assert text == "(#a0 = :v0 OR #a1 > :v1) AND (#a1 > :v2)"
+    spaced = dynamoxy.condition("\n  (#s = :v OR #n > :v)\n", names={"#s": "status", "#n": "n"}, values={":v": 1})
+    text, names, values = compile_condition(spaced & (F("n") > 1))
+    assert text == "(#a0 = :v0 OR #a1 > :v1) AND (#a1 > :v2)"
+    check(condition=text, names=names, values=values)
     with pytest.raises(ValueError, match="does not define"):
         compile_condition(dynamoxy.condition("#x = :y"))
 

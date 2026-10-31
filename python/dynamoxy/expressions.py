@@ -692,6 +692,7 @@ def _grouped(text: str) -> str:
     DynamoDB refuses redundant parentheses (``((a = :v))``), which a hand-written condition in
     parentheses of its own would get here.
     """
+    text = text.strip()  # a raw condition may have surrounding whitespace (a triple-quoted string)
     if text.startswith("("):
         depth = 0
         for position, character in enumerate(text):
