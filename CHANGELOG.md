@@ -8,6 +8,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Changed
 
 - [**breaking**] `create`, `get` and `query` are model methods now:
@@ -525,6 +527,87 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   extension no longer contains the AWS SDK's legacy HTTP client, which dynamoxy never used, or
   its rustls 0.21 and rustls-webpki 0.101, which get no fixes for these advisories or for
   GHSA-82j2-j2ch-gfr8, GHSA-xgp8-3hg3-c2mh and GHSA-965h-392x-2mh5.
+
+### Features
+
+- **client:** Client.model(User) replaces the deprecated client.repository(User) (#55)
+- **models:** [**breaking**] Model.create(client, ...) builds and writes a new item in one call (#56)
+- **models:** [**breaking**] Model.get(client, ...) and Model.query(client, ...) read items (#58)
+
+### Bug fixes
+
+- **deps:** Update rustls and drop the AWS SDK's legacy TLS client (#57)
+- **repository:** Writes through a loaded instance never reach another item (#61)
+- **models:** Instances no longer share a mutable default (#62)
+- **query:** Projections keep what where() and hydrate() need without a limit (#63)
+- **core:** Deeply nested input raises an error instead of crashing the process (#64)
+- **expressions:** Characters outside ASCII are syntax errors, not panics (#65)
+- **client:** Writes whose retries run out after an uncertain attempt are unknown (#67)
+- **repository:** Items stored before the model had a version can be saved (#68)
+- **models:** Members of mixin enums are the plain values of str and int fields (#69)
+- **query:** Requests of growing reads ask for at most a page's worth of items (#70)
+- **errors:** Errors pickle, so they cross process boundaries (#72)
+- **models:** Optional fields stay optional with a codec of their own (#105)
+- **memory:** PartiQL transactions that name an item twice are refused (#104)
+- **expressions:** List elements set past the end append in order of their index (#103)
+- **memory:** Local index reads fetch what the index does not hold (#108)
+- **models:** Key and index lookups run the field's validators, as writes do (#109)
+- **models:** [**breaking**] None and empty sets read back as written, not as the default (#113)
+- **models:** Expressions on inherited fields use the subclass's datetime_format (#111)
+- **repository:** Unique models check delete conditions on missing items, and stale deletes and updates read again (#110)
+- **models:** Pydantic subclasses of a PydanticModel inherit its fields with their defaults (#115)
+- **expressions:** Contains() encodes members of lists and sets as the field stores them (#116)
+- **core:** Sets of many elements convert and compare in linear time (#117)
+- **client:** Batch and transaction writes return the item collection metrics they ask for (#118)
+- **memory:** Refused UpdateTable and TagResource requests change nothing (#119)
+- **memory:** PartiQL pages continue after the last item the page read (#120)
+- **client:** Retry policies and client options refuse values that would fail later (#121)
+- **client:** Close() waits for async hooks before it closes the client (#122)
+- **tables:** Ensure_tables() compares key types, and tables created meanwhile count as existing (#123)
+- **query:** Counts of projected reads work, and sort keys may repeat partition key fields (#125)
+- **models:** Numbers of union fields render as stored, and literals of plain enum members write (#126)
+- **client:** Calls keep their middleware chain and deliver all their events (#127)
+- **pydantic:** Use_enum_values, forward references, RootModel fields and data-taking factories work (#128)
+- **unique:** [**breaking**] Upserts that race with creates, unique floats written back, and collections refused (#129)
+- **transactions:** Commit() no longer raises after the transaction was applied (#130)
+- **telemetry:** Records and metrics count PartiQL writes, throttles of failed calls, batch retries and rows (#131)
+- **testing:** Purge_expired, inject_fault(table=) and replayed transactions behave like DynamoDB (#132)
+- **memory:** Queries refuse empty key values and start keys outside the key condition, and index keys have size limits (#133)
+- **binding:** Conversions take any mapping and refuse invalid wire values, and unknown table statuses are not active (#134)
+- **memory:** PartiQL and expressions follow DynamoDB's rules, and hand-written conditions get no redundant parentheses (#135)
+- **memory:** PartiQL index reads refuse attributes the index does not hold (#137)
+- **models:** Writes through loaded instances use keys stored in another form (#138)
+- **models:** Repositories refuse instances of subclasses and items of other models (#139)
+- **models:** Documents read from an item keep the keys their class does not declare (#140)
+- **pydantic:** Key values and update values run the field's pydantic validators (#141)
+- **repository:** Updates render derived attributes from the stored item, and require it unchanged (#142)
+- **tables:** Provisioned billing gives global indexes capacity, and table steps wait for the one before (#143)
+- **errors:** Native errors name dynamoxy.errors as their module (#145)
+- **typing:** Dynamoxy.errors and the other public submodules keep their types after import dynamoxy (#146)
+- **indexes:** Reads refuse filters and projections of attributes an index does not hold (#148)
+- **tables:** The in-memory backend refuses table changes DynamoDB refuses (#149)
+- **versions:** [**breaking**] Version() fields hold a random token, so a stale instance never matches again (#150)
+- **expressions:** The in-memory backend refuses placeholders, names and operands DynamoDB refuses (#151)
+- **limits:** Local index entries count toward the 400 KB of an item, and transactions keep to 4 MB (#152)
+- **errors:** LocalStack's DuplicateItem code raises DuplicateItemError, and the e2e tests pass on LocalStack (#153)
+- **release:** Generated changelog entries list their pull request once (#156)
+
+### Refactoring
+
+- **models:** Import annotationlib only on Python 3.14 and later (#54)
+
+### Documentation
+
+- Agents that can push open their pull requests themselves (#53)
+- **parity:** Keep DynamoDB's measured answers and the probes that ask them (#147)
+
+### Tests
+
+- Probe dynamoxy itself on DynamoDB, MiniStack, LocalStack and the in-memory backend (#154)
+
+### Build and CI
+
+- **release:** 0.x releases are full releases, and the README shows parity with DynamoDB (#157)
 
 ## [0.3.0] - 2026-10-17
 
