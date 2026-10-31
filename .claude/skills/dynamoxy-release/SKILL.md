@@ -22,7 +22,7 @@ description: Prepare and publish a dynamoxy release - version bump, changelog fr
 4. **Automatic**: `tag-release.yml` tags `vX.Y.Z` and dispatches `release.yml`, which verifies the
    version, builds wheels (Linux x86_64/aarch64 glibc+musl via zig, macOS arm64/x86_64, Windows
    x64, Windows arm64 best effort) and the sdist, smoke-tests them, creates the GitHub release
-   (pre-release while 0.x) with attestations, and publishes to PyPI when the repository variable
+   with attestations, and publishes to PyPI when the repository variable
    `PUBLISH_TO_PYPI` is `true` (trusted publishing, environment `pypi`).
 5. **Retry** a failed release: Actions → Release → Run workflow → the existing tag, or
    `gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`.
