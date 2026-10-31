@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime
 from typing import Any
 
@@ -377,3 +378,37 @@ async def test_switching_to_provisioned_billing_gives_global_indexes_capacity(cl
     ]
     await table.update_settings(billing=dynamoxy.Billing.provisioned(20, 5))  # already provisioned: the table only
     assert "global_secondary_index_updates" not in sent[1]
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("table", ["wait", "UpdateTimeToLive", "UpdateTable", "wait", "UpdateTable"]),
+        ("index", ["UpdateTimeToLive", "wait", "UpdateTable", "wait", "UpdateTable"]),
+    ],
+)
+async def test_steps_wait_for_a_change_an_earlier_call_left_in_progress(
+    client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch, change: str, expected: list[str]
+) -> None:
+    # A rerun after a waiter gave up: the table is still being updated, or an index it added is
+    # still backfilling (the table is active then, so Time to Live does not wait for it).
+    await client.table("visits").create(partition_key=("visit_id", "S"))
+    operations = record_operations(client, monkeypatch)
+    describe = dynamoxy.table.Table.describe
+    calls = 0
+
+    async def still_updating(table: dynamoxy.table.Table) -> dynamoxy.TableDescription:
+        nonlocal calls
+        calls += 1
+        description = await describe(table)
+        if calls != 2:  # the description sync_with starts from (exists() reads the first)
+            return description
+        if change == "table":
+            return dataclasses.replace(description, status="UPDATING")
+        backfilling = dynamoxy.IndexDescription("old", "global", "o", None, "ALL", status="CREATING", backfilling=True)
+        return dataclasses.replace(description, indexes={**description.indexes, "old": backfilling})
+
+    monkeypatch.setattr(dynamoxy.table.Table, "describe", still_updating)
+    await client.ensure_tables(Visit, wait=False)
+    changes = [operation for operation in operations if operation in ("wait", "UpdateTable", "UpdateTimeToLive")]
+    assert changes == expected

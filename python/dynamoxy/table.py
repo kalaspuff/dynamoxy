@@ -499,7 +499,8 @@ class Table:
             deletion_protection: Turn on deletion protection.
             tags: Tags.
             encryption_key: A customer managed KMS key (id, ARN or alias) for encryption at rest.
-            wait: Wait until the table is active.
+            wait: Wait until the table is active. A table with a TTL attribute is waited for
+                anyway, since DynamoDB enables Time to Live on active tables only.
 
         Raises:
             ResourceInUseError: The table exists already.
