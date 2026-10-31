@@ -256,7 +256,14 @@ class _FieldValidator:
             return validate(value)
         except PydanticValidationError as error:
             # Without the input, which pydantic's messages quote (values may be personal data).
-            raise ValueError("; ".join(problem["msg"] for problem in error.errors(include_url=False))) from None
+            raise ValueError(
+                "; ".join(
+                    f"{'.'.join(str(part) for part in problem['loc'])}: {problem['msg']}"
+                    if problem["loc"]
+                    else problem["msg"]
+                    for problem in error.errors(include_url=False)
+                )
+            ) from None
 
 
 def _unchanged(value: Any) -> Any:

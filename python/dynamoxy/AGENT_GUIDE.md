@@ -360,7 +360,7 @@ one: `batch_get`, `update`, `delete`, `batch_delete` and transaction operations,
 `exists` or `query`. Read an item whose key predates a constraint or validator with
 `users.batch_get([{"user_id": "Ada"}])`. Pydantic models run the field's pydantic validators on
 key values and on values `update()` sets, except validators that take a `ValidationInfo` and
-model validators.
+model validators (a field whose `PlainValidator` takes one has only its type checked).
 
 ### Queries
 
