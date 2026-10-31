@@ -1,24 +1,24 @@
-# dynamoxy DynamoDB probes, round 2, 2026-10-31T14:17:10Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
-tables: dynamoxy-probe-22de2a-*
-### setup: create dynamoxy-probe-22de2a-idx
+# dynamoxy DynamoDB probes, round 2, 2026-10-31T14:31:33Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
+tables: dynamoxy-probe-f9c3ee-*
+### setup: create dynamoxy-probe-f9c3ee-idx
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx", "TableId": "9a4b35cd-dbc6-4645-acb4-65a5370b8f9f", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx/index/gsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-f9c3ee-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457119, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-idx", "TableId": "339eacd6-194b-4ee8-b7e5-6a7938c00a71", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-idx/index/gsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-22de2a-lsi
+### setup: create dynamoxy-probe-f9c3ee-lsi
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-lsi", "TableId": "3a4ba093-68ac-4636-ae25-b879e2c1e73c", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-f9c3ee-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457120, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-lsi", "TableId": "75f02762-8550-4412-bce1-0b96f78d886b", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-22de2a-keys
+### setup: create dynamoxy-probe-f9c3ee-keys
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-keys", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-keys", "TableId": "53889d71-fbb0-4959-8e75-9df7fb1e4675", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-keys/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-f9c3ee-keys", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457121, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-keys", "TableId": "8e2c987b-5227-4a2f-9283-5772c4d6e028", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-keys/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-22de2a-big
+### setup: create dynamoxy-probe-f9c3ee-big
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-big", "TableId": "97906824-35dd-4cd9-b6d1-43acd76c5cb8", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-f9c3ee-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457121, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-big", "TableId": "15843a11-d3ff-44bf-ba17-f93ba24c805a", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-22de2a-big-with-a-longer-name
+### setup: create dynamoxy-probe-f9c3ee-big-with-a-longer-name
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-big-with-a-longer-name", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-big-with-a-longer-name", "TableId": "f75d033d-3f92-44d9-9406-9bcfeb319ab7", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-f9c3ee-big-with-a-longer-name", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457122, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-f9c3ee-big-with-a-longer-name", "TableId": "18d2ee3a-9fd3-4eb3-af6a-2cb627196adc", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
 tables active
 ## 106: more reads of attributes an index does not project
@@ -165,78 +165,67 @@ body: b'{}'
 
 ## 93: what TransactGetItems counts towards 4 MB
 ### setup: binary item 0
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 0
 exit: 0
 
 ### setup: binary item 1
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 1
 exit: 0
 
 ### setup: binary item 2
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 2
 exit: 0
 
 ### setup: binary item 3
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 3
 exit: 0
 
 ### setup: binary item 4
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 4
 exit: 0
 
 ### setup: binary item 5
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 5
 exit: 0
 
 ### setup: binary item 6
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 6
 exit: 0
 
 ### setup: binary item 7
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 7
 exit: 0
 
 ### setup: binary item 8
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 8
 exit: 0
 
 ### setup: binary item 9
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 9
 exit: 0
 
 ### setup: binary item 10
-exit: 255
-err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+exit: 0
 
 ### setup: string item 10
 exit: 0
@@ -244,7 +233,7 @@ exit: 0
 ### 93-get-binary: TransactGetItems of eleven 300 KB binary items (3.3 MB of items, 4.4 MB of base64)
 exit: 0
 out: 11
-body: b'{"Responses": [{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]}'
+body: b'{"Responses": [{"Item": {"pk": {"S": "bin"}, "sk": {"S": "00"}, "blobby": {"B": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiY
 
 ### 93-get-decimal: TransactGetItems of eleven 363,700-byte string items (4,000,900 bytes, under 4 MiB)
 exit: 0
@@ -273,8 +262,8 @@ exit: 255
 err: An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed
 
 ## cleanup
-deleted dynamoxy-probe-22de2a-idx
-deleted dynamoxy-probe-22de2a-lsi
-deleted dynamoxy-probe-22de2a-keys
-deleted dynamoxy-probe-22de2a-big
-deleted dynamoxy-probe-22de2a-big-with-a-longer-name
+deleted dynamoxy-probe-f9c3ee-idx
+deleted dynamoxy-probe-f9c3ee-lsi
+deleted dynamoxy-probe-f9c3ee-keys
+deleted dynamoxy-probe-f9c3ee-big
+deleted dynamoxy-probe-f9c3ee-big-with-a-longer-name
