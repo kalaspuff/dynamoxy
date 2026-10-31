@@ -263,6 +263,17 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `Membership.query(client, org_id="o1", user_id="u1")` raised `ValueError: unexpected arguments
   user_id` (index keys such as `"STATUS#{status}"` and `"{status}#{placed_at}"` too), where
   `get()` worked; they now select the sort key.
+- Key templates rendered `Decimal` values of union and `Any` fields as given: with
+  `amount: Attr[Decimal | str]` and `sk="PRICE#{amount}"`, `Decimal("1.50")` wrote
+  `PRICE#1.50`, the instance read back rendered `PRICE#1.5`, and its `save()` raised "key
+  changed". They now render numbers of such fields as the field reads them back, like `Decimal`
+  fields ([ADR 0013](docs/adr/0013-stored-forms-read-back-as-written.md)), so an `int | float`
+  field renders `2.0` as `2`. Items written before under a non-canonical number keep that key:
+  move them as ADR 0013 describes. A `Literal` of a plain `Enum`'s members
+  (`Literal[Color.RED]`) passed validation and failed to write: it now stores the member's value
+  and reads back the member, and a member whose value DynamoDB cannot store is a `TypeError`
+  when the model is declared. `int` fields raised `OverflowError` for `Decimal("Infinity")` and
+  `decimal.InvalidOperation` for `Decimal("sNaN")`, instead of a `ValidationError`.
 
 ### Security
 

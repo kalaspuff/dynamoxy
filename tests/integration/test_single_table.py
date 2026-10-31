@@ -341,6 +341,25 @@ async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None
     assert [item.sk for item in await prices.query(sku="a").all()] == ["PRICE#1.5#2025-12-31"], "the same item"
 
 
+class Offer(Model, table="catalog", entity="Offer"):
+    """A key template with a number of a union field."""
+
+    pk: Attr[str] = partition_key(template="SKU#{sku}")
+    sk: Attr[str] = sort_key(template="OFFER#{amount}")
+    sku: Attr[str]
+    amount: Attr[Decimal | str]
+
+
+async def test_templates_render_numbers_of_unions_as_stored(client: dynamoxy.Client) -> None:
+    await client.create_tables(Offer)
+    offers = client.model(Offer)
+    assert (await offers.create(Offer(sku="a", amount=Decimal("1.50")))).sk == "OFFER#1.5"
+    [loaded] = await offers.query(sku="a").all()
+    assert loaded.amount == Decimal("1.5")
+    await loaded.save()
+    assert [item.sk for item in await offers.query(sku="a").all()] == ["OFFER#1.5"], "the same item"
+
+
 class Seat(Model, table="seats", entity="Seat"):
     """Sort keys that repeat a field of the partition key, in the table and in an index."""
 

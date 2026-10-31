@@ -489,6 +489,40 @@ class Shelf(str, enum.Enum):  # noqa: UP042 - a mixin, as above
     TOP = "top"
 
 
+class Finish(enum.Enum):
+    """A plain enum: its members are not their values."""
+
+    MATTE = "matte"
+    GLOSS = "gloss"
+
+
+class Print(Model, table="prints"):
+    """Literals of plain enum members, in an attribute, a key template and an index key."""
+
+    pk: Attr[str] = partition_key(template="PRINT#{print_id}#{finish}")
+    print_id: Attr[str]
+    finish: Attr[Literal[Finish.MATTE, Finish.GLOSS]]
+    size: Attr[Literal[Finish.MATTE, "large"] | None] = field(default=None)
+    gsi1pk: Attr[str] = field(template="FINISH#{finish}")
+
+    by_finish = GlobalIndex("gsi1", partition_key=gsi1pk)
+
+
+async def test_literals_of_plain_enum_members_are_stored_as_their_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Print)
+    prints = client.model(Print)
+    created = await prints.create(Print(print_id="p1", finish=Finish.GLOSS, size=Finish.MATTE))
+    assert (created.pk, created.gsi1pk) == ("PRINT#p1#gloss", "FINISH#gloss")
+    [stored] = await client.table("prints").scan().all()
+    assert (stored["finish"], stored["size"]) == ("gloss", "matte")
+    loaded = await prints.get_or_raise(print_id="p1", finish=Finish.GLOSS)
+    assert (loaded.finish, loaded.size) == (Finish.GLOSS, Finish.MATTE)
+    await loaded.save()  # the key it renders is the stored key
+    await prints.update(loaded, Print.size.set("large"))
+    assert [item.size for item in await prints.query(index=Print.by_finish, finish=Finish.GLOSS).all()] == ["large"]
+    assert await prints.scan().filter(Print.finish == Finish.GLOSS).count() == 1
+
+
 async def test_members_of_mixin_enums_are_stored_as_their_values(client: dynamoxy.Client) -> None:
     # str() of such a member is "Kind.BOOK", not its value: keys, index keys and unique guards
     # rendered it, while the item stored the value.

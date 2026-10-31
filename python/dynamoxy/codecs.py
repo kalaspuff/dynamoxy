@@ -228,7 +228,8 @@ class IntCodec(Codec[int]):
     @override
     def validate(self, value: Any) -> int:
         if isinstance(value, bool) or not isinstance(value, int):
-            if isinstance(value, Decimal) and value == value.to_integral_value():
+            # `is_finite()` first: infinity is integral, and comparing a signaling NaN raises.
+            if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
                 return int(value)
             raise _type_error("int", value)
         # A subclass (a member of an `(int, Enum)`, ...) as its number, as for `str`.
@@ -588,13 +589,27 @@ class EnumCodec[E: enum.Enum](Codec[E]):
 
 
 class LiteralCodec(Codec[Any]):
-    """One of a fixed set of values (``Literal["a", "b"]``)."""
+    """One of a fixed set of values (``Literal["a", "b"]``, ``Literal[Color.RED]``).
+
+    A member of a plain ``Enum`` is stored as its value and reads back as the member, as an
+    ``Enum`` field does; other values are stored as the plain ``str``, ``int``, ``bytes`` or
+    ``bool`` they are.
+    """
 
     def __init__(self, values: Sequence[Any]) -> None:
         self.values = tuple(values)
-        if all(isinstance(value, str) for value in self.values):
+        stored: list[Any] = []
+        for value in self.values:
+            plain = _literal_stored(value)
+            if not isinstance(plain, (str, int, bytes)):
+                raise TypeError(
+                    f"cannot store the literal {value!r}: its value {plain!r} is not a str, int, bytes or bool"
+                )
+            stored.append(plain)
+        self._stored = tuple(stored)
+        if all(isinstance(value, str) for value in self._stored):
             self._dynamo_type: str | None = "S"
-        elif all(isinstance(value, int) and not isinstance(value, bool) for value in self.values):
+        elif all(isinstance(value, int) and not isinstance(value, bool) for value in self._stored):
             self._dynamo_type = "N"
         else:
             self._dynamo_type = None
@@ -608,11 +623,16 @@ class LiteralCodec(Codec[Any]):
     def validate(self, value: Any) -> Any:
         # `True == 1`: a bool only matches a bool literal, an int only a non-bool literal. The
         # value is the plain str or int of the literal it matches, also for a subclass on either
-        # side (a member of a `(str, Enum)`), as DynamoDB stores it.
+        # side (a member of a `(str, Enum)`), as DynamoDB stores it; a member of a plain Enum
+        # stays the member.
         for allowed in self.values:
             if value == allowed and isinstance(value, bool) == isinstance(allowed, bool):
-                return _plain(allowed)
+                return _literal_python(allowed)
         raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)} (got {type(value).__name__})")
+
+    @override
+    def encode(self, value: Any) -> Any:
+        return _literal_stored(value)
 
     @override
     def decode(self, value: Any) -> Any:
@@ -620,7 +640,12 @@ class LiteralCodec(Codec[Any]):
             value = _decode_int(value)
         elif self._dynamo_type == "S":
             value = _decode_str(value)
-        return self.validate(value)
+        elif isinstance(value, (bytearray, memoryview)):
+            value = bytes(value)
+        for allowed, stored in zip(self.values, self._stored, strict=True):
+            if value == stored and isinstance(value, bool) == isinstance(stored, bool):
+                return _literal_python(allowed)
+        raise ValueError(f"expected one of {', '.join(repr(v) for v in self.values)} (got {value!r})")
 
     @override
     def describe(self) -> str:
@@ -629,6 +654,21 @@ class LiteralCodec(Codec[Any]):
     @override
     def key_type(self) -> str | None:
         return self._dynamo_type
+
+
+def _is_plain_member(value: Any) -> bool:
+    """Whether ``value`` is a member of an ``Enum`` that does not mix in ``str``, ``int`` or ``bytes``."""
+    return isinstance(value, enum.Enum) and not isinstance(value, (str, int, bytes))
+
+
+def _literal_python(value: Any) -> Any:
+    """A literal as instances hold it: a plain ``Enum`` member as is, anything else as plain value."""
+    return value if _is_plain_member(value) else _plain(value)
+
+
+def _literal_stored(value: Any) -> Any:
+    """A literal as DynamoDB stores it: a plain ``Enum`` member as its value."""
+    return _plain(value.value) if _is_plain_member(value) else _plain(value)
 
 
 class AnyCodec(Codec[Any]):

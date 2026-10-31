@@ -26,6 +26,13 @@ class Level(enum.IntEnum):
     HIGH = 2
 
 
+class Shade(enum.Enum):
+    """A plain enum, whose members are not their values."""
+
+    DARK = "dark"
+    LIGHT = "light"
+
+
 def round_trip(annotation: Any, value: Any) -> Any:
     codec = resolve_codec(annotation)
     return codec.decode(codec.encode(codec.validate(value)))
@@ -48,6 +55,8 @@ def round_trip(annotation: Any, value: Any) -> Any:
         (Literal["a", "b"], "b"),
         (Literal["a", None], "a"),  # noqa: PYI061 - the spelling under test
         (Literal["a", None], None),  # noqa: PYI061
+        (Literal[Shade.DARK], Shade.DARK),
+        (Literal[Shade.DARK, "x"], "x"),
         (list[int], [1, 2, 3]),
         (tuple[str, ...], ("a", "b")),
         (set[str], {"a", "b"}),
@@ -167,6 +176,11 @@ def test_datetime_format_of_resolved_codecs() -> None:
         (uuid.UUID, "not-a-uuid", "expected UUID"),
         (Color, "green", "one of 'red', 'blue'"),
         (Literal[1, "a"], True, "expected one of"),
+        (Literal[Shade.DARK], "dark", "expected one of"),
+        (int, Decimal("Infinity"), "expected int"),
+        (int, Decimal("-Infinity"), "expected int"),
+        (int, Decimal("NaN"), "expected int"),
+        (int, Decimal("sNaN"), "expected int"),
         (list[int], [1, "2"], r"\[1\]: expected int"),
         (dict[str, int], {"a": "b"}, r"\.a: expected int"),
         (dict[str, int], {1: 1}, "map keys must be str"),
@@ -238,6 +252,8 @@ def test_numbers_are_normalized() -> None:
         (Literal[1, 2], Decimal("1.5")),
         (Literal[1, 2], 3),
         (Literal["a", "b"], "c"),
+        (Literal[Shade.DARK], "light"),
+        (Literal[Shade.DARK], Shade.DARK),
         (list[int], "abc"),
         (list[int], {1, 2}),
         (list[int], [1, Decimal("2.5")]),
@@ -271,6 +287,8 @@ def test_decoding_refuses_what_the_type_cannot_hold(annotation: Any, stored: Any
         (bytes, bytearray(b"x"), b"x"),
         (Level, Decimal(2), Level.HIGH),
         (Literal[1, 2], Decimal(2), 2),
+        (Literal[Shade.DARK, Shade.LIGHT], "light", Shade.LIGHT),
+        (Literal[Color.RED], "red", "red"),
         (timedelta, Decimal("86400000.000001"), timedelta(days=1000, microseconds=1)),
         (DateTimeCodec("epoch"), "2026-01-02T03:04:05Z", datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)),
         (set[str], None, set()),
@@ -284,6 +302,21 @@ def test_decoding_keeps_what_the_type_holds(annotation: Any, stored: Any, decode
     result = codec.decode(stored)
     assert result == decoded
     assert type(result) is type(decoded)
+
+
+def test_literal_members_of_plain_enums_are_stored_as_their_values() -> None:
+    codec = resolve_codec(Literal[Shade.DARK, Shade.LIGHT])
+    assert codec.dynamo_type == "S"
+    assert codec.encode(codec.validate(Shade.LIGHT)) == "light"
+    assert codec.key_type() == "S"
+
+
+def test_literal_members_need_values_dynamodb_can_store() -> None:
+    class Odd(enum.Enum):
+        POINT = (1, 2)
+
+    with pytest.raises(TypeError, match=r"cannot store the literal <Odd.POINT: \(1, 2\)>"):
+        resolve_codec(Literal[Odd.POINT])
 
 
 def test_unions_refuse_booleans_unless_they_name_bool() -> None:

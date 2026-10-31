@@ -46,7 +46,9 @@ the important rules:
   their own, and a missing attribute reads back as `None`; `REMOVE` and `None` are the same.
 - Enums store their value; `Literal["a", "b"]` restricts strings (or numbers). A `str`, `int`
   or `Literal` field holds a plain `str` or `int`: a member of a `(str, Enum)` or `(int, Enum)`
-  becomes its value, so keys, templates and unique values render what DynamoDB stores.
+  becomes its value, so keys, templates and unique values render what DynamoDB stores. A
+  member of a plain `Enum` in a `Literal` (`Literal[Color.RED]`) is stored as its value and
+  reads back as the member, as in an `Enum` field.
 - Nested `Document`s and pydantic models are maps; `list[Document]` works too.
 
 Custom storage: pass `codec=` (or `Annotated[T, dynamoxy.UseCodec(codec)]`). `JsonCodec` stores

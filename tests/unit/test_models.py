@@ -16,6 +16,7 @@ from dynamoxy import (
     Attr,
     Document,
     Model,
+    _core,
     created_at,
     field,
     partition_key,
@@ -517,6 +518,30 @@ def test_key_templates_render_what_is_stored() -> None:
     item = price.to_item()
     assert item["sk"] == "PRICE#1.5#2025-12-31", "the number as DynamoDB stores it, the date in UTC"
     assert Price.from_item({**item, "amount": Decimal("1.5")}).to_item()["sk"] == item["sk"], "read back: the same key"
+
+
+class Quote(Model, table="quotes"):
+    pk: Attr[str] = partition_key(template="QUOTE#{price}#{amount}#{figure}")
+    price: Attr[Decimal | str]
+    amount: Attr[int | float]
+    figure: Attr[Any]
+
+
+@pytest.mark.parametrize(
+    ("price", "amount", "figure", "pk"),
+    [
+        (Decimal("1.50"), 2.0, Decimal("2.50"), "QUOTE#1.5#2#2.5"),
+        ("1.50", 2.5, 1e20, "QUOTE#1.50#2.5#100000000000000000000"),
+        (Decimal("1E+2"), 3, "x", "QUOTE#100#3#x"),
+    ],
+)
+def test_key_templates_render_numbers_of_unions_as_they_read_back(
+    price: Decimal | str, amount: float, figure: Any, pk: str
+) -> None:
+    item = Quote(price=price, amount=amount, figure=figure).to_item()
+    assert item["pk"] == pk
+    stored = _core.from_wire(_core.to_wire(item))
+    assert Quote.from_item(stored).to_item()["pk"] == pk, "read back: the same key"
 
 
 def test_guard_keys_use_the_stored_numbers() -> None:
