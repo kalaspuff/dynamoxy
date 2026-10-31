@@ -168,7 +168,9 @@ continue a scan with one segment's cursor, `.segment(index, total).after(cursor)
 ## Counting
 
 `await users.count()` scans the model's items; `await orders.count(customer_id="c1")` counts a
-partition with a query. Both read every matching item (without transferring them). For counters
+partition with a query. Both read every matching item (without transferring them), and ignore a
+`.project(...)`. A parallel scan counts every segment from its start, so
+`scan().segments(n).after(cursor).count()` raises `TypeError`, as iterating it does. For counters
 that must be cheap, maintain them in an item with `update(..., X.count.add(1))`.
 
 ## Collections

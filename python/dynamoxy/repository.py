@@ -473,7 +473,7 @@ class Repository[M]:
         automatic: Condition | None = None
         explicit = False
         if sort_spec is not None:
-            sort_condition, is_automatic, remaining = self._sort_condition(sort_spec, remaining)
+            sort_condition, is_automatic, remaining = self._sort_condition(sort_spec, remaining, key_values)
             if is_automatic:
                 automatic = sort_condition
             elif sort_condition is not None:
@@ -518,20 +518,25 @@ class Repository[M]:
         return value, remaining
 
     def _sort_condition(
-        self, spec: FieldSpec, remaining: dict[str, Any]
+        self, spec: FieldSpec, remaining: dict[str, Any], arguments: Mapping[str, Any]
     ) -> tuple[Condition | None, bool, dict[str, Any]]:
         """The sort key condition of a query, whether dynamoxy added it, and the unused arguments.
 
-        A sort key value among the arguments selects it; otherwise a template's constant prefix
-        (``"ORDER#{order_id}"``) or a constant template restricts the query to this model's items.
+        A sort key value among the arguments selects it, and so do values of every field of its
+        template, some of which the partition key may use too (``"ORG#{org_id}"`` and
+        ``"MEMBER#{org_id}#{user_id}"``), as long as one of them is not the partition key's
+        (``remaining`` holds the arguments the partition key left, ``arguments`` all of them).
+        Otherwise a template's constant prefix (``"ORDER#{order_id}"``) or a constant template
+        restricts the query to this model's items.
         """
         template = spec.template
         names = {spec.name, spec.attribute}
+        fields = template.fields if template is not None else ()
         if names & remaining.keys() or (
-            template is not None and template.fields and all(name in remaining for name in template.fields)
+            fields and all(name in arguments for name in fields) and any(name in remaining for name in fields)
         ):
-            value, remaining = self._partition_value(spec, remaining)
-            return F(spec.attribute) == value, False, remaining
+            value, unused = self._partition_value(spec, arguments)
+            return F(spec.attribute) == value, False, {name: remaining[name] for name in remaining if name in unused}
         if template is not None and template.prefix and not template.is_constant:
             return F(spec.attribute).begins_with(template.prefix), True, remaining
         if template is not None and template.is_constant:

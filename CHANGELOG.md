@@ -253,6 +253,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   exist_ok=True)` or `ensure_tables()` calls (replicas or pytest-xdist workers starting
   together) raised `ResourceInUseError` when another one created the table between the
   existence check and `CreateTable`; they now treat it as an existing table.
+- `count()` of a projected read always failed: it dropped the projection but sent its attribute
+  names, so `Note.query(client, user_id="u1").project(Note.text).count()` raised
+  `ValidationException` ("Value provided in ExpressionAttributeNames unused in expressions"), for
+  table reads too. `scan().after(cursor).segments(n).count()` applied one segment's cursor to
+  every segment and returned a wrong number; it now raises `TypeError`, as iterating it does.
+  `query()` and `count()` refused sort keys that repeat a field of the partition key: with
+  `pk="ORG#{org_id}"` and `sk="MEMBER#{org_id}#{user_id}"`,
+  `Membership.query(client, org_id="o1", user_id="u1")` raised `ValueError: unexpected arguments
+  user_id` (index keys such as `"STATUS#{status}"` and `"{status}#{placed_at}"` too), where
+  `get()` worked; they now select the sort key.
 
 ### Security
 
