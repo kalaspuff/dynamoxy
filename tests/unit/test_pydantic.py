@@ -288,3 +288,28 @@ def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
         ":v1": "2026-01-01T00:00:00.000000Z",
         ":v2": "2026-01-01T00:00:00.000000+00:00",  # the base class keeps its format
     }
+
+
+class Tracked(dynamoxy.PydanticModel, abstract=True):
+    hits: int = 0
+
+
+def test_paths_answer_class_access_outside_class_creation() -> None:
+    seen: list[object] = []
+
+    class Hooked(Tracked, abstract=True):
+        @classmethod
+        def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+            super().__pydantic_init_subclass__(**kwargs)
+            seen.append(cls.hits)  # the path, once pydantic has collected the fields
+
+    class Counter(Hooked, table="pydantic-counters"):
+        counter_id: Annotated[str, dynamoxy.PartitionKey()]
+
+    assert seen == [Counter.hits]
+    assert repr(Counter.hits) == "<attribute Counter.hits>"
+    namespace = {"__annotations__": {"broken_id": Annotated[str, dynamoxy.PartitionKey()], "save": int}}
+    with pytest.warns(UserWarning, match="shadows an attribute"), pytest.raises(TypeError, match="model API"):
+        type("Broken", (Tracked,), namespace, table="pydantic-broken")
+    assert repr(Tracked.hits) == "<attribute Tracked.hits>", "a failed class creation leaves paths as they were"
+    assert Counter.model_fields["hits"].default == 0
