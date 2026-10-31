@@ -33,7 +33,49 @@ If the owner holds the same value, change or delete the owner first: its writes 
 once its value is gone the other item's writes do too (until then they are refused the same way,
 since each of them would remove the owner's guard). If the owner is gone or
 holds another value (deleted by another tool, or expired by TTL, which leaves its guards), the
-guard is stale: delete the guard item (`.item`), and the write succeeds.
+guard is stale: `repair_unique()` deletes it (see below), and the write succeeds.
+
+**Verifying and repairing guards.** `verify_unique()` compares a model's items with its guard
+items in one consistent scan of the table, and `repair_unique()` fixes what it can:
+
+```python
+users = client.model(User)
+report = await users.verify_unique(segments=4)  # parallel scan
+report.missing     # values one item holds without a guard: (.field, .value, .key)
+report.orphaned    # guards their value's item does not own (.reason, .owner, .holder)
+report.duplicates  # values several items hold (.keys, .owner): change the data
+report.invalid     # values that cannot be unique (collections in Any fields)
+repair = await users.repair_unique(report)  # or repair_unique() to scan again
+repair.created, repair.deleted, repair.reassigned, repair.skipped
+```
+
+Each fix is a small transaction that holds only while the data is as the scan saw it. A missing
+guard is created only if it is still missing (`attribute_not_exists`) and the item still holds
+the value, so a repair cannot take a value that a live writer just took. An orphaned guard,
+whose owner is gone or holds another value, is deleted, or given to the one item that holds its
+value, only while it and its owner are unchanged. Guards of attributes that are no longer unique
+are deleted. A fix whose conditions fail is `skipped` (the data changed since the scan: verify
+again), and running a repair again changes nothing. Values that several items hold cannot be
+repaired: `repair_unique()` raises `ValueError` before writing anything, unless
+`skip_duplicates=True` (or `dry_run=True`, which lists the fixes and writes nothing). Reports
+hold values and keys, so do not log them. The scan reads the whole table (strong consistency,
+projected to the keys, the type and unique attributes and the guards' owners) and holds it in
+memory; each fix costs one transaction of two or three operations. Up to 16 fixes run at once,
+but fixes that touch one item (an item with several unique values, the owner of several guards)
+run one after another, since DynamoDB cancels concurrent transactions on one item.
+
+**Adding `unique=True` to a field with stored items.** The items stored before have no guards,
+so the constraint holds only for values written after the change:
+
+1. Deploy the model with `unique=True`: new writes claim their values from then on.
+2. Run `verify_unique()` and resolve its `duplicates` (change the values until one item holds
+   each).
+3. Run `repair_unique()` until its `skipped` and `duplicates` are empty and `verify_unique().ok`
+   holds.
+
+Run the same steps after a rename of the entity type or of a unique field's stored name
+(`attribute_name=`), which changes every guard key, after imports and restores, and when other
+tools wrote the table.
 
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
 nothing is written. `None` values have no guard (several items may have no handle), and

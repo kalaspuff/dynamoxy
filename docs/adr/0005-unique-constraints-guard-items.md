@@ -22,6 +22,12 @@ uniqueness.
   write of one item must not remove the guard of another item that holds the same value. The
   write is refused with `UniqueConstraintError` instead; a silent skip is not possible inside the
   transaction.
+* `Repository.verify_unique()` compares items and guards in one scan, and
+  `Repository.repair_unique()` creates missing guards and deletes or reassigns orphaned ones.
+  Each fix is a transaction conditioned on the data being as scanned (the guard still missing or
+  unchanged, the item still holding the value, the old owner unchanged), so a repair running next
+  to live writers never takes or frees a value they hold; values several items hold are reported,
+  never resolved automatically.
 * Batch writes of such models are refused; `update()` requires `set()`/`remove()` for unique
   fields so the new value is known.
 * Repository reads exclude guard items.

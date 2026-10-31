@@ -665,6 +665,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-dynamodb",
  "fastrand",
+ "hyper-util",
  "parking_lot",
  "serde",
  "thiserror",

@@ -73,6 +73,7 @@ def inject_fault(
     unprocessed: bool = False,
     latency: float | None = None,
     lose_response: bool = False,
+    refuse_connection: bool = False,
     times: int = 1,
 ) -> None:
     """Makes the next ``times`` matching calls fail, wait, lose their response or skip batch items.
@@ -91,6 +92,9 @@ def inject_fault(
         latency: Seconds to wait before the call runs.
         lose_response: The call runs, then its response is lost, as when a connection drops: the
             client sees a ``TransportError`` (and retries) although the write was applied.
+        refuse_connection: The call fails before its request is sent, as when the connection is
+            refused (or DNS, TLS or file descriptors fail): the client sees a ``TransportError``
+            that sent nothing, so it retries every write, and nothing is applied.
         times: Number of calls affected.
     """
     code = _ERROR_CODES.get(error, error) if error is not None else None
@@ -102,6 +106,7 @@ def inject_fault(
         unprocessed=unprocessed,
         latency=latency,
         lose_response=lose_response,
+        refuse_connection=refuse_connection,
         times=times,
     )
 

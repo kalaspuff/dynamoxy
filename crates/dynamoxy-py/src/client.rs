@@ -374,8 +374,8 @@ impl PyMemoryStore {
     }
 
     /// Makes the next `times` matching calls fail, return unprocessed batch items, wait, or run
-    /// and lose their response.
-    #[pyo3(signature = (*, operation = None, table = None, error_code = None, message = None, unprocessed = false, latency = None, lose_response = false, times = 1))]
+    /// and lose their response, or fail before sending (a refused connection).
+    #[pyo3(signature = (*, operation = None, table = None, error_code = None, message = None, unprocessed = false, latency = None, lose_response = false, refuse_connection = false, times = 1))]
     #[allow(clippy::too_many_arguments)]
     fn inject_fault(
         &self,
@@ -386,18 +386,21 @@ impl PyMemoryStore {
         unprocessed: bool,
         latency: Option<f64>,
         lose_response: bool,
+        refuse_connection: bool,
         times: u32,
     ) -> PyResult<()> {
-        let kind = match (error_code, unprocessed, latency, lose_response) {
-            (Some(code), false, None, false) => {
+        let kind = match (error_code, unprocessed, latency, lose_response, refuse_connection) {
+            (Some(code), false, None, false, false) => {
                 FaultKind::Error { message: message.unwrap_or_else(|| format!("injected {code}")), code }
             }
-            (None, true, None, false) => FaultKind::Unprocessed,
-            (None, false, Some(seconds), false) => FaultKind::Latency(duration(seconds, "latency")?),
-            (None, false, None, true) => FaultKind::LoseResponse,
+            (None, true, None, false, false) => FaultKind::Unprocessed,
+            (None, false, Some(seconds), false, false) => FaultKind::Latency(duration(seconds, "latency")?),
+            (None, false, None, true, false) => FaultKind::LoseResponse,
+            (None, false, None, false, true) => FaultKind::RefuseConnection,
             _ => {
                 return Err(ValidationError::new_err(
-                    "inject_fault needs exactly one of error_code=..., unprocessed=True, latency=... or lose_response=True",
+                    "inject_fault needs exactly one of error_code=..., unprocessed=True, latency=..., lose_response=True \
+                     or refuse_connection=True",
                 ));
             }
         };

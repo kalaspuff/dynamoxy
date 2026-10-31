@@ -260,6 +260,7 @@ class MemoryStore:
         unprocessed: bool = False,
         latency: float | None = None,
         lose_response: bool = False,
+        refuse_connection: bool = False,
         times: int = 1,
     ) -> None: ...
     def clear_faults(self) -> None: ...

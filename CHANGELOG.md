@@ -8,6 +8,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Added
+
+- `Repository.verify_unique()` compares a model's items with its unique guard items in one scan
+  (values without a guard, orphaned guards, values several items hold), and
+  `Repository.repair_unique()` creates missing guards and deletes or reassigns orphaned ones,
+  each on condition that the data is still as scanned. The constraints guide describes the
+  migration for adding `unique=True` to a field with stored items.
+
 ### Changed
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
@@ -64,6 +72,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   dynamoxy ran without the GIL although it was never tested that way. The extension now declares
   that it needs the GIL: the interpreter turns the GIL on when it imports dynamoxy, with a
   `RuntimeWarning`, until dynamoxy is tested without it.
+- A write whose request never left the process (connection refused, DNS or TLS failure, a
+  connect timeout shorter than `timeout`, no file descriptors for the socket) counted as "may
+  have been applied": it raised `WriteOutcomeUnknownError`, and increments, `add()` and
+  `append()` were not retried, although sending them again is safe. Failures to connect now
+  count as sent nothing: every write is retried after them, and when all attempts fail to
+  connect the call raises a retryable `TransportError`. `testing.inject_fault()` takes `refuse_connection=True` to simulate them.
 - A managed batch (`batch_put()`, `batch_delete()`, `batch_get()`, `BatchWriter.flush()`,
   `table.batch_write()`) whose chunk's request failed after its attempts (throttling with nothing
   processed, a 5xx, a lost connection) failed as a whole with that error and aborted the chunks in
