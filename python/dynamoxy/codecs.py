@@ -1041,7 +1041,8 @@ class JsonCodec(Codec[Any]):
 
 
 #: Where a document decoded from a map keeps the map's keys that no field declares. Native and
-#: pydantic models compare, copy, show and serialize their fields only, not this entry.
+#: pydantic models compare, show and serialize their fields only, not this entry; copies of the
+#: document keep it (``copy.copy()``, ``model_copy()``, and ``copy()`` of the model holding it).
 _UNDECLARED = "__dynamoxy_undeclared__"
 
 

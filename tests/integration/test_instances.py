@@ -762,6 +762,14 @@ async def test_documents_keep_the_keys_their_class_does_not_declare(client: dyna
     assert stored is not None
     assert stored["postal"] == {"city": "Malmö", "zip": "22100", "street": {"name": "Main", "number": 5}}
     assert stored["history"] == [{"city": "Ystad", "zip": "27100"}, {"city": "Lund"}]
+    # Copies keep the keys of their documents, not the item's undeclared attributes.
+    await mailboxes.table.put({"mailbox_id": "m", "postal": newer, "legacy": True})
+    moved = (await mailboxes.get_or_raise("m")).copy(mailbox_id="n")
+    await mailboxes.create(moved)
+    copied = await mailboxes.table.get({"mailbox_id": "n"})
+    assert copied is not None
+    copied.pop("_wid")
+    assert copied == {"mailbox_id": "n", "postal": newer, "history": []}
     # A new document replaces the map, as a write of an instance that was not loaded replaces the item.
     mailbox.postal = Postal(city="Lund")
     await mailboxes.save(mailbox)
