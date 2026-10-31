@@ -377,7 +377,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `types.coroutine` code (their awaitable had no `__iter__`). A wake-up write of the event loop
   bridge that failed with anything but a full buffer left later calls undelivered; it is now
   retried. Table statuses the AWS SDK adds later (and `REPLICATION_NOT_AUTHORIZED`) read as
-  `ACTIVE`, so waiters took such tables for ready; they now read as `UNKNOWN` (or their name).
+  `ACTIVE`, and index statuses it adds later as no status, so waiters took such tables for
+  ready; they now read as `UNKNOWN` (or their name).
 
 ### Security
 

@@ -133,6 +133,8 @@ string_enum! {
         Deleting => "DELETING",
         /// Ready.
         Active => "ACTIVE",
+        /// A status this version of dynamoxy does not know (DynamoDB added it later): not ready.
+        Unknown => "UNKNOWN",
     }
 }
 

@@ -320,7 +320,10 @@ pub fn table_description(description: sdk::TableDescription) -> TableDescription
             index_name: index.index_name().unwrap_or_default().to_owned(),
             key_schema: key_schema_from_sdk(index.key_schema()),
             projection: projection_from_sdk(index.projection()),
-            index_status: index.index_status().and_then(|status| IndexStatus::parse(status.as_str())),
+            // As for tables: a status this enum does not know is not taken for ACTIVE.
+            index_status: index
+                .index_status()
+                .map(|status| IndexStatus::parse(status.as_str()).unwrap_or(IndexStatus::Unknown)),
             item_count: index.item_count().unwrap_or_default(),
             index_size_bytes: index.index_size_bytes().unwrap_or_default(),
             index_arn: index.index_arn().map(str::to_owned),
@@ -497,6 +500,14 @@ mod tests {
         assert_eq!(status(Some(sdk::TableStatus::ReplicationNotAuthorized)), TableStatus::ReplicationNotAuthorized);
         assert_eq!(status(Some(sdk::TableStatus::from("SOMETHING_NEW"))), TableStatus::Unknown);
         assert_eq!(status(None), TableStatus::Active, "as before: responses always carry one");
+        let index = |status: sdk::IndexStatus| {
+            let index = sdk::GlobalSecondaryIndexDescription::builder().index_name("i").index_status(status).build();
+            table_description(sdk::TableDescription::builder().global_secondary_indexes(index).build())
+                .global_secondary_indexes[0]
+                .index_status
+        };
+        assert_eq!(index(sdk::IndexStatus::Active), Some(IndexStatus::Active));
+        assert_eq!(index(sdk::IndexStatus::from("SOMETHING_NEW")), Some(IndexStatus::Unknown));
     }
 
     #[test]
