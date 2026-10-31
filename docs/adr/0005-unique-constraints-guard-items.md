@@ -15,6 +15,13 @@ uniqueness.
   one).
 * Every write that sets, changes or removes a unique value, and every delete, runs as a
   transaction containing the item and the guard puts (`attribute_not_exists`) and deletes.
+* Each guard item records the key of the item that owns it (`_owner`). Guard deletes are
+  conditional on the guard being missing or owned by the written item
+  (`attribute_not_exists(<pk>) OR (_owner.<pk> = :pk AND _owner.<sk> = :sk)`): when stored data
+  breaks the constraint (items stored before the field became unique, or by other writers), a
+  write of one item must not remove the guard of another item that holds the same value. The
+  write is refused with `UniqueConstraintError` instead; a silent skip is not possible inside the
+  transaction.
 * Batch writes of such models are refused; `update()` requires `set()`/`remove()` for unique
   fields so the new value is known.
 * Repository reads exclude guard items.

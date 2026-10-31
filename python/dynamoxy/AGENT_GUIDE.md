@@ -568,6 +568,10 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
   raises `ConditionalCheckFailedError` instead: `refresh()` the instance and retry.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
 - Writing such items with other tools bypasses the guards: route writes through dynamoxy.
+  Items stored before a field became `unique=True` have no guards either. A guard is only
+  deleted by a write of the item that owns it: when two items hold one value, writes that would
+  remove the value of the other one raise `UniqueConstraintError` ("belongs to another item");
+  when the owner (`.item["_owner"]`) is gone or holds another value, delete the stale guard.
 
 ## 7. Optimistic locking
 
@@ -630,7 +634,7 @@ with `tx.create()` of an item keyed by the operation id.
 Consistent multi-item reads:
 
 ```python
-customer, order = await client.transact_get(
+customer, order = await client.transact_get(  # a tuple: Customer | None, Order | None
     dynamoxy.Get(Customer, customer_id="c1"),
     dynamoxy.Get(Order, customer_id="c1", order_id="o1"),
 )
@@ -699,8 +703,10 @@ await table.restore_to("events-yesterday", at=some_datetime)
 ```
 
 `ensure_tables()` never deletes or changes keys; it raises `TypeError` when a table's key, the key
-of an index with the same name or the TTL attribute differs from the models (create a new table
-or index and migrate). Local indexes can only be created with the table. In production, prefer
+of an index with the same name or the TTL attribute differs from the models, or when an index
+projects less than the models declare (`KEYS_ONLY`/`INCLUDE` where they expect `ALL`), before it
+changes that table (create a new table or index and migrate). An index that projects more is
+fine. Local indexes can only be created with the table. In production, prefer
 infrastructure as code for tables and call `ensure_tables()` only in development and tests.
 
 `Client(table_prefix="dev-")` separates environments sharing an account (`users` →

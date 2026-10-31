@@ -42,6 +42,8 @@ jobs:
       - run: uv run ruff format --check python tests examples scripts
       - run: uv run ruff check python tests examples scripts
       - run: uv run pyrefly check
+      - name: Typing suite (pyright, mypy, pyrefly)
+        run: uv run python scripts/check_typing.py
       - run: uv run python scripts/check_consistency.py
       - name: Lint workflows
         run: uvx --from actionlint-py actionlint

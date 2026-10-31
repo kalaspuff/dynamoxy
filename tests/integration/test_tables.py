@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, F, GlobalIndex, Model, field, partition_key, sort_key, ttl
+from dynamoxy import Attr, F, GlobalIndex, LocalIndex, Model, Projection, field, partition_key, sort_key, ttl
 from tests.conftest import ClientFactory
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, Event, Order, User
@@ -90,6 +90,107 @@ async def test_ensure_tables_refuses_indexes_and_ttl_that_differ(client: dynamox
         await client.ensure_tables(SessionV2)
     with pytest.raises(TypeError, match="Time to Live on 'old_expiry', the models expect 'expires_at'"):
         await client.ensure_tables(SessionV3)
+
+
+class ThingKeysOnly(Model, table="things"):
+    pk: Attr[str] = partition_key()
+    kind: Attr[str] = field(default="")
+    name: Attr[str] = field(default="")
+
+    by_kind = GlobalIndex(partition_key=kind, projection=Projection.keys_only())
+
+
+class ThingName(Model, table="things"):
+    """The same table; the index projects ``name``."""
+
+    pk: Attr[str] = partition_key()
+    kind: Attr[str] = field(default="")
+    name: Attr[str] = field(default="")
+
+    by_kind = GlobalIndex(partition_key=kind, projection=Projection.include("name"))
+
+
+class ThingAll(Model, table="things"):
+    """The same table; the index projects every attribute, and the models add another index and TTL."""
+
+    pk: Attr[str] = partition_key()
+    kind: Attr[str] = field(default="")
+    name: Attr[str] = field(default="")
+    expires_at: Attr[datetime | None] = ttl(default=None)
+
+    by_kind = GlobalIndex(partition_key=kind)
+    by_name = GlobalIndex(partition_key=name)
+
+
+async def test_ensure_tables_refuses_indexes_that_project_less(client: dynamoxy.Client) -> None:
+    await client.create_tables(ThingKeysOnly)
+    with pytest.raises(
+        TypeError,
+        match=r"global index 'by_kind' with the projection KEYS_ONLY, the models expect ALL: the index lacks "
+        r"every attribute but the keys.*give the new index another name",
+    ):
+        await client.ensure_tables(ThingAll)
+    with pytest.raises(TypeError, match=r"projection KEYS_ONLY, the models expect INCLUDE \(name\): .* lacks 'name'"):
+        await client.ensure_tables(ThingName)
+    description = await client.table("things").describe()
+    assert sorted(description.indexes) == ["by_kind"], "nothing changed before the refusal"
+    assert not (await client.table("things").time_to_live()).enabled
+    await client.table("things").delete_table()
+
+    await client.create_tables(ThingName)
+    with pytest.raises(TypeError, match=r"projection INCLUDE \(name\), the models expect ALL: .* every attribute it"):
+        await client.ensure_tables(ThingAll)
+    assert await client.ensure_tables(ThingName, ThingKeysOnly) == [], "an index may hold more than the models read"
+    await client.table("things").delete_table()
+
+    await client.create_tables(ThingAll)
+    assert await client.ensure_tables(ThingKeysOnly, ThingName) == []
+    assert await client.ensure_tables(ThingAll) == []
+
+
+class Ticket(Model, table="tickets", entity="Ticket"):
+    pk: Attr[str] = partition_key()
+    queue: Attr[str] = field(default="")
+
+    by_queue = GlobalIndex(partition_key=queue, projection=Projection.keys_only())
+
+
+async def test_ensure_tables_refuses_indexes_without_the_entity_type(client: dynamoxy.Client) -> None:
+    # Created before the models had an entity type: the index does not hold '_type', which model
+    # queries filter on.
+    index = dynamoxy.IndexDefinition(
+        name="by_queue", kind="global", partition_key=("queue", "S"), projection=Projection.keys_only()
+    )
+    await client.table("tickets").create(partition_key=("pk", "S"), indexes=[index])
+    with pytest.raises(TypeError, match=r"KEYS_ONLY, the models expect INCLUDE \(_type\): the index lacks '_type'"):
+        await client.ensure_tables(Ticket)
+
+
+class LogNarrow(Model, table="logs"):
+    stream: Attr[str] = partition_key()
+    seq: Attr[int] = sort_key()
+    level: Attr[str] = field(default="")
+    message: Attr[str] = field(default="")
+
+    by_level = LocalIndex(sort_key=level, projection=Projection.include("level", "seq"))
+
+
+class LogWide(Model, table="logs"):
+    """The same table; the local index projects every attribute."""
+
+    stream: Attr[str] = partition_key()
+    seq: Attr[int] = sort_key()
+    level: Attr[str] = field(default="")
+    message: Attr[str] = field(default="")
+
+    by_level = LocalIndex(sort_key=level)
+
+
+async def test_ensure_tables_refuses_local_indexes_that_project_less(client: dynamoxy.Client) -> None:
+    await client.create_tables(LogNarrow)
+    assert await client.ensure_tables(LogNarrow) == [], "keys in an INCLUDE projection are always held"
+    with pytest.raises(TypeError, match=r"local index 'by_level' .*\(create a new table and migrate\)"):
+        await client.ensure_tables(LogWide)
 
 
 class Reading(Model, table="readings"):

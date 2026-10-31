@@ -9,6 +9,9 @@ Writes that set or change a unique value run in a transaction: the item itself p
 ``Put guard (attribute_not_exists)`` for the new value and ``Delete guard`` for the old one. If
 the value is taken, the transaction is canceled and dynamoxy raises
 :class:`dynamoxy.UniqueConstraintError`. Deletes remove the guards in the same transaction.
+A guard records its owner's key (``_owner``), and is only deleted when it is missing or owned by
+the item written: a write that would delete another item's guard (two items hold the value,
+which stored data allows) raises :class:`dynamoxy.UniqueConstraintError` too.
 
 Requirements and costs: the table's partition key must be a string; such writes are
 transactional (2x write capacity) and, when the instance was not loaded, need one consistent

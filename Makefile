@@ -23,8 +23,9 @@ fmt:  ## Format and auto-fix
 	uv run ruff format python tests examples scripts
 	uv run ruff check --fix python tests examples scripts
 
-typecheck:  ## Python type checking
+typecheck:  ## Python type checking (pyrefly; the typing suite and examples with pyright and mypy too)
 	uv run pyrefly check
+	uv run python scripts/check_typing.py
 
 test:  ## Python tests (unit, integration on every backend, e2e)
 	uv run pytest

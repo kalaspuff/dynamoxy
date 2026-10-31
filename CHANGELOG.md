@@ -11,6 +11,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 ### Changed
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
+- [**breaking**] `client.transact_get(...)` returns a tuple instead of a list, and type checkers
+  know the model of each item for up to six reads: `customer, order = await
+  client.transact_get(Get(Customer, ...), Get(Order, ...))` gives `Customer | None` and
+  `Order | None` instead of `Any`. Code that unpacks or indexes the result works as before; compare
+  it with a tuple, or call `list()` on it to change it.
 
 ### Fixed
 
@@ -36,6 +41,24 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
   CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
   the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
+- pyright (and so VS Code's Pylance) and mypy did not type the constructor or `create()` of a
+  `PydanticModel`: `Wallet(wallet_id="w1", owner=3)`, a missing required field or a misspelt one
+  passed their checks, though they flag the same mistakes on a plain pydantic model (pyrefly
+  caught them). The model metaclass now declares pydantic's `dataclass_transform` itself, which
+  checkers do not inherit from a base metaclass. mypy also types the items of
+  `client.collection(A, B)` as `A | B` now, not as their common base class.
+- `ensure_tables()` accepted an existing index whose projection holds less than the models
+  declare (`KEYS_ONLY` or `INCLUDE` where they expect `ALL`, or an `INCLUDE` without an attribute
+  they include), so every model read through it later failed with an `ItemDecodeError` naming a
+  missing attribute. It now raises `TypeError` naming the index and both projections, before it
+  changes that table; an index that projects more than the models declare is still accepted.
+- A write that removed or changed a unique value deleted the value's guard item even when another
+  item owned it, so when two items held one value (items stored before the field became
+  `unique=True`, or written by other tools), deleting or changing one of them silently removed
+  the other's protection and a third item could take the value. Guard deletes now require that
+  the guard is missing or owned by the written item; otherwise the write raises
+  `UniqueConstraintError` ("the stored value's guard item belongs to another item", the guard in
+  `.item`) and writes nothing.
 - A managed batch (`batch_put()`, `batch_delete()`, `batch_get()`, `BatchWriter.flush()`,
   `table.batch_write()`) whose chunk's request failed after its attempts (throttling with nothing
   processed, a 5xx, a lost connection) failed as a whole with that error and aborted the chunks in

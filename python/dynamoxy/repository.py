@@ -792,8 +792,22 @@ class Repository[M]:
             if stored_identity(before) == stored_identity(after):
                 continue
             if before is not None:
+                # Only the item's own guard: when stored data breaks the constraint (items stored
+                # before the field became unique, or by other writers), another item may own it.
+                builder = ExpressionBuilder()
+                owned = [F("_owner", name) == value for name, value in key.items()]
                 plan.add(
-                    {"kind": "delete", "table_name": self.table_name, "key": guard_key(schema, spec, before)}, None
+                    {
+                        "kind": "delete",
+                        "table_name": self.table_name,
+                        "key": guard_key(schema, spec, before),
+                        "condition_expression": builder.condition(
+                            schema._path(schema.partition_key.attribute).not_exists() | and_(*owned)
+                        ),
+                        "return_values_on_condition_check_failure": "ALL_OLD",
+                        **builder.arguments(),
+                    },
+                    ("owned guard", spec, before),
                 )
             if after is not None:
                 builder = ExpressionBuilder()
@@ -1615,6 +1629,21 @@ class Repository[M]:
                 value=decoded,
                 cause=cause,
             )
+        if explain[0] == "owned guard":
+            _, spec, value = explain
+            owned = UniqueConstraintError(
+                f"{self.model_class.__name__}.{spec.name}: the stored value's guard item belongs to another item "
+                f"(see .value, and the owner's key in .item['_owner']), so this {write.mode} does not delete it; "
+                "the stored data breaks the unique constraint: if the owner holds the same value, change or delete "
+                "the owner first (this item's writes are refused until its guard is gone), and if it is gone or "
+                "holds another value, delete the guard item (.item)",
+                model=self.model_class,
+                field=spec.name,
+                value=spec.codec.decode(value),
+                cause=cause,
+            )
+            owned.item = item
+            return owned
         message = f"{self.model_class.__name__}: the condition of {write.mode} failed (see .key)"
         if write.stale:
             message += (
