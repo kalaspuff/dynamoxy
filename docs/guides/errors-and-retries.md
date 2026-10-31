@@ -28,7 +28,8 @@ async def register(user_id: str, email: str, name: str) -> Response:
 | `TransactionCanceledError` | see `.cancellation_reasons` / `.errors` | depends |
 | `ThrottlingError`, `TransportError`, `InternalServerError` | still failing after retries | 503, retry later |
 
-All dynamoxy errors derive from `DynamoxyError` and say whether retrying may help
+All dynamoxy errors are classes of `dynamoxy.errors` (also exported by `dynamoxy`), the module
+tracebacks name, and derive from `DynamoxyError`. They say whether retrying may help
 (`.retryable`). Service errors keep DynamoDB's `.code`, `.message` and `.request_id` (quote it in
 support cases). Errors pickle with their attributes, so they reach the caller of a worker process
 or task queue as themselves (a `FieldError.value` that does not pickle, such as a function, is
