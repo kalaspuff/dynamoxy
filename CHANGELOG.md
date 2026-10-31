@@ -26,6 +26,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- With `RetryPolicy(retry_timeouts=False)`, a write whose attempt timed out or lost its
+  connection raised a `TransportError` with `.retryable == True`, although it may have been
+  applied: a caller that trusted `.retryable` applied an `increment()` twice. Such a write now
+  raises `WriteOutcomeUnknownError` (a `TransportError` that is not retryable) and emits
+  `request.outcome_unknown`, and model writes settle it by their write id like any other unknown
+  outcome. Reads keep raising a retryable `TransportError`.
 
 ## [0.4.0] - 2026-10-31
 
