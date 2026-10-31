@@ -18,6 +18,7 @@
 //! earlier attempt wrote, or the absence of the item it deleted).
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -189,6 +190,42 @@ struct Inner {
 type ChunkOutcome<T> = (Result<(T, Vec<ConsumedCapacity>)>, OperationStats);
 
 /// Items found by a chunk of a managed `BatchGetItem`, and the keys still unprocessed.
+/// Splits `BatchGetItem` keys into requests of at most `size` keys, in order, each table keeping
+/// its read settings. Keys are moved, and only the settings are cloned for each chunk.
+fn chunk_keys(
+    request_items: BTreeMap<String, KeysAndAttributes>,
+    size: usize,
+) -> Vec<BTreeMap<String, KeysAndAttributes>> {
+    let mut chunks: Vec<BTreeMap<String, KeysAndAttributes>> = Vec::new();
+    let mut current: BTreeMap<String, KeysAndAttributes> = BTreeMap::new();
+    let mut current_size = 0;
+    for (table, request) in request_items {
+        let KeysAndAttributes { keys, consistent_read, projection_expression, expression_attribute_names } = request;
+        let mut keys = keys.into_iter().peekable();
+        while keys.peek().is_some() {
+            if current_size == size {
+                chunks.push(std::mem::take(&mut current));
+                current_size = 0;
+            }
+            let part: Vec<Item> = keys.by_ref().take(size - current_size).collect();
+            current_size += part.len();
+            current.insert(
+                table.clone(),
+                KeysAndAttributes {
+                    keys: part,
+                    consistent_read,
+                    projection_expression: projection_expression.clone(),
+                    expression_attribute_names: expression_attribute_names.clone(),
+                },
+            );
+        }
+    }
+    if current_size > 0 {
+        chunks.push(current);
+    }
+    chunks
+}
+
 type GotChunk = (BTreeMap<String, Vec<Item>>, BTreeMap<String, KeysAndAttributes>);
 
 /// Generates a client request token (idempotent retries of transactions).
@@ -1158,27 +1195,7 @@ impl Client {
         return_consumed_capacity: ReturnConsumedCapacity,
     ) -> Call<BatchGetResult> {
         let started = Instant::now();
-        // Split into chunks of at most 100 keys, keeping each table's read settings.
-        let mut chunks: Vec<BTreeMap<String, KeysAndAttributes>> = Vec::new();
-        let mut current: BTreeMap<String, KeysAndAttributes> = BTreeMap::new();
-        let mut current_size = 0;
-        for (table, request) in request_items {
-            for key in &request.keys {
-                if current_size == 100 {
-                    chunks.push(std::mem::take(&mut current));
-                    current_size = 0;
-                }
-                current
-                    .entry(table.clone())
-                    .or_insert_with(|| KeysAndAttributes { keys: Vec::new(), ..request.clone() })
-                    .keys
-                    .push(key.clone());
-                current_size += 1;
-            }
-        }
-        if current_size > 0 {
-            chunks.push(current);
-        }
+        let chunks = chunk_keys(request_items, 100);
         let mut result = BatchGetResult::default();
         let mut capacity = BTreeMap::new();
         let mut stats = OperationStats {
@@ -1197,11 +1214,12 @@ impl Client {
                     result.items.entry(table).or_default().extend(found);
                 }
                 for (table, keys) in unprocessed {
-                    let entry = result
-                        .unprocessed
-                        .entry(table)
-                        .or_insert_with(|| KeysAndAttributes { keys: Vec::new(), ..keys.clone() });
-                    entry.keys.extend(keys.keys);
+                    match result.unprocessed.entry(table) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(keys);
+                        }
+                        Entry::Occupied(mut entry) => entry.get_mut().keys.extend(keys.keys),
+                    }
                 }
                 merge_capacity(&mut capacity, consumed);
             })

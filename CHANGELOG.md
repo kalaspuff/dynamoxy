@@ -26,6 +26,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- A managed `BatchGetItem` (`batch_get()` of repositories and tables) took time quadratic in the
+  number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
+  CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
+  the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
 
 ## [0.4.0] - 2026-10-31
 
