@@ -17,14 +17,15 @@ AWS_PROFILE=<test-account-profile> AWS_REGION=eu-north-1 bash scripts/probe_dyna
 ```
 
 `DYNAMODB_PROBE_ENDPOINT=<url>` sends the same requests to an emulator. Round 1 asks the
-questions issues #84 to #106 left open; round 2 asks what round 1 left open. Write new rounds
-for new questions, and keep their logs here.
+questions issues #84 to #106 left open; round 2 asks what round 1 left open; round 3 asks where
+LocalStack and dynamoxy's tests disagree. Write new rounds for new questions, and keep their logs
+here. The emulator logs were taken with AWS CLI 1.46.2.
 
 | Log | Target |
 | --- | --- |
 | [aws-eu-north-1-2026-10-31-round1.log](aws-eu-north-1-2026-10-31-round1.log) | DynamoDB, eu-north-1, 2026-10-31 (AWS CLI 2.37.6) |
-| [ministack-1.5.33-round1.log](ministack-1.5.33-round1.log), [round 2](ministack-1.5.33-round2.log) | MiniStack 1.5.33 (the emulator of dynamoxy's e2e tests and CI) |
-| [localstack-2026.3.0-round1.log](localstack-2026.3.0-round1.log), [round 2](localstack-2026.3.0-round2.log) | LocalStack 2026.3.0, whose DynamoDB is DynamoDB Local 3.3.2 |
+| [ministack-1.5.33-round1.log](ministack-1.5.33-round1.log), [round 2](ministack-1.5.33-round2.log), [round 3](ministack-1.5.33-round3.log) | MiniStack 1.5.33 (the emulator of dynamoxy's e2e tests and CI) |
+| [localstack-2026.3.0-round1.log](localstack-2026.3.0-round1.log), [round 2](localstack-2026.3.0-round2.log), [round 3](localstack-2026.3.0-round3.log) | LocalStack 2026.3.0, whose DynamoDB is DynamoDB Local 3.3.2 |
 
 ## What DynamoDB answered
 

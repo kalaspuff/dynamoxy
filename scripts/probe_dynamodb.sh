@@ -6,7 +6,9 @@
 #
 # ROUND 1 (the default) asks the first questions; its answers, from eu-north-1 on 2026-10-31, are
 # in docs/parity/. ROUND 2 asks what those answers left open: exact size limits and how DynamoDB
-# counts them, and some messages.
+# counts them, and some messages. ROUND 3 asks where LocalStack and dynamoxy's tests disagree:
+# PartiQL errors for items that exist, PartiQL pages, Time to Live of a table created again, item
+# collection metrics and binary values.
 #
 # It creates a few tables named dynamoxy-probe-<random>-*, writes to them, and deletes them at the
 # end (also when interrupted). It costs cents: on-demand tables (round 1 also has one provisioned
@@ -15,8 +17,8 @@
 # dynamoxy-probe-<round>-<time>.log, with 12-digit numbers (account ids) replaced by <account>;
 # send that file back.
 #
-# Needs the AWS CLI (v1 or v2) and python3. DYNAMODB_PROBE_ENDPOINT=<url> sends everything to an
-# emulator instead, to try the script out.
+# Needs the AWS CLI (v1 or v2: binary values are written for the version found) and python3.
+# DYNAMODB_PROBE_ENDPOINT=<url> sends everything to an emulator instead, to try the script out.
 set -uo pipefail
 
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
@@ -33,9 +35,9 @@ fi
 P="dynamoxy-probe-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
 ROUND="${1:-1}"
 case "$ROUND" in
-1 | 2) ;;
+1 | 2 | 3) ;;
 *)
-    echo "Unknown round $ROUND: give 1 or 2." >&2
+    echo "Unknown round $ROUND: give 1, 2 or 3." >&2
     exit 2
     ;;
 esac
@@ -44,6 +46,11 @@ TMP="$(mktemp -d)"
 TABLES=()
 
 ddb() { aws dynamodb "$@" --region "$REGION" "${ENDPOINT_ARGS[@]}" --output json; }
+
+# AWS CLI v2 reads binary values (B) of JSON input as base64; v1 sends the text as the bytes, and
+# base64-encodes it itself. The item generators write what makes the CLI send the intended bytes.
+CLI_MAJOR="$(aws --version 2>&1 | sed -E 's|^aws-cli/([0-9]+).*|\1|')"
+export CLI_MAJOR
 
 sanitize() { sed -E 's/[0-9]{12}/<account>/g'; }
 
@@ -387,9 +394,14 @@ log "final: $(status "$P-gsi")"
 round2() {
 # Item and request files.
 python3 - "$TMP" "$P" <<'EOF'
-import base64, json, sys
+import base64, json, os, sys
 tmp, p = sys.argv[1], sys.argv[2]
 KB = 1024
+
+def binary(size):
+    """A B value the CLI sends as `size` bytes (see CLI_MAJOR)."""
+    raw = "b" * size
+    return {"B": base64.b64encode(raw.encode()).decode() if os.environ["CLI_MAJOR"] == "2" else raw}
 
 def s(v): return {"S": v}
 
@@ -447,7 +459,7 @@ write("tx-decimal", updates(big, 11, 363_700, pk="dec"))
 # 93: what TransactGetItems counts towards 4 MB: binary items of 3.3 MB in all, whose response
 # (base64) is 4.4 MB; and string items of 4,000,900 bytes in all (under 4 MiB).
 for i in range(11):
-    write(f"bin{i}", {"pk": s("bin"), "sk": s(f"{i:02}"), "blobby": {"B": base64.b64encode(b"\x00" * (300 * KB)).decode()}})
+    write(f"bin{i}", {"pk": s("bin"), "sk": s(f"{i:02}"), "blobby": binary(300 * KB)})
     write(f"dec{i}", {"pk": s("decget"), "sk": s(f"{i:02}"), "filler": s("d" * 363_700)})
 for name, pk in (("get-bin", "bin"), ("get-dec", "decget")):
     write(name, [{"Get": {"TableName": big, "Key": {"pk": s(pk), "sk": s(f"{i:02}")}}} for i in range(11)])
@@ -546,6 +558,63 @@ probe 97-write-dash-placeholder "PutItem with a #a-b placeholder in its conditio
     --condition-expression "attribute_not_exists(#a-b)" --expression-attribute-names '{"#a-b": "x"}'
 probe 97-write-attribute-type-path "PutItem with attribute_type(a, b) in its condition" \
     put-item --table-name "$P-idx" --item '{"pk": {"S": "w"}, "sk": {"S": "3"}}' --condition-expression "attribute_type(a, b)"
+}
+
+round3() {
+python3 - "$TMP" <<'EOF'
+import base64, json, os, sys
+tmp = sys.argv[1]
+raw = "b" * (300 * 1024)  # sent as these bytes (see CLI_MAJOR)
+value = base64.b64encode(raw.encode()).decode() if os.environ["CLI_MAJOR"] == "2" else raw
+with open(f"{tmp}/binary.json", "w") as f:
+    json.dump({"pk": {"S": "bin"}, "sk": {"S": "1"}, "blobby": {"B": value}}, f)
+EOF
+create "$P-pq" --billing-mode PAY_PER_REQUEST --attribute-definitions "${KEY_ATTRS[@]}" --key-schema "${KEY_SCHEMA[@]}"
+create "$P-lsi" --billing-mode PAY_PER_REQUEST \
+    --attribute-definitions "${KEY_ATTRS[@]}" AttributeName=lsk,AttributeType=S \
+    --key-schema "${KEY_SCHEMA[@]}" \
+    --local-secondary-indexes '[{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}}]'
+create "$P-ttl" --billing-mode PAY_PER_REQUEST --attribute-definitions AttributeName=pk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH
+for t in pq lsi ttl; do wait_active "$P-$t"; done
+log "tables active"
+echo
+
+log "## PartiQL: an INSERT of an item that exists"
+INSERT="INSERT INTO \\\"$P-pq\\\" VALUE {'pk': 'a', 'sk': '1'}"
+NEW="INSERT INTO \\\"$P-pq\\\" VALUE {'pk': 'a', 'sk': '2'}"
+probe setup "item" execute-statement --statement "INSERT INTO \"$P-pq\" VALUE {'pk': 'a', 'sk': '1'}" >/dev/null
+BODY=1 probe pq-insert-existing "ExecuteStatement INSERT of an item that exists" \
+    execute-statement --statement "INSERT INTO \"$P-pq\" VALUE {'pk': 'a', 'sk': '1'}"
+BODY=1 probe pq-transaction-insert-existing "ExecuteTransaction: INSERT of a new item, then of one that exists" \
+    execute-transaction --transact-statements "[{\"Statement\": \"$NEW\"}, {\"Statement\": \"$INSERT\"}]"
+BODY=1 probe pq-batch-insert-existing "BatchExecuteStatement: INSERT of a new item, then of one that exists" \
+    batch-execute-statement --statements "[{\"Statement\": \"$NEW\"}, {\"Statement\": \"$INSERT\"}]"
+for sk in 3 4 5; do
+    probe setup "item" execute-statement --statement "INSERT INTO \"$P-pq\" VALUE {'pk': 'a', 'sk': '$sk'}" >/dev/null
+done
+probe pq-select-page "ExecuteStatement SELECT with Limit=2: NextToken and LastEvaluatedKey" \
+    execute-statement --statement "SELECT * FROM \"$P-pq\" WHERE pk = 'a'" --limit 2 --consistent-read
+
+log "## Time to Live of a table created again"
+probe setup "ttl" update-time-to-live --table-name "$P-ttl" --time-to-live-specification Enabled=true,AttributeName=expires >/dev/null
+probe setup "delete" delete-table --table-name "$P-ttl" >/dev/null
+ddb wait table-not-exists --table-name "$P-ttl"
+create "$P-ttl" --billing-mode PAY_PER_REQUEST --attribute-definitions AttributeName=pk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH
+wait_active "$P-ttl"
+probe ttl-recreated "DescribeTimeToLive of the table created again with the same name" \
+    describe-time-to-live --table-name "$P-ttl"
+
+log "## Item collection metrics (a table with a local index)"
+probe icm-put "PutItem with ReturnItemCollectionMetrics=SIZE" \
+    put-item --table-name "$P-lsi" --item '{"pk": {"S": "c"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}' --return-item-collection-metrics SIZE
+probe icm-batch "BatchWriteItem with ReturnItemCollectionMetrics=SIZE" \
+    batch-write-item --request-items "{\"$P-lsi\": [{\"PutRequest\": {\"Item\": {\"pk\": {\"S\": \"c\"}, \"sk\": {\"S\": \"2\"}, \"lsk\": {\"S\": \"y\"}}}}]}" --return-item-collection-metrics SIZE
+probe icm-transaction "TransactWriteItems with ReturnItemCollectionMetrics=SIZE" \
+    transact-write-items --transact-items "[{\"Put\": {\"TableName\": \"$P-lsi\", \"Item\": {\"pk\": {\"S\": \"c\"}, \"sk\": {\"S\": \"3\"}, \"lsk\": {\"S\": \"z\"}}}}]" --return-item-collection-metrics SIZE
+
+log "## Binary values"
+probe binary-300k "PutItem of an item with 300 KB of binary (400 KB as base64)" \
+    put-item --table-name "$P-pq" --item "file://$TMP/binary.json"
 }
 
 "round$ROUND"
