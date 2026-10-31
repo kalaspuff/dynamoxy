@@ -139,9 +139,9 @@ fn _shutdown(py: Python<'_>) {
     runtime::shutdown(py);
 }
 
-/// The module declares that it needs the GIL: a free-threaded interpreter (3.13t, 3.14t) turns the
-/// GIL back on when it imports dynamoxy, with a `RuntimeWarning`, because neither this crate nor
-/// the Python layer has been tested without it (#178). Turning it off needs that testing first.
+// The module declares that it needs the GIL: a free-threaded interpreter (3.13t, 3.14t) turns the
+// GIL back on when it imports dynamoxy, with a `RuntimeWarning`, because neither this crate nor
+// the Python layer has been tested without it (#178). Turning it off needs that testing first.
 #[pymodule(gil_used = true)]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
