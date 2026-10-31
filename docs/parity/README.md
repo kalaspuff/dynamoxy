@@ -41,6 +41,9 @@ for new questions, and keep their logs here.
 | `Query` or `Scan` of a local index, `ProjectionExpression` naming `secret` | returns `secret`, read from the table | returns what the index holds | same as DynamoDB |
 | `Scan` of a local or global index, `FilterExpression` on `secret` | matches nothing (filters the entries) | returns the item | returns the item |
 
+The in-memory backend answers like DynamoDB, and model reads refuse these filters and projections
+before any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
+
 ### Expression limits (#97)
 
 | Request | DynamoDB | MiniStack | LocalStack |
