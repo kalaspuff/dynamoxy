@@ -52,6 +52,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   they include), so every model read through it later failed with an `ItemDecodeError` naming a
   missing attribute. It now raises `TypeError` naming the index and both projections, before it
   changes that table; an index that projects more than the models declare is still accepted.
+- A write that removed or changed a unique value deleted the value's guard item even when another
+  item owned it, so when two items held one value (items stored before the field became
+  `unique=True`, or written by other tools), deleting or changing one of them silently removed
+  the other's protection and a third item could take the value. Guard deletes now require that
+  the guard is missing or owned by the written item; otherwise the write raises
+  `UniqueConstraintError` ("the stored value's guard item belongs to another item", the guard in
+  `.item`) and writes nothing.
 - On a free-threaded CPython (3.13t, 3.14t), the extension built from source declared that it
   runs safely without the GIL, which PyO3 0.28 and newer assume unless a module opts out, so
   dynamoxy ran without the GIL although it was never tested that way. The extension now declares

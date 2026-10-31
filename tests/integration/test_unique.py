@@ -477,3 +477,90 @@ async def test_collection_values_of_any_fields_cannot_be_unique(client: dynamoxy
     assert await labelled.table.scan(consistent=True).all() == [], "refused before any write"
     await labelled.create(Labelled(labelled_id="l1", label="a"))
     assert await guards(labelled) == ["_unique#Labelled#label#a"]
+
+
+class Legacy(Model, table="legacy"):
+    """A model whose email became unique after items were stored (the version before ``Current``)."""
+
+    user_id: Attr[str] = partition_key()
+    email: Attr[str]
+
+
+class Current(Model, table="legacy"):
+    """The next version of ``Legacy``: email is unique."""
+
+    user_id: Attr[str] = partition_key()
+    email: Attr[str] = field(unique=True)
+
+
+async def test_writes_keep_the_guards_of_other_items(client: dynamoxy.Client) -> None:
+    await client.create_tables(Legacy)
+    await client.model(Legacy).create(Legacy(user_id="u1", email="ada@example.com"))  # stored without a guard
+    users = client.model(Current)
+    await users.create(Current(user_id="u2", email="ada@example.com"))  # u2 owns the guard
+    u1 = await users.get_or_raise("u1")
+    attempts = [
+        lambda: users.delete(u1),
+        lambda: users.delete("u1"),
+        lambda: users.update(u1, Current.email.set("ada@new.example.com")),
+        lambda: users.update(Current.key("u1"), Current.email.set("ada@new.example.com")),
+        lambda: users.put(Current(user_id="u1", email="ada@new.example.com")),
+    ]
+    for attempt in attempts:
+        with pytest.raises(
+            dynamoxy.UniqueConstraintError, match=r"belongs to another item.*change or delete the owner first"
+        ) as caught:
+            await attempt()
+        error = caught.value
+        assert (error.model, error.field, error.value) == (Current, "email", "ada@example.com")
+        assert error.item is not None
+        assert error.item["_owner"] == {"user_id": "u2"}
+    u1.email = "ada@new.example.com"
+    with pytest.raises(dynamoxy.UniqueConstraintError, match="belongs to another item"):
+        await users.save(u1)
+    with pytest.raises(dynamoxy.TransactionCanceledError) as canceled:
+        await client.transaction().delete(await users.get_or_raise("u1")).commit()
+    (error,) = canceled.value.errors
+    assert isinstance(error, dynamoxy.UniqueConstraintError)
+    assert "belongs to another item" in str(error)
+    # Nothing changed: both items and u2's guard are stored.
+    assert (await users.get_or_raise("u1")).email == "ada@example.com"
+    assert await guards(users) == ["_unique#Current#email#ada@example.com"]
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await users.create(Current(user_id="u3", email="ada@example.com"))
+    # The owner frees its guard, and then u1's writes need none.
+    await users.delete("u2")
+    await users.update(Current.key("u1"), Current.email.set("ada@new.example.com"))
+    assert await guards(users) == ["_unique#Current#email#ada@new.example.com"]
+    await users.delete("u1")
+    assert await users.table.scan(consistent=True).all() == []
+
+
+async def test_guard_owners_compare_the_whole_key(client: dynamoxy.Client) -> None:
+    await client.create_tables(Membership)
+    memberships = client.model(Membership)
+    await memberships.create(Membership(org_id="o1", user_id="u1", email="ada@example.com"))
+    # Another membership of the same partition holds the same value without a guard (a raw write).
+    await memberships.table.put({"org_id": "o1", "user_id": "u2", "email": "ada@example.com"})
+    with pytest.raises(dynamoxy.UniqueConstraintError, match="belongs to another item"):
+        await memberships.delete(("o1", "u2"))
+    assert await guards(memberships) == ["_unique#Membership#email#ada@example.com"]
+    await memberships.delete(("o1", "u1"))
+    assert await guards(memberships) == []
+    await memberships.delete(("o1", "u2"))
+    assert await memberships.table.scan(consistent=True).all() == []
+
+
+async def test_guards_of_items_that_are_gone_say_how_to_free_the_value(client: dynamoxy.Client) -> None:
+    await client.create_tables(Legacy)
+    await client.model(Legacy).create(Legacy(user_id="u1", email="ada@example.com"))
+    users = client.model(Current)
+    await users.create(Current(user_id="u2", email="ada@example.com"))
+    await users.table.delete({"user_id": "u2"})  # by another tool (or TTL): its guard stays
+    with pytest.raises(dynamoxy.UniqueConstraintError, match=r"if it is gone or holds another value") as caught:
+        await users.delete("u1")
+    guard = caught.value.item
+    assert guard is not None
+    await users.table.delete({"user_id": guard["user_id"]})  # the stale guard
+    assert await users.delete("u1") is not None
+    assert await users.table.scan(consistent=True).all() == []
