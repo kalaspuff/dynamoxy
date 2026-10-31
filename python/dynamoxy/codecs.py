@@ -72,6 +72,7 @@ __all__ = [
     "ListCodec",
     "LiteralCodec",
     "OptionalCodec",
+    "RootModelCodec",
     "SetCodec",
     "StrCodec",
     "TimedeltaCodec",
@@ -560,7 +561,10 @@ class EnumCodec[E: enum.Enum](Codec[E]):
 
     @override
     def encode(self, value: E) -> Any:
-        return value.value
+        if isinstance(value, self.enum_type):
+            return value.value
+        # The value of a member, as pydantic models with `use_enum_values=True` hold it.
+        return self.validate(value).value
 
     @override
     def decode(self, value: Any) -> E:
@@ -1078,6 +1082,62 @@ class DocumentCodec(Codec[Any]):
         return self.model.__name__
 
 
+class RootModelCodec(Codec[Any]):
+    """A pydantic ``RootModel`` as its root value (``class Tags(RootModel[list[str]])`` as ``L``)."""
+
+    def __init__(self, model: type, inner: Codec[Any]) -> None:
+        self.model = model
+        self.inner = inner
+
+    @property
+    def dynamo_type(self) -> str | None:  # type: ignore[override]
+        """The type of the root value."""
+        return self.inner.dynamo_type
+
+    def _model(self, value: Any) -> Any:
+        from pydantic import ValidationError as PydanticValidationError
+
+        from dynamoxy._pydantic import _without_inputs
+
+        try:
+            return self.model.model_validate(value)  # pyrefly: ignore[missing-attribute]
+        except PydanticValidationError as error:
+            raise _without_inputs(error) from None
+
+    @override
+    def validate(self, value: Any) -> Any:
+        return value if isinstance(value, self.model) else self._model(value)
+
+    @override
+    def encode(self, value: Any) -> Any:
+        root = value.root if isinstance(value, self.model) else self._model(value).root
+        return self.inner.encode(self.inner.validate(root))
+
+    @override
+    def decode(self, value: Any) -> Any:
+        return self._model(self.inner.decode(value))
+
+    @override
+    def element(self) -> Codec[Any] | None:
+        return self.inner.element()
+
+    @override
+    def member(self, key: str) -> Codec[Any] | None:
+        return self.inner.member(key)
+
+    @override
+    def describe(self) -> str:
+        return self.model.__name__
+
+    @override
+    def key_type(self) -> str | None:
+        return self.inner.key_type()
+
+
+def _is_root_model(annotation: type) -> bool:
+    return bool(getattr(annotation, "__pydantic_root_model__", False)) and _is_model(annotation)
+
+
 class UseCodec:
     """``Annotated`` marker choosing the codec of an attribute: ``Annotated[Money, UseCodec(MoneyCodec())]``.
 
@@ -1226,6 +1286,12 @@ def resolve_codec(annotation: Any, *, where: str = "attribute", datetime_format:
         for kind, factory in _SCALARS.items():
             if annotation is kind:
                 return factory()
+        if _is_root_model(annotation):
+            from dynamoxy._pydantic import _resolve_annotations
+
+            _resolve_annotations(annotation)  # pyrefly: ignore[bad-argument-type]
+            root = annotation.model_fields["root"].annotation  # pyrefly: ignore[missing-attribute]
+            return RootModelCodec(annotation, resolve_codec(root, where=where, datetime_format=datetime_format))
         if _is_model(annotation):
             return DocumentCodec(annotation)
         if typing.is_typeddict(annotation):

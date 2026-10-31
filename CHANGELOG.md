@@ -286,6 +286,18 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   exact kind now wins over globs, and the longest matching glob over shorter ones.
   `from dynamoxy import *` raised `ImportError` without pydantic installed, as `__all__` listed
   `PydanticModel`; it is now listed only when pydantic is installed.
+- Pydantic models that pydantic accepts failed in dynamoxy: with
+  `model_config = ConfigDict(use_enum_values=True)`, writes raised `AttributeError: 'str'
+  object has no attribute 'value'`; a field that names a class declared later in the module
+  (`shipping: Address | None`) made `create_tables()` and writes raise `TypeError: cannot store
+  ... ForwardRef(...)`, as dynamoxy read the fields before pydantic had rebuilt the model;
+  nested `RootModel` fields were written as `{"root": [...]}`, and reading them raised
+  `ItemDecodeError`; and a `default_factory` that takes the validated data (pydantic 2.10 and
+  later) raised `TypeError` when an item without that attribute was read. Enum fields now take
+  the members' values, dynamoxy resolves forward references when it first needs the fields
+  (an undefined name raises a `TypeError` that names it), `RootModel` fields are stored as their
+  root value, and such factories get the data (upserts by key pass the key's fields and the
+  values the update sets).
 
 ### Security
 

@@ -322,6 +322,8 @@ Pydantic validates; dynamoxy maps. Markers: `PartitionKey`, `SortKey`, `Unique`,
 `AttributeName`, `Template`, `CreatedAt`, `UpdatedAt`, `Version`, `TTL`, `UseCodec`. Class
 attributes are expression paths at runtime; wrap them in `dynamoxy.attr()` for static typing:
 `dynamoxy.attr(Wallet.balance) >= 10`. Install with `pip install 'dynamoxy[pydantic]'`.
+`use_enum_values=True`, forward references to classes declared later, `RootModel` fields
+(stored as their root value) and default factories that take the data work as in pydantic.
 
 To store an existing pydantic model without changing it, subclass it together with
 `dynamoxy.PydanticModel` and re-declare only the fields that need a marker

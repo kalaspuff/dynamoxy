@@ -138,10 +138,23 @@ await customer.increment(dynamoxy.attr(Customer.credit), Decimal(5))
 Plain `pydantic.BaseModel` fields (and lists of them) are stored as maps and validated by pydantic
 when read. Their `datetime` fields use the default format (`+00:00`); annotate them
 `Annotated[datetime, dynamoxy.UseCodec(dynamoxy.codecs.DateTimeCodec("iso_z"))]` for another.
+A `pydantic.RootModel` field (`class Tags(RootModel[list[str]])`) is stored as its root value
+(here a list) and read back as the root model.
+
+Annotations may name classes declared later in the module (`shipping: Address | None` above
+`class Address(BaseModel)`): dynamoxy resolves them, as pydantic's `model_rebuild()` does, when it
+first needs the model's fields (`create_tables`, a repository, a write). A name that is still not
+defined then raises `TypeError`; declare it first, or call `Model.model_rebuild()` with the
+namespace that has it.
 
 ## Differences from native models
 
 - Assignments are validated: `PydanticModel` sets `validate_assignment=True` in its `model_config`.
 - Defaults for automatic fields must be `None`; dynamoxy fills them on write.
+- `model_config = ConfigDict(use_enum_values=True)` works: instances hold the members' values,
+  which are stored as for enum fields.
+- A `default_factory` that takes the validated data (`Field(default_factory=lambda data:
+  data["sku"].lower())`) gives the default of items read without the attribute, as pydantic
+  computes it. Upserts by key call it with the key's fields and the values the update sets.
 - `model_dump()` gives Python values; `dynamoxy.schema_of(Customer).encode(customer)` gives the
   stored form.

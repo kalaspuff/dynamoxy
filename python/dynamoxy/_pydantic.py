@@ -31,7 +31,7 @@ import copy
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar, Self, overload, override
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PydanticUndefinedAnnotation
 from pydantic import ValidationError as PydanticValidationError
 from pydantic._internal._model_construction import ModelMetaclass
 from pydantic_core import PydanticUndefined
@@ -168,6 +168,11 @@ def _field_options(info: FieldInfo) -> dict[str, Any]:
         options["default"] = info.default
     if info.default_factory is not None:
         options["default_factory"] = info.default_factory
+        # pydantic 2.10 and later: a factory may take the validated data of the fields before it.
+        takes_data = getattr(info, "default_factory_takes_validated_data", None)
+        if takes_data is None:
+            takes_data = getattr(info, "default_factory_takes_data", False)
+        options["default_factory_takes_data"] = bool(takes_data)
     if info.description:
         options["description"] = info.description
     for marker in info.metadata:
@@ -204,7 +209,26 @@ def _field_options(info: FieldInfo) -> dict[str, Any]:
     return options
 
 
+def _resolve_annotations(model: type[BaseModel]) -> None:
+    """Resolves annotations that name classes declared after the model (``shipping: Address | None``).
+
+    Pydantic leaves them unresolved until the model is rebuilt, which it does when the first
+    instance is created; the schema is built earlier (``create_tables``) and needs them.
+    """
+    if model.__pydantic_complete__:
+        return
+    try:
+        # The module's namespace (and the one the class was declared in), not this function's.
+        model.model_rebuild(raise_errors=True, _parent_namespace_depth=0)
+    except PydanticUndefinedAnnotation as error:
+        raise TypeError(
+            f"{model.__name__}: the annotation {error.name!r} is not defined; declare it before the model "
+            f"is used, or call {model.__name__}.model_rebuild() where it is defined"
+        ) from None
+
+
 def _build(model: type[BaseModel], options: ModelOptions) -> ModelSchema:
+    _resolve_annotations(model)
     specs = []
     for name, info in model.model_fields.items():
         field_options = _field_options(info)
