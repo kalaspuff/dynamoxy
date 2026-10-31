@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from dynamoxy._utils import seconds
-from dynamoxy.errors import ResourceNotFoundError, UnprocessedItemsError
+from dynamoxy.errors import ResourceNotFoundError, unprocessed_items_error
 from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition
 from dynamoxy.query import Query, Scan
 from dynamoxy.results import Backup, ContinuousBackups, TableDescription, TimeToLive
@@ -436,7 +436,8 @@ class Table:
         """Reads any number of items by key (managed ``BatchGetItem``); missing keys are skipped.
 
         Raises:
-            UnprocessedItemsError: Some keys stayed unprocessed after every retry round.
+            UnprocessedItemsError: Some keys were not read: still unprocessed after every retry
+                round, or their request failed (``.error``).
         """
         keys = [dict(key) for key in keys]
         if not keys:
@@ -452,9 +453,8 @@ class Table:
         )
         unprocessed = output["unprocessed_keys"].get(self.physical_name)
         if unprocessed and unprocessed["keys"]:
-            raise UnprocessedItemsError(
-                f"{len(unprocessed['keys'])} keys of {self.physical_name} stayed unprocessed (throttling)",
-                unprocessed=[("get", key) for key in unprocessed["keys"]],
+            raise unprocessed_items_error(
+                f"keys of {self.physical_name}", [("get", key) for key in unprocessed["keys"]], output["error"]
             )
         return list(output["items"].get(self.physical_name, []))
 
@@ -464,7 +464,8 @@ class Table:
         """Writes any number of items and deletes (managed ``BatchWriteItem``; not atomic).
 
         Raises:
-            UnprocessedItemsError: Some writes stayed unprocessed after every retry round.
+            UnprocessedItemsError: Some writes were not made: still unprocessed after every retry
+                round, or their request failed (``.error``).
         """
         requests = [(self.physical_name, "put", dict(item)) for item in puts]
         requests += [(self.physical_name, "delete", dict(key)) for key in deletes]
@@ -472,9 +473,8 @@ class Table:
             return
         output = await self.client.call("batch_write", "BatchWriteItem", table=self.physical_name, requests=requests)
         if output["unprocessed"]:
-            raise UnprocessedItemsError(
-                f"{len(output['unprocessed'])} writes stayed unprocessed (throttling)",
-                unprocessed=[(kind, item) for _, kind, item in output["unprocessed"]],
+            raise unprocessed_items_error(
+                "writes", [(kind, item) for _, kind, item in output["unprocessed"]], output["error"]
             )
 
     # ---- management -----------------------------------------------------------------------

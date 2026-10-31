@@ -22,7 +22,7 @@ DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.m
     │   │   └── UniqueConstraintError    a unique value is taken (.field, .value)
     │   ├── TransactionCanceledError     (.cancellation_reasons, .errors)
     │   ├── ThrottlingError, ResourceNotFoundError, ResourceInUseError, ...
-    ├── UnprocessedItemsError            a managed batch could not finish (throttling)
+    ├── UnprocessedItemsError            a managed batch could not finish (.unprocessed, .error)
     ├── TransportError
     │   └── WriteOutcomeUnknownError     a write may have been applied (.item)
     ├── CredentialsError, ShutdownError
@@ -281,21 +281,50 @@ class UniqueConstraintError(ConditionalCheckFailedError):
 
 
 class UnprocessedItemsError(DynamoxyError):
-    """A managed batch still had unprocessed items after every retry round.
+    """A managed batch did not make every write or read every key; the others were done.
 
-    This means sustained throttling. Nothing is lost silently: ``.unprocessed`` lists what was not
-    done.
+    Items are left when DynamoDB still returned them unprocessed after every retry round
+    (sustained throttling), when a request failed with a retryable error (throttling, 5xx, a
+    lost connection) after its attempts in every round, or when a request failed with an error
+    that is not retried (validation, access denied, a missing table), which stops the batch: the
+    requests in flight finish and no other is sent. Nothing is lost silently: ``.unprocessed``
+    lists what was not done. Batch writes are unconditional, so sending them again is safe (a
+    write whose request timed out may already have been made).
 
     Attributes:
         unprocessed: ``(kind, item_or_key)`` pairs, kind ``"put"``, ``"delete"`` or ``"get"``.
+        error: The error of the request that failed, also the exception's ``__cause__`` (unless
+            an ``after_*`` hook failed, which is then the cause), or ``None`` when DynamoDB
+            returned the items unprocessed. ``.retryable`` follows it:
+            ``False`` after an error that is not retried.
     """
 
     retryable = True
 
-    def __init__(self, message: str, *, unprocessed: list[tuple[str, dict[str, Any]]] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        unprocessed: list[tuple[str, dict[str, Any]]] | None = None,
+        error: DynamoxyError | None = None,
+    ) -> None:
         super().__init__(message)
         self.unprocessed = unprocessed if unprocessed is not None else []
         self.message = message
+        self.error = error
+        if error is not None:
+            self.retryable = error.retryable
+            self.__cause__ = error
+
+
+def unprocessed_items_error(
+    what: str, unprocessed: list[tuple[str, dict[str, Any]]], error: DynamoxyError | None
+) -> UnprocessedItemsError:
+    """The error of a managed batch that left ``unprocessed`` (``what``: ``"writes of users"``)."""
+    reason = "throttling" if error is None else str(error)
+    return UnprocessedItemsError(
+        f"{len(unprocessed)} {what} stayed unprocessed ({reason})", unprocessed=unprocessed, error=error
+    )
 
 
 @dataclass(frozen=True, slots=True)

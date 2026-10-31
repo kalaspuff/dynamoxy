@@ -9,14 +9,16 @@
         await batch.put_item("events", {"pk": "e1", "sk": 1})
 
 Batches are not atomic and have no conditions. Requests for the same key are de-duplicated
-(the last one wins). Unprocessed items are resent with backoff; whatever remains after every
-round is raised as :class:`dynamoxy.UnprocessedItemsError`, and only the writes that were made
-update their instances and run ``after_*`` hooks. A flush that fails before anything is sent
-(a ``before_*`` hook or a validation raised) or whose request fails keeps the writes queued:
-nothing is dropped. When the ``async with`` block raises (also with the error of such a flush),
-the writer writes nothing more, as a transaction: what is queued stays in it (``len(batch)``),
-and ``await batch.flush()`` writes it. Models with unique attributes cannot be written in
-batches.
+(the last one wins). Unprocessed items, and the items of a request that failed with a retryable
+error, are resent with backoff; whatever remains after every round, or after a request failed
+with an error that is not retried (which stops the flush), is raised as
+:class:`dynamoxy.UnprocessedItemsError` (``.unprocessed``, the request's error in ``.error``),
+and only the writes that were made update their instances and run ``after_*`` hooks. A flush
+that fails before anything is sent (a ``before_*`` hook or a validation raised) keeps the
+writes queued: nothing is dropped. When the ``async with`` block raises (also with the error of
+such a flush), the writer writes nothing more, as a transaction: what is queued stays in it
+(``len(batch)``), and ``await batch.flush()`` writes it. Models with unique attributes cannot
+be written in batches.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import itertools
 from typing import TYPE_CHECKING, Any, Self
 
 from dynamoxy._utils import stored_identity
-from dynamoxy.errors import UnprocessedItemsError
+from dynamoxy.errors import unprocessed_items_error
 from dynamoxy.schema import bound_repository
 
 if TYPE_CHECKING:
@@ -112,8 +114,9 @@ class BatchWriter:
         """Writes everything queued.
 
         Raises:
-            UnprocessedItemsError: Some writes stayed unprocessed after every retry round (the
-                others were made).
+            UnprocessedItemsError: Some writes were not made (``.unprocessed``): still unprocessed
+                after every retry round, or their request failed (``.error``). The others were
+                made; the writes it reports are no longer queued.
         """
         pending, self._pending = dict(self._pending), {}
         if not pending:
@@ -149,7 +152,8 @@ class BatchWriter:
         try:
             output = await self.client.call("batch_write", "BatchWriteItem", requests=requests)
         except BaseException:
-            # Batch writes are unconditional: sending them again (the next flush) is safe.
+            # The call itself failed (cancelled, or refused before anything was sent): batch
+            # writes are unconditional, so sending them again (the next flush) is safe.
             self._requeue(pending)
             raise
         unprocessed = output["unprocessed"]
@@ -167,10 +171,10 @@ class BatchWriter:
                 except Exception as error:  # noqa: BLE001 - raised once every hook ran
                     errors.append(error)
         if unprocessed:
-            raise UnprocessedItemsError(
-                f"{len(unprocessed)} writes stayed unprocessed (throttling)",
-                unprocessed=[(kind, item) for _, kind, item in unprocessed],
-            ) from (errors[0] if errors else None)
+            error = unprocessed_items_error("writes", [(kind, item) for _, kind, item in unprocessed], output["error"])
+            if errors:
+                raise error from errors[0]
+            raise error
         if errors:
             raise errors[0]
 

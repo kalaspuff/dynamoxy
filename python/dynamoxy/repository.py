@@ -70,10 +70,10 @@ from dynamoxy.errors import (
     ItemNotFoundError,
     TransactionCanceledError,
     UniqueConstraintError,
-    UnprocessedItemsError,
     VersionConflictError,
     WriteOutcomeUnknownError,
     cancellation_reasons,
+    unprocessed_items_error,
     validation_error,
 )
 from dynamoxy.events import EventKind
@@ -688,9 +688,8 @@ class Repository[M]:
         )
         pending = output["unprocessed_keys"].get(self.table_name)
         if pending and pending["keys"]:
-            raise UnprocessedItemsError(
-                f"{len(pending['keys'])} keys of {self.table_name} stayed unprocessed (throttling)",
-                unprocessed=[("get", key) for key in pending["keys"]],
+            raise unprocessed_items_error(
+                f"keys of {self.table_name}", [("get", key) for key in pending["keys"]], output["error"]
             )
         found = {identity(item): item for item in output["items"].get(self.table_name, [])}
         result: list[M] = []
@@ -1879,7 +1878,8 @@ class Repository[M]:
         Raises:
             TypeError: The model has unique attributes (use ``create``/``save`` or a transaction).
             ValueError: A loaded instance's key or immutable value changed.
-            UnprocessedItemsError: Some writes stayed unprocessed after every retry round.
+            UnprocessedItemsError: Some writes were not made: still unprocessed after every retry
+                round, or their request failed (``.error``).
         """
         if self.schema.unique_fields:
             raise TypeError(
@@ -1898,18 +1898,19 @@ class Repository[M]:
             prepared[identity] = (instance, item, changes)
         if not prepared:
             return
-        left = await self._batch_write([("put", item) for _, item, _ in prepared.values()])
+        left, error = await self._batch_write([("put", item) for _, item, _ in prepared.values()])
         done = [entry for identity, entry in prepared.items() if identity not in left]
         for instance, item, changes in done:
             self._apply(instance, changes, item)
-        await self._run_hooks("after_save", [instance for instance, _, _ in done], "batch_put", left)
+        await self._run_hooks("after_save", [instance for instance, _, _ in done], "batch_put", left, error)
 
     async def batch_delete(self, targets: Iterable[M | Mapping[str, Any] | Any]) -> None:
         """Deletes many items by instance or key (managed ``BatchWriteItem``; not atomic).
 
         Raises:
             TypeError: The model has unique attributes.
-            UnprocessedItemsError: Some deletes stayed unprocessed after every retry round.
+            UnprocessedItemsError: Some deletes were not made: still unprocessed after every retry
+                round, or their request failed (``.error``).
         """
         if self.schema.unique_fields:
             raise TypeError(f"{self.model_class.__name__} has unique attributes; delete items one by one")
@@ -1921,7 +1922,7 @@ class Repository[M]:
         keys = {stored_identity(key): key for key in (self._target_key(target) for target in targets)}
         if not keys:
             return
-        left = await self._batch_write([("delete", key) for key in keys.values()])
+        left, error = await self._batch_write([("delete", key) for key in keys.values()])
         done = [
             target
             for target in targets
@@ -1929,10 +1930,17 @@ class Repository[M]:
         ]
         for target in done:
             self._apply(target, {}, None)
-        await self._run_hooks("after_delete", done, "batch_delete", left)
+        await self._run_hooks("after_delete", done, "batch_delete", left, error)
 
-    async def _batch_write(self, requests: list[tuple[str, dict[str, Any]]]) -> dict[Any, tuple[str, dict[str, Any]]]:
-        """Sends a managed ``BatchWriteItem``; returns the unprocessed requests by key identity."""
+    async def _batch_write(
+        self, requests: list[tuple[str, dict[str, Any]]]
+    ) -> tuple[dict[Any, tuple[str, dict[str, Any]]], DynamoxyError | None]:
+        """Sends a managed ``BatchWriteItem``.
+
+        Returns:
+            The unprocessed requests by key identity, and the error of the request that left
+            them, if one failed.
+        """
         output = await self.client.call(
             "batch_write",
             "BatchWriteItem",
@@ -1940,10 +1948,16 @@ class Repository[M]:
             model=self.model_class,
             requests=[(self.table_name, kind, item) for kind, item in requests],
         )
-        return {stored_identity(self.schema.key_values(item)): (kind, item) for _, kind, item in output["unprocessed"]}
+        left = {stored_identity(self.schema.key_values(item)): (kind, item) for _, kind, item in output["unprocessed"]}
+        return left, output["error"]
 
     async def _run_hooks(
-        self, point: HookPoint, instances: list[M], operation: str, left: dict[Any, tuple[str, dict[str, Any]]]
+        self,
+        point: HookPoint,
+        instances: list[M],
+        operation: str,
+        left: dict[Any, tuple[str, dict[str, Any]]],
+        failure: DynamoxyError | None,
     ) -> None:
         """Runs ``after_*`` hooks of written instances, then raises what failed.
 
@@ -1960,10 +1974,10 @@ class Repository[M]:
                 except Exception as error:  # noqa: BLE001 - raised once every hook ran
                     errors.append(error)
         if left:
-            raise UnprocessedItemsError(
-                f"{len(left)} writes of {self.table_name} stayed unprocessed (throttling)",
-                unprocessed=list(left.values()),
-            ) from (errors[0] if errors else None)
+            unprocessed = unprocessed_items_error(f"writes of {self.table_name}", list(left.values()), failure)
+            if errors:
+                raise unprocessed from errors[0]
+            raise unprocessed
         if errors:
             raise errors[0]
 

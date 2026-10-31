@@ -12,10 +12,7 @@ use crate::types::{
     BatchGetItemInput, BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, KeysAndAttributes,
     ReturnValuesOnConditionCheckFailure, WriteRequest,
 };
-use crate::value::item_size;
-
-/// Most data `BatchGetItem` returns in one response (16 MB).
-const RESPONSE_SIZE_LIMIT: usize = 16 * 1024 * 1024;
+use crate::value::{BATCH_GET_RESPONSE_LIMIT, item_size};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
@@ -73,7 +70,7 @@ pub fn batch_get_item(
         }
         let table = state.table(table_name)?;
         for (key, stored) in request.keys.iter().zip(stored_keys) {
-            if returned >= RESPONSE_SIZE_LIMIT {
+            if returned >= BATCH_GET_RESPONSE_LIMIT {
                 output
                     .unprocessed_keys
                     .entry(table_name.clone())

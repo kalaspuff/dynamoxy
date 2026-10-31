@@ -12,7 +12,7 @@ use std::fmt;
 use std::hash::Hash;
 
 pub use number::{Number, NumberError};
-pub use size::{MAX_ITEM_SIZE, item_size, value_size};
+pub use size::{BATCH_GET_RESPONSE_LIMIT, MAX_ITEM_SIZE, item_size, value_size};
 
 /// An item (or a key): attribute names to values. Ordered, so output is deterministic.
 pub type Item = BTreeMap<String, AttributeValue>;

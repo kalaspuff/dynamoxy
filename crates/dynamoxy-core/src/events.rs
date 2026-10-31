@@ -79,7 +79,7 @@ event_kinds! {
     RequestGaveUp => ("request.gave_up", Error, "A request still failed with a retryable error after the last attempt."),
     RequestOutcomeUnknown => ("request.outcome_unknown", Warning, "A write may have been applied (an attempt timed out, lost its connection or got a 5xx), and no answer settled whether it was: it was not sent again, or the next attempt's answer may be the earlier attempt's doing."),
     RequestSlow => ("request.slow", Warning, "A request took longer than slow_operation_threshold."),
-    BatchUnprocessed => ("batch.unprocessed", Info, "A batch request returned unprocessed items or keys; they are sent again."),
+    BatchUnprocessed => ("batch.unprocessed", Info, "A batch request returned unprocessed items or keys, or failed after its attempts; they are sent again."),
     BatchIncomplete => ("batch.incomplete", Error, "Unprocessed batch items or keys remained after batch_max_rounds rounds."),
     TableCreated => ("table.created", Info, "A table was created."),
     TableUpdated => ("table.updated", Info, "A table's settings or indexes were updated."),

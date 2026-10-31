@@ -161,7 +161,8 @@ These are relied upon across layers; tests cover each of them.
    (`RetryPolicy`) have limits. Overflow and exhaustion are reported (`events.dropped`,
    `batch.incomplete`, `request.gave_up`, `UnprocessedItemsError`), never silent.
 4. **Nothing is silently dropped.** Every batch item ends written or reported in
-   `UnprocessedItemsError.unprocessed`; every failed call raises with its attempts and duration;
+   `UnprocessedItemsError.unprocessed`, also when a chunk's request fails (a batch never fails
+   as a whole while some of its chunks were written); every failed call raises with its attempts and duration;
    every transaction cancellation explains each operation. Retries never apply a write twice,
    and never report a failure that an earlier attempt of the same call may have caused.
 5. **Values never appear in expressions.** All user values travel as expression attribute
@@ -208,7 +209,12 @@ These are relied upon across layers; tests cover each of them.
   the event buffer is a `parking_lot::Mutex<VecDeque>` held only for push/drain (never across
   `.await`), with a `tokio::sync::Notify` for waiters.
 - **Managed batches** run up to `batch_concurrency` requests at once (`JoinSet`), and send
-  unprocessed items again for up to `batch_max_rounds` rounds with backoff. A batch of one chunk,
+  unprocessed items again for up to `batch_max_rounds` rounds with backoff (keys `BatchGetItem`
+  left for its 16 MB response limit at once). A request that fails with a retryable error after
+  its attempts leaves its chunk unprocessed for the next round; one that fails with an error that
+  is not retried stops the batch: no other chunk is sent, the chunks in flight are awaited (never
+  aborted, so their outcome is known), and the result reports what is left with the error
+  (`BatchWriteResult::error`). A batch of one chunk,
   and every batch of the in-memory backend (which applies one request at a time anyway), sends its
   chunks from the calling task.
 - **The in-memory backend** keeps tables behind a lock; each operation (including a whole

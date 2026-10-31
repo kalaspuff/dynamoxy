@@ -125,10 +125,12 @@ class BatchGetOutput(TypedDict):
     items: dict[str, list[Item]]
     unprocessed_keys: dict[str, KeysAndAttributesDict]
     consumed_capacity: list[ConsumedCapacityDict]
+    error: DynamoxyError | None
 
 class BatchWriteOutput(TypedDict):
     unprocessed: list[tuple[str, str, Item]]
     consumed_capacity: list[ConsumedCapacityDict]
+    error: DynamoxyError | None
 
 class TransactGetItemsOutput(TypedDict):
     responses: list[Item | None]

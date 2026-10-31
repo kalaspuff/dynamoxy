@@ -34,7 +34,7 @@ DynamoxyError
 │   ├── ThrottlingError, ResourceNotFoundError, ResourceInUseError, LimitExceededError
 │   ├── ItemCollectionSizeLimitExceededError, DuplicateItemError, BackupError
 │   └── AccessDeniedError, InternalServerError
-├── UnprocessedItemsError                   .unprocessed
+├── UnprocessedItemsError                   .unprocessed, .error
 ├── TransportError
 │   └── WriteOutcomeUnknownError            .item
 ├── CredentialsError
@@ -78,7 +78,7 @@ DynamoxyError
 | Error | Retryable | Raised when |
 | --- | --- | --- |
 | `ThrottlingError` | yes | DynamoDB throttled the request (`ProvisionedThroughputExceededException`, `ThrottlingException`, `RequestLimitExceeded`) on every attempt |
-| `UnprocessedItemsError` | yes | A managed batch still had unprocessed items after `batch_max_rounds` rounds; `.unprocessed` lists `(kind, item_or_key)` pairs |
+| `UnprocessedItemsError` | yes, unless `.error` is not | A managed batch still had unprocessed items after `batch_max_rounds` rounds, or a request of it failed (`.error`: a retryable error in every round, or one that is not retried, which stops the batch); `.unprocessed` lists the `(kind, item_or_key)` pairs that were not done |
 | `ResourceNotFoundError` | no | The table, index or backup does not exist |
 | `ResourceInUseError` | no | The table exists already or is being created, updated or deleted |
 | `LimitExceededError` | no | Too many tables or concurrent control-plane operations; wait for other table changes to finish |

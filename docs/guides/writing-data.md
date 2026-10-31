@@ -201,13 +201,17 @@ found = await events.batch_get(keys) # BatchGetItem in chunks of 100
 ```
 
 - Not atomic and unconditional: each item succeeds or is retried on its own.
-- Unprocessed items (throttling) are sent again with backoff for `batch_max_rounds` rounds; what
-  remains raises `UnprocessedItemsError` with `.unprocessed`. Only the writes that were made
-  update their instances and run `after_save`/`after_delete` hooks.
+- Unprocessed items (throttling), and the items of a request that failed with a retryable error,
+  are sent again with backoff for `batch_max_rounds` rounds; a request that fails with an error
+  that is not retried (validation, access denied, a missing table) stops the batch, once the
+  requests in flight finished. What remains raises `UnprocessedItemsError` with `.unprocessed`
+  and the request's error in `.error`. Only the writes that were made update their instances
+  and run `after_save`/`after_delete` hooks.
 - Two writes of the same key in one request are invalid in DynamoDB: `batch_put()`,
   `batch_delete()` and `client.batch_writer()` write each key once (the last write wins). The
   batch writer flushes every `flush_size` operations; a flush that fails before its request (a
-  `before_save` hook or validation raised) or whose request fails keeps the other writes queued.
+  `before_save` hook or validation raised) keeps the other writes queued; the writes a flush's
+  `UnprocessedItemsError` reports are no longer queued.
   When the `async with` block raises (also with the error of such a flush), the writer writes
   nothing more, as a transaction: what is queued stays in it (`len(batch)`), and
   `await batch.flush()` writes it.
