@@ -32,6 +32,12 @@ class Order(Model, table="app", entity="Order"):
 only, and collections use it to decode mixed results. Entity names are part of the stored format:
 renaming one needs a data migration.
 
+A subclass of a model is a model of its own (`class Admin(Member, entity="Admin")`), with its own
+repository: a repository of `Member` raises `TypeError` for an `Admin` instance, which it would
+store as a `Member` without the subclass's fields, and its reads by key of an item whose type
+attribute names another model of the table raise `ItemDecodeError`. Write and read such items
+through `client.model(Admin)`, or a collection.
+
 ## Key templates
 
 `template="ORDER#{order_id}"` renders the key from other fields with their stored form (enums as

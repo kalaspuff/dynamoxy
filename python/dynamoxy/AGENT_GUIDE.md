@@ -665,6 +665,9 @@ class Order(Model, table="app", entity="Order"):
   fields the update does not set).
 - `client.collection(Customer, Order).query(customer_id="c1").all()` returns both entity types,
   decoded by `_type`.
+- A subclass (`class Admin(Member, entity="Admin")`) has its own repository: `client.model(Member)`
+  raises `TypeError` for an `Admin` instance and `ItemDecodeError` when it reads an `Admin` item.
+  Document fields refuse instances of subclasses of their document class.
 - `client.create_tables(Customer, Order)` creates the shared table once, with every index.
 
 ## 10. Tables

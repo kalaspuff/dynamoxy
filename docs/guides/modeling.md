@@ -6,6 +6,9 @@
 - `dynamoxy.Document` subclasses are stored as maps inside items (addresses, line items).
 - Both declare fields the same way and validate on construction and on assignment.
 - A model without `table=` (or with `abstract=True`) is a base class: its fields are inherited.
+  A subclass of a model with a table is a model of its own, written and read through its own
+  repository (see [single-table design](single-table-design.md#entities)). A field typed as a
+  document refuses instances of its subclasses, whose fields it would not store.
 - `item.copy(**changes)` makes a new, unsaved instance with the same values: automatic fields
   (`created_at`, `updated_at`, `version`) start empty, so saving the copy writes a new item
   (pass `created_at=item.created_at` to keep one); an unknown field name raises `TypeError`.

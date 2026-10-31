@@ -1047,6 +1047,10 @@ class DocumentCodec(Codec[Any]):
 
     def __init__(self, model: type) -> None:
         self.model = model
+        # Native documents and models refuse instances of subclasses, which they would store
+        # without the subclass's fields. Pydantic models store them as the declared class, as
+        # pydantic serializes them.
+        self._exact = hasattr(model, "__dynamoxy_fields__")
 
     def _schema(self) -> Any:
         from dynamoxy.schema import schema_of
@@ -1056,14 +1060,24 @@ class DocumentCodec(Codec[Any]):
     @override
     def validate(self, value: Any) -> Any:
         schema = self._schema()
+        if type(value) is self.model:
+            return value
         if isinstance(value, self.model):
+            if self._exact:
+                raise self._subclass_error(value)
             return value
         if isinstance(value, Mapping):
             return schema.adapter.create(dict(value))
         raise _type_error(self.model.__name__, value)
 
+    def _subclass_error(self, value: Any) -> ValueError:
+        name, other = self.model.__name__, type(value).__name__
+        return ValueError(f"expected {name}, got {other}, a subclass whose fields {name} does not store")
+
     @override
     def encode(self, value: Any) -> dict[str, Any]:
+        if self._exact and type(value) is not self.model and isinstance(value, self.model):
+            raise self._subclass_error(value)
         return self._schema().encode(value, include_type=False)
 
     @override
