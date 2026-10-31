@@ -8,6 +8,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Added
+
+- `Repository.verify_unique()` compares a model's items with its unique guard items in one scan
+  (values without a guard, orphaned guards, values several items hold), and
+  `Repository.repair_unique()` creates missing guards and deletes or reassigns orphaned ones,
+  each on condition that the data is still as scanned. The constraints guide describes the
+  migration for adding `unique=True` to a field with stored items.
+
 ### Changed
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.

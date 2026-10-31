@@ -43,7 +43,9 @@ It is authoritative for the installed version; this skill only summarizes it.
    query filters may only name what an index holds. `where()` takes one sort key condition (use
    `between()` for ranges).
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
-   business rules, and `client.transaction()` for multi-item changes. Keys and
+   business rules, and `client.transaction()` for multi-item changes. After adding
+   `unique=True` to a field with stored items, run `repo.verify_unique()`, resolve its
+   `duplicates`, then `repo.repair_unique()` (old items have no guards). Keys and
    `immutable=True` fields of loaded instances cannot change: write a copy as a new item.
    `Model.field.set(None)` removes an attribute. `None` and empty sets are stored as no
    attribute, which reads back as `None` or an empty set whatever the field's default (a

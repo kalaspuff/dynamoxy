@@ -569,7 +569,12 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
   Items stored before a field became `unique=True` have no guards either. A guard is only
   deleted by a write of the item that owns it: when two items hold one value, writes that would
   remove the value of the other one raise `UniqueConstraintError` ("belongs to another item");
-  when the owner (`.item["_owner"]`) is gone or holds another value, delete the stale guard.
+  when the owner (`.item["_owner"]`) is gone or holds another value, the guard is stale.
+- `await repo.verify_unique()` compares items and guards in one scan (`.missing`, `.orphaned`,
+  `.duplicates`, `.invalid`, `.ok`); `await repo.repair_unique()` creates missing guards and
+  deletes or reassigns orphaned ones, each on condition that the data is unchanged (`.skipped`
+  otherwise: verify again). Values held by several items make it raise `ValueError` unless
+  `skip_duplicates=True`: change the data. Do not log reports (they hold values).
 
 ## 7. Optimistic locking
 
@@ -817,6 +822,9 @@ application do not erase what a newer one wrote; drop a retired attribute with
 Changing a field's type: items stored with the old type raise `ItemDecodeError`, so rewrite them
 first (`repository.table.scan()` returns dicts), or declare both types (`Attr[int | str]`) until
 every item is rewritten. Changing a key or a key template is a new table.
+Adding `unique=True` to a field with stored items (or renaming the entity type or a unique
+field's stored name): deploy the model, run `verify_unique()`, resolve its `duplicates`, then
+`repair_unique()` until `verify_unique().ok`; until then the stored values are not guarded.
 
 ## 13. Configuration cheat sheet
 
