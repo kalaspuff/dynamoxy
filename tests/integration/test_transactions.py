@@ -217,7 +217,7 @@ async def test_transact_get_reads_a_snapshot(client_with_tables: dynamoxy.Client
     assert isinstance(found, Order)
     assert found.total == Decimal(42)
     assert missing is None
-    assert await client.transact_get() == []
+    assert await client.transact_get() == ()
 
 
 async def test_failing_hooks_after_a_commit_leave_every_instance_final(client: dynamoxy.Client) -> None:
