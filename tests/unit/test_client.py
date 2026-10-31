@@ -208,6 +208,68 @@ async def test_middleware_wraps_calls_in_order() -> None:
         assert seen == ["inner:None:Event"]
 
 
+async def test_middleware_removed_during_a_call_still_lets_the_others_run() -> None:
+    async with testing.memory_client() as client:
+        await client.create_tables(Event)
+        seen: list[str] = []
+        removes: list[Any] = []
+
+        async def once(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+            seen.append("once")
+            removes[0]()
+            return await call_next(request)
+
+        async def guard(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+            seen.append("guard")
+            return await call_next(request)
+
+        removes.append(client.use(once))
+        client.use(guard)
+        await client.model(Event).get("s", 1)
+        assert seen == ["once", "guard"], "the chain the call started with"
+        seen.clear()
+        await client.model(Event).get("s", 1)
+        assert seen == ["guard"]
+
+
+async def test_middleware_added_during_a_call_applies_to_later_calls() -> None:
+    async with testing.memory_client() as client:
+        await client.create_tables(Event)
+        seen: list[str] = []
+
+        async def late(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+            seen.append("late")
+            return await call_next(request)
+
+        async def adder(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+            seen.append("adder")
+            if len(seen) == 1:
+                client.use(late)
+            return await call_next(request)
+
+        client.use(adder)
+        await client.model(Event).get("s", 1)
+        assert seen == ["adder"]
+        await client.model(Event).get("s", 1)
+        assert seen == ["adder", "adder", "late"]
+
+
+async def test_every_event_of_a_call_reaches_hooks_before_it_returns() -> None:
+    # Without `async with`, no task delivers events while calls run: only the call itself does.
+    retry = dynamoxy.RetryPolicy(max_attempts=700, base_delay=0, max_delay=0)
+    client = testing.memory_client(retry=retry, event_buffer=4096)
+    try:
+        await client.create_tables(Event)
+        testing.inject_fault(client, operation="PutItem", error="throttling", times=600)
+        with testing.capture_events(client, "request.*") as events:
+            await client.model(Event).put(Event(stream="s", seq=1, kind="k"))
+            kinds = [event.kind for event in events]
+        assert kinds.count(dynamoxy.EventKind.REQUEST_RETRY) == 600
+        assert kinds.count(dynamoxy.EventKind.REQUEST_THROTTLED) == 600
+    finally:
+        await client.close()
+
+
 async def test_middleware_can_short_circuit() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Event)
@@ -279,6 +341,23 @@ async def test_logging_configuration(caplog: pytest.LogCaptureFixture) -> None:
     assert "table=" not in created.getMessage()
     assert not any(record.name == "dynamoxy.client" for record in caplog.records)
     assert isinstance(created.__dict__["dynamoxy"], dynamoxy.Event)
+
+
+@pytest.mark.parametrize(
+    ("levels", "expected"),
+    [
+        ({"request.*": "debug", "request.gave_up": "error"}, "error"),
+        ({"request.gave_up": "error", "request.*": "debug"}, "error"),
+        ({"*": "debug", "request.*": "info"}, "info"),
+        ({"request.*": "info", "*": "debug"}, "info"),
+        ({"request.gave_*": "error", "request.*": "debug", "*": "info"}, "error"),
+        ({"*.gave_up": "debug", "request.*": "info"}, "debug"),  # as long: the first
+        ({"operation.*": "debug"}, "warning"),
+    ],
+)
+def test_logging_levels_prefer_exact_kinds_then_longer_globs(levels: dict[str, str], expected: str) -> None:
+    config = dynamoxy.LoggingConfig(levels=levels)
+    assert config.level_for(dynamoxy.EventKind.REQUEST_GAVE_UP, "warning") == expected
 
 
 async def test_metrics_and_collection() -> None:

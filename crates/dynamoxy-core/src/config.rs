@@ -55,7 +55,7 @@ pub struct ClientConfig {
     pub batch_max_rounds: u32,
     /// Requests of one batch operation sent in parallel.
     pub batch_concurrency: usize,
-    /// Operations slower than this (seconds) emit `operation.slow`; 0 disables it.
+    /// Operations slower than this (seconds) emit `request.slow`; 0 disables it.
     pub slow_operation_threshold: f64,
     /// Events buffered for the Python layer before new ones are dropped.
     pub event_capacity: usize,

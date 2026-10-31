@@ -274,6 +274,18 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   and reads back the member, and a member whose value DynamoDB cannot store is a `TypeError`
   when the model is declared. `int` fields raised `OverflowError` for `Decimal("Infinity")` and
   `decimal.InvalidOperation` for `Decimal("sNaN")`, instead of a `ValidationError`.
+- Removing a middleware while a call ran skipped the next one for that call: a one-shot
+  middleware that called its `remove()` and then `call_next` kept the next registered
+  middleware (a guard, say) from running, and a `remove()` from another task changed calls in
+  flight. A call now runs the middleware registered when it starts. Only 1024 events of a call
+  reached hooks before it returned, although the guides promise all of them: the rest waited
+  for the next call or the event task, and `testing.capture_events()` missed them (a put
+  throttled 600 times captured 1024 of its 1200 request events); now all of them do.
+  `LoggingConfig.levels` used the first matching pattern in the mapping's order, so
+  `{"request.*": "debug", "request.gave_up": "error"}` logged `request.gave_up` at DEBUG: an
+  exact kind now wins over globs, and the longest matching glob over shorter ones.
+  `from dynamoxy import *` raised `ImportError` without pydantic installed, as `__all__` listed
+  `PydanticModel`; it is now listed only when pydantic is installed.
 
 ### Security
 

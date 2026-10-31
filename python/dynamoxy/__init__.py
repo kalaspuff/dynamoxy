@@ -28,6 +28,7 @@ Read ``dynamoxy guide`` (or ``python -m dynamoxy guide``) for the full usage gui
 
 from __future__ import annotations
 
+import importlib.util
 from typing import TYPE_CHECKING, Any
 
 from dynamoxy import codecs, testing
@@ -186,7 +187,6 @@ __all__ = [
     "PartitionKey",
     "Path",
     "Projection",
-    "PydanticModel",
     "Query",
     "Repository",
     "Request",
@@ -250,6 +250,11 @@ __all__ = [
     "validator",
     "version",
 ]
+
+# `from dynamoxy import *` imports every name of `__all__`: PydanticModel only with pydantic
+# installed (pip install dynamoxy[pydantic]), where it loads pydantic.
+if importlib.util.find_spec("pydantic") is not None:  # pragma: no branch - depends on the environment
+    __all__ += ["PydanticModel"]
 
 
 def __getattr__(name: str) -> Any:

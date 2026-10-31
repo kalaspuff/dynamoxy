@@ -62,7 +62,7 @@ at most 4,294,967,295; other types raise `TypeError` when the object is created.
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `enabled` | `True` | Log events at all |
-| `levels` | `{}` | Level overrides by kind or glob (`{"request.*": "debug"}`): `"debug"`, `"info"`, `"warning"`, `"error"` |
+| `levels` | `{}` | Level overrides by kind or glob (`{"request.*": "debug"}`): `"debug"`, `"info"`, `"warning"`, `"error"`; an exact kind wins over globs, then the longest matching glob |
 | `disabled` | `()` | Kinds or globs that are not logged |
 | `include_fields` | `True` | Append the structured fields to log messages (`key=value`) |
 

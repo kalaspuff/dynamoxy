@@ -34,6 +34,9 @@ __all__ = ["Client", "Credentials", "RetryPolicy"]
 
 _FORK_HOOK_REGISTERED = False
 
+# Events taken from the core at a time; a call's events are all delivered, in such batches.
+_DRAIN_BATCH = 1024
+
 # Native methods that accept `return_consumed_capacity`.
 _CAPACITY_METHODS = frozenset(
     {
@@ -402,8 +405,13 @@ class Client:
             )
 
     def _dispatch_buffered(self, core: CoreClient) -> None:
-        # Runs after every call too, so a call's events reach hooks before the call returns.
-        self._dispatch_raw(core.drain_events(1024))
+        # Runs after every call too, so a call's events reach hooks before the call returns: all
+        # of them, in batches (the buffer holds at most `event_buffer` events).
+        while True:
+            raw = core.drain_events(_DRAIN_BATCH)
+            self._dispatch_raw(raw)
+            if len(raw) < _DRAIN_BATCH:
+                break
         self._report_dropped(core)
 
     # ---- extension points -----------------------------------------------------------------
@@ -431,6 +439,9 @@ class Client:
 
     def use(self, middleware: Middleware) -> Callable[[], None]:
         """Adds middleware around every DynamoDB call (first added runs outermost).
+
+        A call runs the middleware registered when it starts: adding or removing one (also from
+        inside a middleware, or from another task) applies to calls that start afterwards.
 
         Returns:
             A function that removes it.
@@ -495,13 +506,14 @@ class Client:
         if self._core_client is None or self._closed:
             await self._core()
         request = Request(operation=operation, method=method, table=table, params=params, model=model)
-        response = await self._chain(0, request)
+        # The chain as the call starts: middleware added or removed meanwhile (a one-shot
+        # middleware removing itself, another task) applies to later calls only.
+        response = await self._chain(tuple(self._middleware), 0, request)
         return response.output
 
-    async def _chain(self, index: int, request: Request) -> Response:
-        if index < len(self._middleware):
-            middleware = self._middleware[index]
-            return await middleware(request, lambda next_request: self._chain(index + 1, next_request))
+    async def _chain(self, chain: tuple[Middleware, ...], index: int, request: Request) -> Response:
+        if index < len(chain):
+            return await chain[index](request, lambda next_request: self._chain(chain, index + 1, next_request))
         return await self._invoke(request)
 
     async def _invoke(self, request: Request) -> Response:

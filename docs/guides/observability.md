@@ -24,6 +24,10 @@ client = dynamoxy.Client(
 )
 ```
 
+`levels` takes kinds and globs. An exact kind wins over globs, and of the globs that match a
+kind the longest wins, so `{"request.*": "debug", "request.gave_up": "error"}` logs
+`request.gave_up` at ERROR and the other request events at DEBUG.
+
 Log records carry the event as `record.dynamoxy` (kind, message, fields, level, timestamp), so
 JSON formatters can emit structured logs.
 
@@ -49,7 +53,7 @@ async def alert(event: dynamoxy.Event) -> None:
 
 Hooks may be sync or async and match kinds or globs (a typo raises `ValueError`). A failing hook
 never affects the operation; it emits `hook.failed`. Events of a call reach hooks before the call
-returns; async hooks run as tasks. `close()` waits for those of the current event loop before it
+returns, however many there are; async hooks run as tasks. `close()` waits for those of the current event loop before it
 closes the client, so they may still use it (an `operation.failed` hook that writes an audit
 item); a hook that calls `close()` itself is not waited for. The core records only
 event kinds that logging or a hook wants, so unused kinds cost nothing.
@@ -128,4 +132,6 @@ async def audit(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dyna
 client.use(audit)
 ```
 
-Middleware runs in registration order (the first registered is the outermost).
+Middleware runs in registration order (the first registered is the outermost). A call runs the
+middleware registered when it starts: adding or removing one, also from inside a middleware (a
+one-shot middleware that removes itself) or another task, changes later calls only.
