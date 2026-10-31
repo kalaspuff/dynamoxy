@@ -54,7 +54,8 @@ replaces (in a transaction, it cancels with a `ConditionalCheckFailedError` that
 
 **Costs and requirements.**
 
-- Writes of unique models are transactional: 2x write capacity, plus a guard write per changed
+- Writes of unique models are transactional: 2x write capacity on the table (index writes are
+  not doubled), plus a guard write per changed
   value. A delete or change of an instance that was not loaded first reads the stored item to
   find the old values (one consistent read); a write of a loaded instance whose unique values
   changed meanwhile costs that read and a second transaction.

@@ -1086,9 +1086,10 @@ async fn partiql_statements() {
             ..Default::default()
         })
         .await
-        .unwrap();
-    assert!(batch.responses[0].error.is_none());
-    assert_eq!(batch.responses[1].error.as_ref().unwrap().code, "DuplicateItem");
+        .unwrap_err();
+    // DynamoDB refuses a batch that names one item twice before running any statement.
+    assert_eq!(message(&batch), "Provided list of item keys contains duplicates");
+    put(&backend, item([("pk", s("x")), ("sk", n(1))])).await;
 
     let error = backend
         .execute_transaction(ExecuteTransactionInput {
@@ -1873,7 +1874,7 @@ async fn secondary_index_keys_have_the_size_limits_of_table_keys() {
     let error = backend.put_item(write(("status", s(&"x".repeat(3000))))).await.unwrap_err();
     assert_eq!(
         message(&error),
-        "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes"
+        "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of2048 bytes"
     );
     backend.put_item(write(("status", s(&"x".repeat(2048))))).await.unwrap();
     let sorted = CreateTableInput {
@@ -1934,4 +1935,326 @@ async fn updates_count_toward_the_size_of_a_transaction() {
     assert_eq!(message(&error), "Transaction size has exceeded the maximum allowed size");
     let left = backend.scan(ScanInput { table_name: "items".into(), ..Default::default() }).await.unwrap();
     assert_eq!(left.count, 0, "nothing is written");
+}
+
+fn statement(text: &str) -> ParameterizedStatement {
+    ParameterizedStatement { statement: text.into(), ..Default::default() }
+}
+
+fn run(text: &str) -> ExecuteStatementInput {
+    ExecuteStatementInput { statement: text.into(), ..Default::default() }
+}
+
+#[tokio::test]
+async fn partiql_batches_refuse_mixed_and_repeated_items_and_return_old_items() {
+    // Captured against DynamoDB by dynoxide-rs (src/actions/batch_execute_statement.rs,
+    // tests/partiql_condition_failure_item.rs).
+    let backend = backend_with_table().await;
+    put(&backend, item([("pk", s("a")), ("sk", n(1)), ("v", n(1))])).await;
+    let batch =
+        |statements: Vec<ParameterizedStatement>| BatchExecuteStatementInput { statements, ..Default::default() };
+    let error = backend
+        .batch_execute_statement(batch(vec![
+            statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+            statement("INSERT INTO items VALUE {'pk': 'b', 'sk': 1}"),
+        ]))
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Read and write requests together in the same batch is not supported.");
+    let error = backend
+        .batch_execute_statement(batch(vec![
+            statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+            statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+        ]))
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Provided list of item keys contains duplicates");
+    let failing = ParameterizedStatement {
+        return_values_on_condition_check_failure: ReturnValuesOnConditionCheckFailure::AllOld,
+        ..statement("UPDATE items SET v = 2 WHERE pk = 'a' AND sk = 1 AND v = 5")
+    };
+    let output = backend.batch_execute_statement(batch(vec![failing.clone()])).await.unwrap();
+    let error = output.responses[0].error.as_ref().unwrap();
+    assert_eq!(
+        (error.code.as_str(), error.message.as_deref()),
+        ("ConditionalCheckFailed", Some("The conditional request failed"))
+    );
+    assert_eq!(error.item.as_ref().unwrap()["v"], n(1), "the stored item, as ALL_OLD asks");
+    let output = backend
+        .batch_execute_statement(batch(vec![statement("UPDATE items SET v = 2 WHERE pk = 'a' AND sk = 1 AND v = 5")]))
+        .await
+        .unwrap();
+    assert!(output.responses[0].error.as_ref().unwrap().item.is_none());
+    // Reads of a missing table, and reads without the full key.
+    let output = backend
+        .batch_execute_statement(BatchExecuteStatementInput {
+            statements: vec![
+                statement("SELECT * FROM missing WHERE pk = 'a'"),
+                statement("SELECT * FROM items WHERE pk = 'a'"),
+            ],
+            return_consumed_capacity: ReturnConsumedCapacity::Total,
+        })
+        .await
+        .unwrap();
+    let error = output.responses[0].error.as_ref().unwrap();
+    assert_eq!(
+        (error.code.as_str(), error.message.as_deref()),
+        ("ResourceNotFound", Some("Requested resource not found"))
+    );
+    let error = output.responses[1].error.as_ref().unwrap();
+    assert_eq!(
+        error.message.as_deref(),
+        Some("Select statements within BatchExecuteStatement must specify the primary key in the where clause.")
+    );
+    assert_eq!(output.responses[1].table_name, None);
+    // Each keyed read is charged on its table.
+    let output = backend
+        .batch_execute_statement(BatchExecuteStatementInput {
+            statements: vec![
+                statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+                statement("SELECT * FROM items WHERE pk = 'z' AND sk = 1"),
+            ],
+            return_consumed_capacity: ReturnConsumedCapacity::Total,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.consumed_capacity.iter().map(|report| report.capacity_units).collect::<Vec<_>>(), [1.0]);
+}
+
+#[tokio::test]
+async fn partiql_transactions_follow_dynamodb_rules() {
+    // Captured against DynamoDB by dynoxide-rs (src/actions/execute_transaction.rs).
+    let backend = backend_with_table().await;
+    put(&backend, item([("pk", s("a")), ("sk", n(1)), ("v", n(1))])).await;
+    let transaction = |statements: Vec<ParameterizedStatement>| ExecuteTransactionInput {
+        transact_statements: statements,
+        ..Default::default()
+    };
+    let refused =
+        async |input: ExecuteTransactionInput| message(&backend.execute_transaction(input).await.unwrap_err());
+    assert_eq!(
+        refused(transaction(vec![statement("UPDATE items SET v = 2 WHERE pk = 'a' AND sk = 1 RETURNING ALL NEW *")]))
+            .await,
+        "Validation failed in TransactStatements[0]: RETURNING clause is not supported in ExecuteTransaction."
+    );
+    assert_eq!(
+        refused(transaction(vec![
+            statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+            statement("INSERT INTO items VALUE {'pk': 'b', 'sk': 1}"),
+        ]))
+        .await,
+        "ExecuteTransaction API does not support both read and write operations in the same request."
+    );
+    assert_eq!(
+        refused(transaction(vec![
+            statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1"),
+            statement("SELECT * FROM items")
+        ]))
+        .await,
+        "Validation failed in TransactStatements[1]: Select statements within ExecuteTransaction must specify the primary key in the where clause."
+    );
+    let token = "t".repeat(80);
+    assert_eq!(
+        refused(ExecuteTransactionInput {
+            client_request_token: Some(token.clone()),
+            ..transaction(vec![statement("INSERT INTO items VALUE {'pk': 'b', 'sk': 1}")])
+        })
+        .await,
+        format!(
+            "1 validation error detected: Value '{token}' at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 36"
+        )
+    );
+    // A failed condition returns the stored item, as ALL_OLD asks.
+    let failing = ParameterizedStatement {
+        return_values_on_condition_check_failure: ReturnValuesOnConditionCheckFailure::AllOld,
+        ..statement("UPDATE items SET v = 2 WHERE pk = 'a' AND sk = 1 AND v = 5")
+    };
+    let error = backend.execute_transaction(transaction(vec![failing])).await.unwrap_err();
+    let reasons = &error.as_service().unwrap().cancellation_reasons;
+    assert_eq!(reasons[0].item.as_ref().unwrap()["v"], n(1));
+    // A read transaction costs 2 units per 4 KB item, on the table.
+    let output = backend
+        .execute_transaction(ExecuteTransactionInput {
+            return_consumed_capacity: ReturnConsumedCapacity::Total,
+            ..transaction(vec![statement("SELECT * FROM items WHERE pk = 'a' AND sk = 1")])
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.consumed_capacity[0].capacity_units, 2.0);
+}
+
+#[tokio::test]
+async fn partiql_statements_are_refused_as_dynamodb_refuses_them() {
+    // Captured against DynamoDB by dynoxide-rs (tests/partiql_*.rs), except the empty UPDATE.
+    let backend = backend_with_table().await;
+    put(&backend, item([("pk", s("a")), ("sk", n(1)), ("tags", AttributeValue::Ss(vec!["x".into()])), ("n", n(1))]))
+        .await;
+    let refused = async |text: &str| message(&backend.execute_statement(run(text)).await.unwrap_err());
+    assert_eq!(
+        refused("UPDATE items SET v = 1 WHERE pk = 'a' AND pk = 'b' AND sk = 1").await,
+        "Multiple conditions on same key pk. Only single item Update/Insert/Delete are supported"
+    );
+    backend.execute_statement(run("UPDATE items SET v = 1 WHERE pk = 'a' AND pk = 'a' AND sk = 1")).await.unwrap();
+    assert_eq!(
+        refused("DELETE FROM items WHERE pk = 'a' AND sk = 1 RETURNING ALL NEW *").await,
+        "Invalid returning clause: RETURNING ALL NEW *. Only RETURNING ALL OLD * is allowed in DELETE statements."
+    );
+    assert_eq!(
+        refused("INSERT INTO items.by_status VALUE {'pk': 'b', 'sk': 1}").await,
+        "FROM clause may only contain a single table name in data manipulation statements"
+    );
+    assert_eq!(
+        refused("UPDATE items.by_status SET v = 1 WHERE pk = 'a' AND sk = 1").await,
+        "This operation is not supported on an index"
+    );
+    assert_eq!(
+        refused("DELETE FROM items.by_status WHERE pk = 'a' AND sk = 1").await,
+        "This operation is not supported on an index"
+    );
+    assert_eq!(
+        refused("UPDATE items WHERE pk = 'a' AND sk = 1").await,
+        "Statement wasn't well formed, can't be processed: UPDATE requires at least one SET or REMOVE clause"
+    );
+    assert_eq!(
+        refused("SELECT pk FROM \"items\" WHERE pk = 'a' AND EXISTS(tags)").await,
+        "Unrecognized function: exists at 1:43:6"
+    );
+    let found =
+        backend.execute_statement(run("SELECT * FROM items WHERE pk = 'a' AND attribute_exists(tags)")).await.unwrap();
+    assert_eq!(found.items.len(), 1);
+    let error = backend
+        .execute_statement(ExecuteStatementInput { limit: Some(0), ..run("SELECT * FROM items") })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Value '0' at 'limit' failed to satisfy constraint: Member must have value greater than or equal to 1"
+    );
+    // SET_ADD and SET_DELETE take the assigned attribute and a set.
+    assert_eq!(
+        refused("UPDATE \"items\" SET t = set_add(tags, <<'y'>>) WHERE pk = 'a' AND sk = 1").await,
+        "The first argument to SET_ADD must equal the assignment value at 1:24:7"
+    );
+    assert_eq!(
+        refused("UPDATE \"items\" SET n = set_add(n, 5) WHERE pk = 'a' AND sk = 1").await,
+        "The second argument to SET_ADD must be a value with type SET at 1:32:1"
+    );
+    assert_eq!(
+        refused("UPDATE \"items\" SET tags = set_delete(tags) WHERE pk = 'a' AND sk = 1").await,
+        "SET_DELETE must have exactly two arguments at 1:27:10"
+    );
+    backend
+        .execute_statement(run("UPDATE items SET tags = set_add(tags, <<'y'>>) WHERE pk = 'a' AND sk = 1"))
+        .await
+        .unwrap();
+    // Negative numbers after keywords.
+    for text in [
+        "SELECT * FROM items WHERE pk = 'a' AND n BETWEEN -5 AND 5",
+        "SELECT * FROM items WHERE pk = 'a' AND (n = 7 OR -3 < n)",
+    ] {
+        assert_eq!(backend.execute_statement(run(text)).await.unwrap().items.len(), 1, "{text}");
+    }
+}
+
+#[tokio::test]
+async fn partiql_capacity_follows_dynamodb() {
+    // Captured against DynamoDB by dynoxide-rs (tests/partiql_index_consumed_capacity.rs).
+    let backend = backend_with_table().await;
+    put(&backend, item([("pk", s("a")), ("sk", n(1)), ("status", s("open"))])).await;
+    let with = |text: &str, mode| ExecuteStatementInput { return_consumed_capacity: mode, ..run(text) };
+    let output = backend
+        .execute_statement(with("SELECT * FROM items.by_status WHERE status = 'open'", ReturnConsumedCapacity::Indexes))
+        .await
+        .unwrap();
+    let capacity = output.consumed_capacity.unwrap();
+    assert_eq!(capacity.table.unwrap().capacity_units, 0.0);
+    assert_eq!(capacity.global_secondary_indexes["by_status"].capacity_units, 0.5);
+    let output = backend
+        .execute_statement(with("DELETE FROM items WHERE pk = 'missing' AND sk = 1", ReturnConsumedCapacity::Total))
+        .await
+        .unwrap();
+    assert_eq!(output.consumed_capacity.unwrap().capacity_units, 1.0, "a delete of a missing item costs a write");
+    // A transaction doubles the table's write units, not the indexes'.
+    let output = backend
+        .execute_transaction(ExecuteTransactionInput {
+            transact_statements: vec![statement("INSERT INTO items VALUE {'pk': 'b', 'sk': 1, 'status': 'open'}")],
+            return_consumed_capacity: ReturnConsumedCapacity::Indexes,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let capacity = &output.consumed_capacity[0];
+    assert_eq!(capacity.table.unwrap().capacity_units, 2.0);
+    assert_eq!(capacity.global_secondary_indexes["by_status"].capacity_units, 1.0);
+    assert_eq!(capacity.capacity_units, 3.0);
+}
+
+#[tokio::test]
+async fn names_values_and_messages_follow_dynamodb() {
+    let backend = backend_with_table().await;
+    // Empty attribute names (captured against DynamoDB by dynoxide-rs, src/empty_names.rs).
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: item([("pk", s("a")), ("sk", n(1)), ("", n(1))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Empty attribute name");
+    let nested = AttributeValue::M(item([("", n(1))]));
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: item([("pk", s("a")), ("sk", n(1)), ("m", nested)]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Empty attribute name");
+    let error = backend
+        .get_item(GetItemInput {
+            table_name: "items".into(),
+            key: item([("pk", s("a")), ("sk", n(1))]),
+            projection_expression: Some("#e".into()),
+            expression_attribute_names: names(&[("#e", "")]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "ExpressionAttributeNames contains invalid value: Empty attribute name for key #e");
+    // contains() of a path in itself.
+    let error = backend
+        .scan(ScanInput {
+            table_name: "items".into(),
+            filter_expression: Some("contains(a, a)".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "Invalid FilterExpression: The first operand must be distinct from the remaining operands for this operator or function; operator: contains, first operand: [a]"
+    );
+    // An update that makes an item too large, and an update to an empty index key.
+    put(&backend, item([("pk", s("a")), ("sk", n(1))])).await;
+    let update = |expression: &str, value: AttributeValue| UpdateItemInput {
+        table_name: "items".into(),
+        key: item([("pk", s("a")), ("sk", n(1))]),
+        update_expression: Some(expression.into()),
+        expression_attribute_names: names(if expression.contains("#b") {
+            &[("#a", "status"), ("#b", "blob")]
+        } else {
+            &[("#a", "status")]
+        }),
+        expression_attribute_values: values(&[(":v", value)]),
+        ..Default::default()
+    };
+    let error = backend.update_item(update("SET #b = :v REMOVE #a", s(&"x".repeat(400 * 1024)))).await.unwrap_err();
+    assert_eq!(message(&error), "Item size to update has exceeded the maximum allowed size");
+    let error = backend.update_item(update("SET #a = :v", s(""))).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values are not valid. The update expression attempted to update a secondary index key to a value that is not supported. The AttributeValue for a key attribute cannot contain an empty string value."
+    );
 }

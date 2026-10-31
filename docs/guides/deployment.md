@@ -104,8 +104,8 @@ note that unique guard items live under `_unique#...` partition keys.
 ## Costs
 
 - On-demand tables bill per request unit; provisioned tables per capacity unit-hour.
-- Writes: 1 WCU per KB; transactional writes and unique-attribute writes cost 2x; every index
-  that receives the item costs its own write.
+- Writes: 1 WCU per KB; transactional writes and unique-attribute writes cost 2x on the table;
+  every index that receives the item costs its own write, not doubled in a transaction.
 - Reads: 0.5 RCU per 4 KB eventually consistent, 1 RCU consistent, 2 RCU transactional.
 - Filters and projections do not reduce read costs; key design does.
 - Measure with `dynamoxy.collect()` in tests and staging, and `dynamoxy.consumed_capacity` in

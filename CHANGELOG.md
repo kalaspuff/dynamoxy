@@ -379,6 +379,27 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   retried. Table statuses the AWS SDK adds later (and `REPLICATION_NOT_AUTHORIZED`) read as
   `ACTIVE`, and index statuses it adds later as no status, so waiters took such tables for
   ready; they now read as `UNKNOWN` (or their name).
+- Expressions that `&`, `|` and `~` built from a hand-written `dynamoxy.condition(...)` wrapped
+  it in redundant parentheses (`(#a0 = :v0) AND ((#a1 > :v1))`), which DynamoDB refuses with
+  "The expression has redundant parentheses"; the in-memory DynamoDB accepted them. Hand-written
+  conditions now compile without parentheses of their own.
+- The in-memory DynamoDB handled PartiQL and expressions differently from DynamoDB, as captured
+  against DynamoDB by dynoxide-rs. It now refuses a `BatchExecuteStatement` that mixes reads and
+  writes or names an item twice; `RETURNING` in `ExecuteTransaction`; an `UPDATE` or `DELETE`
+  that gives a key attribute two values; `DELETE ... RETURNING ALL NEW *`; writes to an index
+  (`INSERT INTO "t"."i"`); an `UPDATE` without `SET` or `REMOVE`; `exists()`, which DynamoDB's
+  PartiQL does not have (it now has `attribute_exists()` and `attribute_not_exists()`); `Limit=0`;
+  `ExecuteTransaction` tokens longer than 36 characters; `set_add(b, ...)` assigned to another
+  attribute, and `set_add(n, 5)` of a value that is not a set, which added a number; expressions
+  with more than 300 operators; redundant parentheses; empty attribute names (in items, maps and
+  `ExpressionAttributeNames`); and `contains(a, a)`. It parses negative numbers after keywords
+  (`n BETWEEN -5 AND 5`). `ReturnValuesOnConditionCheckFailure=ALL_OLD` returns the stored item in
+  batches and transactions. Mixed transactions, unkeyed transaction and batch reads, batch reads
+  of missing tables, the hash key size ("of2048 bytes"), updates over 400 KB and empty index key
+  values set by updates have DynamoDB's messages. PartiQL reads report capacity in the requested
+  detail, a `DELETE` of a missing item costs a write, batch reads and read transactions report
+  their reads, and transactions double the table's write units but not the indexes'. The
+  expression checks of the test suite (`_core._check_expressions`) validate update paths too.
 
 ### Security
 

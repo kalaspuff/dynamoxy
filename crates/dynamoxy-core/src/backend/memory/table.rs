@@ -21,7 +21,7 @@ const MAX_SORT_KEY_SIZE: usize = 1024;
 
 /// DynamoDB's refusal of a partition key value over [`MAX_PARTITION_KEY_SIZE`].
 const HASH_KEY_TOO_LARGE: &str =
-    "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes";
+    "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of2048 bytes";
 
 /// DynamoDB's refusal of a sort key value over [`MAX_SORT_KEY_SIZE`].
 const RANGE_KEY_TOO_LARGE: &str = "One or more parameter values were invalid: Aggregated size of all range keys has exceeded the size limit of 1024 bytes";
@@ -283,8 +283,9 @@ impl Index {
         Some(StoredKey::new(partition.clone(), sort))
     }
 
-    /// Validates the index key attributes an item has.
-    pub fn check_item(&self, item: &Item) -> Result<()> {
+    /// Validates the index key attributes an item has. `update`: the item is the result of an
+    /// update expression, whose refusal of an empty key value has its own wording.
+    pub fn check_item(&self, item: &Item, update: bool) -> Result<()> {
         for attribute in self.key.attributes() {
             let Some(value) = item.get(&attribute.name) else { continue };
             if value.value_type() != attribute.kind.value_type() {
@@ -296,13 +297,22 @@ impl Index {
                     self.name
                 )));
             }
-            let empty = matches!(value, AttributeValue::S(text) if text.is_empty())
-                || matches!(value, AttributeValue::B(bytes) if bytes.is_empty());
-            if empty {
-                return Err(invalid(format!(
-                    "One or more parameter values are not valid. A value specified for a secondary index key is not supported. The AttributeValue for a key attribute cannot contain an empty string value. IndexName: {}, IndexKey: {}",
-                    self.name, attribute.name
-                )));
+            let empty = match value {
+                AttributeValue::S(text) if text.is_empty() => Some("string"),
+                AttributeValue::B(bytes) if bytes.is_empty() => Some("binary"),
+                _ => None,
+            };
+            if let Some(kind) = empty {
+                return Err(invalid(if update {
+                    format!(
+                        "One or more parameter values are not valid. The update expression attempted to update a secondary index key to a value that is not supported. The AttributeValue for a key attribute cannot contain an empty {kind} value."
+                    )
+                } else {
+                    format!(
+                        "One or more parameter values are not valid. A value specified for a secondary index key is not supported. The AttributeValue for a key attribute cannot contain an empty {kind} value. IndexName: {}, IndexKey: {}",
+                        self.name, attribute.name
+                    )
+                }));
             }
             // Index keys have the limits of table keys, with the same messages.
             if attribute.name == self.key.partition.name {
@@ -441,6 +451,19 @@ impl Table {
 
     /// Validates a full item for a write and returns its key.
     pub fn validate_item(&self, item: &Item) -> Result<StoredKey> {
+        self.validate_written(item, false)
+    }
+
+    /// [`Self::validate_item`] for the item an update expression leaves, with DynamoDB's messages
+    /// for updates ("Item size to update has exceeded the maximum allowed size", ...).
+    pub fn validate_updated(&self, item: &Item) -> Result<StoredKey> {
+        self.validate_written(item, true)
+    }
+
+    fn validate_written(&self, item: &Item, update: bool) -> Result<StoredKey> {
+        if item.keys().any(String::is_empty) {
+            return Err(invalid(crate::expr::EMPTY_NAME));
+        }
         let key = self.key.item_key(item)?;
         if let Some(partition) = item.get(&self.key.partition.name)
             && value_size(partition) > MAX_PARTITION_KEY_SIZE
@@ -456,10 +479,14 @@ impl Table {
             value.validate().map_err(invalid)?;
         }
         if item_size(item) > MAX_ITEM_SIZE {
-            return Err(invalid("Item size has exceeded the maximum allowed size"));
+            return Err(invalid(if update {
+                "Item size to update has exceeded the maximum allowed size"
+            } else {
+                "Item size has exceeded the maximum allowed size"
+            }));
         }
         for index in &self.indexes {
-            index.check_item(item)?;
+            index.check_item(item, update)?;
         }
         Ok(key)
     }
@@ -588,6 +615,7 @@ impl CapacityMeter {
     }
 
     /// Records a write of an item (old and new versions) on a table and its affected indexes.
+    /// `multiplier` is the transactional factor (2) of the table's units.
     pub fn write(&mut self, table: &Table, old: Option<&Item>, new: Option<&Item>, multiplier: f64) {
         let size = old.map_or(0, item_size).max(new.map_or(0, item_size));
         let entry = self.tables.entry(table.name.clone()).or_default();
@@ -616,7 +644,10 @@ impl CapacityMeter {
             } else {
                 entry.local.entry(index.name.clone())
             };
-            add_capacity(target.or_default(), 0.0, units * multiplier);
+            // The transactional factor applies to the table alone: an index entry costs what it
+            // costs outside a transaction (captured against DynamoDB by dynoxide-rs, a put of an
+            // indexed item in a transaction is table 2 and index 1).
+            add_capacity(target.or_default(), 0.0, units);
         }
     }
 

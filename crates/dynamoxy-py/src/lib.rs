@@ -82,13 +82,17 @@ fn _check_expressions(
     values: Option<PyValues>,
 ) -> PyResult<()> {
     let input = ExpressionInput { condition, filter, key_condition, update, projection };
-    parse_request(
+    let parsed = parse_request(
         input,
         &names.map(|names| names.0).unwrap_or_default(),
         &values.map(|values| values.0).unwrap_or_default(),
     )
-    .map(|_| ())
-    .map_err(to_py_err)
+    .map_err(to_py_err)?;
+    // Overlapping or conflicting paths and the operand types of ADD and DELETE, as for a request.
+    if let Some(update) = &parsed.update {
+        validate_update(update, &[]).map_err(to_py_err)?;
+    }
+    Ok(())
 }
 
 /// Applies an update expression to an item (plain values) the way DynamoDB would, with the

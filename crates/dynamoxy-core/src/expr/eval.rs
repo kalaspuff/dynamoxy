@@ -210,6 +210,14 @@ pub fn validate_condition(kind: ExpressionKind, condition: &Condition) -> Result
             validate_condition(kind, right)
         }
         Condition::Not(inner) => validate_condition(kind, inner),
+        // Captured against DynamoDB by dynoxide-rs (tests/expression_syntax_errors.rs).
+        Condition::Contains(path, Operand::Path(other)) if other == path => Err(invalid(
+            kind,
+            format!(
+                "The first operand must be distinct from the remaining operands for this operator or function; operator: contains, first operand: [{}]",
+                path.root()
+            ),
+        )),
         Condition::In(..)
         | Condition::AttributeExists(_)
         | Condition::AttributeNotExists(_)

@@ -236,12 +236,15 @@ fn deeply_nested_expressions_are_refused_without_exhausting_the_stack() {
             condition(&text, &Names::new(), &values).map(|_| ()).map_err(|error| error.to_string())
         })
     };
-    let parenthesized = |levels: usize| format!("{}a = :v{}", "(".repeat(levels), ")".repeat(levels));
+    // Groups that each hold an operator besides the next group: DynamoDB refuses redundant ones.
+    let parenthesized = |levels: usize| format!("{}a = :v{}", "(a = :v AND ".repeat(levels), ")".repeat(levels));
     let negated = |levels: usize| format!("{}a = :v", "NOT ".repeat(levels));
     assert_eq!(parse(parenthesized(MAX_NESTING)), Ok(()));
     assert_eq!(parse(negated(MAX_NESTING)), Ok(()));
     // 2,000 parentheses fit in the 4 KB of an expression; they used to overflow the stack.
-    for text in [parenthesized(MAX_NESTING + 1), negated(MAX_NESTING + 1), parenthesized(2000)] {
+    // Nesting is refused before redundant parentheses are: those are only known once a group closes.
+    let bare = |levels: usize| format!("{}a = :v{}", "(".repeat(levels), ")".repeat(levels));
+    for text in [parenthesized(MAX_NESTING + 1), negated(MAX_NESTING + 1), bare(2000)] {
         let error = parse(text).unwrap_err();
         assert_eq!(
             error,
@@ -284,4 +287,34 @@ fn characters_outside_ascii_are_syntax_errors() {
     assert!(parse_update("SET a = :v, ü = :v", &mut placeholders).unwrap_err().to_string().contains("token: \"ü\""));
     let mut placeholders = Placeholders::new(&no_names, &values);
     assert!(parse_projection("a, ñ", &mut placeholders).unwrap_err().to_string().contains("token: \"ñ\""));
+}
+
+#[test]
+fn redundant_parentheses_are_refused() {
+    // Captured against DynamoDB by dynoxide-rs (tests/expression_syntax_errors.rs).
+    let values = values(&[(":v", AttributeValue::n(1))]);
+    for text in ["((a = :v))", "((a = :v)) AND (b = :v)", "(((a = :v) AND (b = :v)))", "NOT ((a = :v))"] {
+        let error = condition(text, &Names::new(), &values).unwrap_err().to_string();
+        assert_eq!(
+            error, "ValidationException: Invalid ConditionExpression: The expression has redundant parentheses;",
+            "{text}"
+        );
+    }
+    for text in ["(a = :v)", "((a = :v) AND (b = :v))", "(a = :v) AND ((b = :v) OR (c = :v))", "NOT (a = :v)"] {
+        assert!(condition(text, &Names::new(), &values).is_ok(), "{text}");
+    }
+}
+
+#[test]
+fn expressions_hold_at_most_300_operators() {
+    let values = values(&[(":v", AttributeValue::n(1))]);
+    // 150 comparisons and 149 ANDs, then one more comparison and AND.
+    let within = vec!["a = :v"; 150].join(" AND ");
+    assert!(condition(&within, &Names::new(), &values).is_ok());
+    let over = vec!["a = :v"; 151].join(" AND ");
+    let error = condition(&over, &Names::new(), &values).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "ValidationException: Invalid ConditionExpression: The expression contains too many operators; operator count: 301"
+    );
 }
