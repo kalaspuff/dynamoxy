@@ -237,6 +237,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `wait_until_active(timeout=1e19)`) panicked in the core (`internal error: a dynamoxy task
   panicked`); durations longer than about 31 years now mean no limit. `wait_until_active()` and
   `wait_until_deleted()` take a `timedelta` too.
+- `close()` closed the client before the async hooks it waited for had finished, so a hook could
+  not use the client: an `operation.failed` hook that awaited something and then wrote an audit
+  item got `ShutdownError` (reported as `hook.failed`), and the item was never written. It now
+  waits for the hooks of the current event loop first. An async hook that called
+  `await client.close()` waited for itself and never finished, and a hook still pending on
+  another (closed) event loop made `close()` raise `ValueError: The future belongs to a
+  different loop` after it had closed the core: `close()` and `events.drain()` now leave out the
+  calling task and hooks of other event loops.
 
 ### Security
 

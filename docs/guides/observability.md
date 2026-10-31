@@ -49,7 +49,9 @@ async def alert(event: dynamoxy.Event) -> None:
 
 Hooks may be sync or async and match kinds or globs (a typo raises `ValueError`). A failing hook
 never affects the operation; it emits `hook.failed`. Events of a call reach hooks before the call
-returns; async hooks run as tasks (the client waits for them at `close()`). The core records only
+returns; async hooks run as tasks. `close()` waits for those of the current event loop before it
+closes the client, so they may still use it (an `operation.failed` hook that writes an audit
+item); a hook that calls `close()` itself is not waited for. The core records only
 event kinds that logging or a hook wants, so unused kinds cost nothing.
 
 ## OpenTelemetry

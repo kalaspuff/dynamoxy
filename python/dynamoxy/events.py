@@ -168,7 +168,8 @@ class _Route:
 class EventDispatcher:
     """Routes events to logging and hooks. A failing hook never breaks the library.
 
-    Sync hooks run inline; async hooks run as tasks on the event loop (``drain()`` waits for them).
+    Sync hooks run inline; async hooks run as tasks on the event loop (``drain()`` waits for
+    those of the current loop).
     """
 
     def __init__(self, logging_config: LoggingConfig | None = None) -> None:
@@ -340,7 +341,24 @@ class EventDispatcher:
             message = f"{message} " + " ".join(f"{key}={value}" for key, value in event.fields.items())
         logger.log(level, "%s", message, extra={"dynamoxy": event}, exc_info=exc_info)
 
+    def pending(self) -> list[asyncio.Task[None]]:
+        """Async hooks still running on this event loop, except the calling task.
+
+        Hooks started on another event loop are left out: they can only finish on theirs. The
+        calling task is left out so that a hook may wait for the others (``await client.close()``
+        in a hook) without waiting for itself.
+        """
+        loop = asyncio.get_running_loop()
+        current = asyncio.current_task()
+        # A copy first: hooks of other event loops add and discard tasks from their threads.
+        tasks = list(self._tasks)
+        return [task for task in tasks if task is not current and task.get_loop() is loop and not task.done()]
+
     async def drain(self) -> None:
-        """Waits for async hooks that are still running."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        """Waits for async hooks that are still running on this event loop (see :meth:`pending`).
+
+        Hooks that the awaited ones start are waited for too. Cancelling ``drain()`` does not
+        cancel the hooks.
+        """
+        while pending := self.pending():
+            await asyncio.wait(pending)

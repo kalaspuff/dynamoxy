@@ -259,6 +259,7 @@ class Client:
         self._pump_task: asyncio.Task[None] | None = None
         self._entered = 0
         self._closed = False
+        self._closing = False
 
     def __repr__(self) -> str:
         target = "memory" if self.store is not None else (self.endpoint_url or self.region or "aws")
@@ -336,12 +337,27 @@ class Client:
             await self.close()
 
     async def close(self) -> None:
-        """Stops the event pump, delivers the remaining events and refuses further calls.
+        """Waits for async hooks, delivers the remaining events and refuses further calls.
 
-        Calls in progress finish, retries included.
+        Calls in progress finish, retries included. Async hooks of this event loop that are still
+        running may use the client until they finish (an ``operation.failed`` hook that writes an
+        audit item, say): the client closes after them. A hook that calls ``close()`` itself is
+        not waited for, and a ``close()`` while another one waits for hooks returns at once.
         """
-        if self._closed:
+        if self._closed or self._closing:
             return
+        self._closing = True
+        try:
+            # Deliver what the core buffered, and wait for the hooks it starts, until none is left.
+            while True:
+                if self._core_client is not None:
+                    self._dispatch_buffered(self._core_client)
+                pending = self.events.pending()
+                if not pending:
+                    break
+                await asyncio.wait(pending)
+        finally:
+            self._closing = False
         self._closed = True
         task, self._pump_task = self._pump_task, None
         if task is not None:
