@@ -30,7 +30,8 @@ examples/                        Runnable examples (executed by tests/integratio
 docs/                            Guides, reference (configuration/errors checked, events generated), ADRs
 skills/dynamoxy/SKILL.md         Skill for agents of applications using dynamoxy (copy into a project)
 .claude/skills/                  Skills for agents developing dynamoxy (this repository)
-scripts/                         check_consistency.py, generate_reference.py, release.py, release_notes.py, smoke_test.py, benchmark.py
+scripts/                         check_consistency.py, generate_reference.py, release.py, release_notes.py, smoke_test.py, benchmark.py,
+                                 probe_dynamodb.sh and probe_backends.py (DynamoDB's answers, docs/parity)
 .github/workflows/               ci.yml, pr-title.yml, prepare-release.yml, tag-release.yml, release.yml
 ```
 

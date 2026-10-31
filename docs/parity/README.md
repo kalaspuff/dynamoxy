@@ -27,6 +27,31 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | [ministack-1.5.33-round1.log](ministack-1.5.33-round1.log), [round 2](ministack-1.5.33-round2.log), [round 3](ministack-1.5.33-round3.log) | MiniStack 1.5.33 (the emulator of dynamoxy's e2e tests and CI) |
 | [localstack-2026.3.0-round1.log](localstack-2026.3.0-round1.log), [round 2](localstack-2026.3.0-round2.log), [round 3](localstack-2026.3.0-round3.log) | LocalStack 2026.3.0, whose DynamoDB is DynamoDB Local 3.3.2 |
 
+## Probing dynamoxy itself
+
+[`scripts/probe_backends.py`](../../scripts/probe_backends.py) asks the same questions through
+dynamoxy (models, tables, transactions, PartiQL, native calls) on any target, the in-memory
+backend included, and writes the facts to JSON: outcomes, exception classes, codes, messages,
+cancellation reasons, sizes and counts. `compare` lists what differs between two runs.
+
+```bash
+uv run python scripts/probe_backends.py run --target memory                # probe-memory.json
+uv run python scripts/probe_backends.py run --target ministack --endpoint http://127.0.0.1:4599
+uv run python scripts/probe_backends.py run --target localstack            # http://127.0.0.1:4566
+AWS_PROFILE=<test-account-profile> uv run python scripts/probe_backends.py run --target aws --region eu-north-1
+uv run python scripts/probe_backends.py compare probe-aws.json probe-memory.json
+uv run python scripts/probe_backends.py iam-policy --account <account-id>  # what a run on AWS needs
+```
+
+A run on AWS takes about 15 minutes and costs cents; its tables are named `dynamoxy-probe-*` and
+deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs of the
+in-memory backend, MiniStack and LocalStack are kept here
+([memory](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json),
+[LocalStack](probe-localstack-2026.3.0.json)). The in-memory backend and LocalStack differ in 44
+facts, each one of LocalStack's differences listed below; besides what the CLI probes asked, the
+library probe asks how conditions, deletes and condition checks count toward a transaction's
+payload, and whether a query filter that also names an attribute the index holds lists it.
+
 ## What DynamoDB answered
 
 "Refused" means a `ValidationException` with the message given, unless another error is named.
