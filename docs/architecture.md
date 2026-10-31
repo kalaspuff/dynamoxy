@@ -118,7 +118,10 @@ checks the 100-operation limit, and sends one `TransactWriteItems` with an idemp
 (reused by the core's retries). On cancellation, each reason is mapped back to the operation
 that produced it and explained (`cancellation_reasons`, `errors`). On success, updated instances
 are refreshed by evaluating the update on the item as loaded with the core's evaluator
-(`_core._apply_update`); no extra read.
+(`_core._apply_update`), without an extra read. Only when the update does not apply to that item
+(an unversioned item another writer changed since it was read) is the item read as stored now;
+if that read fails or finds nothing, the instance forgets its stored copy. The transaction was
+applied, so none of this makes `commit()` raise.
 
 ### A query (`repository.query(...)`)
 
