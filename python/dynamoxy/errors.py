@@ -252,6 +252,10 @@ class VersionConflictError(ConditionalCheckFailedError):
 class UniqueConstraintError(ConditionalCheckFailedError):
     """A value of a ``unique=True`` attribute is already used by another item.
 
+    Also raised by a write that removes or changes a value whose guard item another item owns
+    (stored data in which two items hold the value): ``item`` is then that guard item, and its
+    ``_owner`` the other item's key.
+
     Attributes:
         model: The model class.
         field: The Python name of the unique attribute.

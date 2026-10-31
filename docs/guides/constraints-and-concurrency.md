@@ -23,6 +23,15 @@ sort key). A write that sets or changes a unique value is a transaction:
 | removing a value (`None`) | the item + `Delete old guard` |
 | `delete` | `Delete item` + `Delete guards` |
 
+Each guard records the key of the item that owns it (`_owner`), and a guard is only deleted when
+it is missing or owned by the item written. When two items hold one value, which the guards
+cannot prevent for items stored before the field became unique (or written by other tools), a
+write that would remove or change the value of the item that does not own the guard is refused
+with `UniqueConstraintError`: its message says that the guard belongs to another item, and
+`.item["_owner"]` holds that item's key. Nothing is written, and the other item keeps its guard;
+change the value of one of the items (the owner's writes succeed, and once its value is gone the
+other item's writes do too).
+
 A taken value cancels the transaction and raises `UniqueConstraintError` (`.field`, `.value`);
 nothing is written. `None` values have no guard (several items may have no handle), and
 `update(user, User.handle.set(None))` removes the value and its guard. Numbers are guarded as
@@ -65,7 +74,8 @@ replaces (in a transaction, it cancels with a `ConditionalCheckFailedError` that
 - Guards are skipped by repository reads; dict-level scans and exports see them (`pk` starts with
   `_unique#`).
 - Only writes made by dynamoxy maintain guards. If other services write the table, they must
-  follow the same protocol, or uniqueness is not guaranteed.
+  follow the same protocol, or uniqueness is not guaranteed. The same holds for items stored
+  before a field became `unique=True`: they have no guards.
 
 **Case-insensitive uniqueness.** Normalize the value before it is stored, with a validator:
 `email: Attr[str] = field(unique=True, validators=(str.lower,))`. Lookups by the value run the

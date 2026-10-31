@@ -65,7 +65,7 @@ DynamoxyError
 | `ConditionalCheckFailedError` | no | A `condition=` did not hold; `.item` is the stored item when DynamoDB returned it, `.key` the key of the item a model write targeted |
 | `ItemAlreadyExistsError` | no | `create()` found an item with the same key; `.model`, `.key`, `.item` |
 | `VersionConflictError` | no | Optimistic locking failed: the stored version is not the one the instance was loaded with, or the item was deleted; `.model`, `.key`, `.expected_version`, `.item`. Reload, re-apply, save again |
-| `UniqueConstraintError` | no | A value of a `unique=True` attribute is used by another item; `.model`, `.field`, `.value` |
+| `UniqueConstraintError` | no | A value of a `unique=True` attribute is used by another item; `.model`, `.field`, `.value`. Also raised by a write that would delete the guard item of a value another item owns (two items hold it); `.item` is that guard |
 | `TransactionCanceledError` | only when every failed operation hit a conflict or throttling (retried first) | DynamoDB canceled a transaction. `.cancellation_reasons` (or `dynamoxy.cancellation_reasons(error)`) lists a `CancellationReason` per operation; `.errors` holds the specific errors of model operations |
 | `CancellationReason` | — | Not an exception: `.index`, `.code` (`"None"` when that operation did not fail, `"ConditionalCheckFailed"`, `"TransactionConflict"`, `"DuplicateItem"`, ...), `.message`, `.item`, `.error`, `.operation`, `.failed` |
 | `TransactionConflictError` | yes | Another transaction is updating one of the items |

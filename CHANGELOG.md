@@ -26,6 +26,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
+- A write that removed or changed a unique value deleted the value's guard item even when another
+  item owned it, so when two items held one value (items stored before the field became
+  `unique=True`, or written by other tools), deleting or changing one of them silently removed
+  the other's protection and a third item could take the value. Guard deletes now require that
+  the guard is missing or owned by the written item; otherwise the write raises
+  `UniqueConstraintError` ("the stored value's guard item belongs to another item", the guard in
+  `.item`) and writes nothing.
 
 ## [0.4.0] - 2026-10-31
 
