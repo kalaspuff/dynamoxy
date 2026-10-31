@@ -664,7 +664,8 @@ class Order(Model, table="app", entity="Order"):
   (`{placed_at:%Y-%m}`) in UTC, so items read back render the same keys.
 - `orders.query(index=Order.by_status, status="paid")` renders the index key from the template.
 - Updating `status` recomputes `gsi1pk` (dynamoxy reads the item first when the template needs
-  fields the update does not set).
+  fields the update does not set, and requires them unchanged when it writes: it reads again if
+  another writer changed them).
 - `client.collection(Customer, Order).query(customer_id="c1").all()` returns both entity types,
   decoded by `_type`.
 - A subclass (`class Admin(Member, entity="Admin")`) has its own repository: `client.model(Member)`
