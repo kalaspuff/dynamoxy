@@ -412,3 +412,59 @@ async def test_steps_wait_for_a_change_an_earlier_call_left_in_progress(
     await client.ensure_tables(Visit, wait=False)
     changes = [operation for operation in operations if operation in ("wait", "UpdateTable", "UpdateTimeToLive")]
     assert changes == expected
+
+
+async def test_indexes_added_to_a_provisioned_table_get_its_capacity(client: dynamoxy.Client) -> None:
+    table = client.table("capacity")
+    await table.create(partition_key=("pk", "S"), billing=dynamoxy.Billing.provisioned(3, 2))
+    sent: list[dict[str, Any]] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        if request.operation == "UpdateTable":
+            sent.append(dict(request.params))
+        return await call_next(request)
+
+    client.use(record)
+    description = await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")))
+    assert description.indexes["by_owner"].status == "ACTIVE"
+    [created] = sent[0]["global_secondary_index_updates"]
+    assert created["create"]["provisioned_throughput"] == (3, 2), "DynamoDB refuses an index without capacity there"
+    own = dynamoxy.IndexDefinition("by_kind", "global", ("kind", "S"), throughput=dynamoxy.Throughput(4, 1))
+    await table.add_index(own)
+    [created] = sent[1]["global_secondary_index_updates"]
+    assert created["create"]["provisioned_throughput"] == (4, 1), "its own capacity"
+
+
+async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, backend: str) -> None:
+    # DynamoDB refuses to change a table it is still creating (measured, docs/parity); in the
+    # in-memory backend a table or index being created is CREATING in the first DescribeTable after
+    # it (add_index() makes one) and ACTIVE in the next. MiniStack and LocalStack make tables
+    # active at once.
+    table = client.table("creating")
+    await table.create(partition_key=("pk", "S"), wait=False)
+    if backend == "memory":
+        # enable_time_to_live() describes Time to Live first, which DynamoDB refuses then (an
+        # UpdateTimeToLive would be ResourceNotFoundError).
+        with pytest.raises(dynamoxy.ValidationError, match="Cannot describe time to live while table is in CREATING"):
+            await table.enable_time_to_live("expires")
+        with pytest.raises(dynamoxy.ResourceInUseError, match="Table is being created"):
+            await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")))
+    await table.wait_until_active()
+    await table.enable_time_to_live("expires")
+    await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")), wait=False)
+    if backend == "memory":  # MiniStack creates the index at once
+        with pytest.raises(dynamoxy.LimitExceededError, match="Only 1 online index"):
+            await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))
+    await table.wait_until_active()
+    await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))
+
+
+async def test_sync_with_waits_for_a_table_being_created(client: dynamoxy.Client) -> None:
+    # Another process created the table and did not wait: sync_with() (ensure_tables) waits for it
+    # before it describes its Time to Live, which DynamoDB refuses while the table is being
+    # created (measured, docs/parity).
+    table = client.table("visits")
+    await table.create(partition_key=("visit_id", "S"), wait=False)
+    [definition] = dynamoxy.table.definitions_for([Visit])
+    assert await table.sync_with(definition)
+    assert (await table.time_to_live()).attribute == "expires_at"

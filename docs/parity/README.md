@@ -97,12 +97,18 @@ bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 Mi
 | Request | DynamoDB | MiniStack | LocalStack |
 | --- | --- | --- | --- |
 | `UpdateTimeToLive` of a table still `CREATING` | `ResourceNotFoundException: Requested resource not found: Table: <name> not found` | accepted (tables are active at once) | accepted (active at once) |
+| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's own probe on AWS, `tables.ttl_while_creating`, kept with that probe) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | not probed | not probed |
 | `UpdateTable` of a table still `CREATING` | `ResourceInUseException: Attempt to change a resource which is still in use: Table is being created: <name>` | accepted | accepted |
 | switch to `PROVISIONED` with capacity for the table only (one global index) | `One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1` | accepted, the index at 0/0 | `InternalFailure` |
 | add a global index without `ProvisionedThroughput` to a provisioned table | `One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2` | accepted | `InternalFailure` |
 | switch back to `PAY_PER_REQUEST` | the indexes' capacity reads 0/0 | 0/0 | keeps 1/1 |
 | give an index `ProvisionedThroughput` on an on-demand table | `One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput` | accepted | `InternalFailure` |
 | add a second global index while the first is `CREATING`, the table `UPDATING` or already `ACTIVE` again during the backfill (25 s to 506 s) | `LimitExceededException: Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table` | accepted (indexes are active at once) | same as DynamoDB |
+
+The in-memory backend answers like DynamoDB. It creates tables and indexes at once, but they read
+`CREATING` in the first `DescribeTable` after them and `ACTIVE` from the next on, as a caller that
+polls until they are active sees them; reads and writes of the items of a table being created are
+not refused (DynamoDB's answer to them was not measured).
 
 ### Round 3: PartiQL, Time to Live, item collection metrics
 

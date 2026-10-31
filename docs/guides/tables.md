@@ -56,7 +56,20 @@ names = await client.list_tables()
 
 A switch from on-demand to provisioned billing gives every global index the table's capacity,
 since DynamoDB needs capacity for each of them; switches between provisioned capacities change
-the table's only.
+the table's only, and a switch back to on-demand drops the indexes' capacity. `add_index()` gives
+an index added to a provisioned table the table's capacity too, unless its definition or
+`billing=` gives another.
+
+DynamoDB changes a table one step at a time: it refuses to change a table it is still creating
+(`ResourceInUseError`; for Time to Live, `enable_time_to_live()` raises `ValidationError`, as it
+describes it first, and a native `UpdateTimeToLive` `ResourceNotFoundError`) and to add an index
+while another is being created (`LimitExceededError`, "Only 1 online index can be created or
+deleted simultaneously per table"), also during the minutes of its backfill when the table reads
+`ACTIVE` again. The in-memory backend refuses a deletion then too, as the message says (not
+measured). `create_tables()` and `ensure_tables()` wait for each step before the next; with
+`wait=False` on your own calls, call `table.wait_until_active()` before the next change. On the
+in-memory backend a new table or index reads `CREATING` in the first `DescribeTable` and `ACTIVE`
+from the next on (as when polling until it is active), so tests catch a missing wait.
 
 ## Time to Live
 

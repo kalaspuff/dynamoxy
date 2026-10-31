@@ -383,7 +383,7 @@ impl Index {
             index_size_bytes: size as i64,
             index_arn: Some(format!("{table_arn}/index/{}", self.name)),
             provisioned_throughput: self.provisioned_throughput,
-            backfilling: false,
+            backfilling: self.global && self.status == IndexStatus::Creating,
         }
     }
 }
@@ -429,6 +429,11 @@ pub struct Table {
     pub tags: BTreeMap<String, String>,
     /// Point-in-time recovery period in days, when enabled.
     pub pitr_days: Option<i64>,
+    /// `DescribeTable` calls until the table being created is `ACTIVE` (0: it is), like a
+    /// caller that polls until it is (see `admin`).
+    pub describes_until_active: u8,
+    /// `DescribeTable` calls until the global index being created is `ACTIVE` (0: none is).
+    pub index_describes_until_active: u8,
 }
 
 impl Table {

@@ -8,7 +8,10 @@ expression language, conditional writes and `ReturnValues`, global and local ind
 projections, 1 MB pages and `Limit`, batches, transactions with cancellation reasons and
 idempotency tokens, TTL, PartiQL (a subset, with `ORDER BY`), streams settings, backups,
 consumed capacity and DynamoDB's error codes and messages. Tests need no network, credentials,
-Docker or emulator.
+Docker or emulator. A table or global index it creates reads `CREATING` in the first
+`DescribeTable` after it and `ACTIVE` from the next on, as when polling DynamoDB until it is
+active (`wait_until_active()`, the default `wait=True`; on the in-memory backend without
+sleeping): changes before that fail as they do while DynamoDB is still creating it.
 
 ```python
 import pytest
@@ -89,8 +92,11 @@ dynamoxy.Client(endpoint_url="http://127.0.0.1:4566", region="us-east-1",
 ```
 
 [MiniStack](https://pypi.org/project/ministack/) is a pip-installable AWS emulator (no Docker)
-that dynamoxy's own test suite uses; DynamoDB Local works too. Use a unique `table_prefix` per
-test run and delete the tables afterwards.
+that dynamoxy's own test suite uses; DynamoDB Local and LocalStack work too. Emulators accept much
+of what DynamoDB refuses (filters on attributes an index does not hold, size limits, changes to a
+table being created) and the in-memory backend does not: see
+[Parity with DynamoDB](../parity/README.md). Use a unique `table_prefix` per test run and delete
+the tables afterwards.
 
 ## Testing hooks and validators
 
