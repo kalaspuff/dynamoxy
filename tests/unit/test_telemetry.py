@@ -131,7 +131,33 @@ async def test_metrics(otel: Telemetry) -> None:
     rows = {
         point.attributes["db.operation.name"]: point.sum for point in otel.points("db.client.response.returned_rows")
     }
-    assert rows["GetItem"] == 2
+    assert rows == {"GetItem": 2}, "the items of writes are not returned rows"
+
+
+async def test_failed_calls_record_their_throttles(otel: Telemetry) -> None:
+    testing.inject_fault(otel.client, operation="GetItem", error="throttling", times=10)
+    with pytest.raises(dynamoxy.ThrottlingError):
+        await otel.client.model(Event).get("s", 1)
+    (span,) = otel.finished()
+    attributes = dict(span.attributes or {})
+    attempts = otel.client.retry.max_attempts
+    assert (attributes["dynamoxy.attempts"], attributes["dynamoxy.throttles"]) == (attempts, attempts)
+    assert [point.value for point in otel.points("dynamoxy.request.throttles")] == [attempts]
+
+
+async def test_batches_that_leave_items_unprocessed_are_failures(otel: Telemetry) -> None:
+    testing.inject_fault(otel.client, operation="BatchWriteItem", unprocessed=True, times=100)
+    with pytest.raises(dynamoxy.UnprocessedItemsError):
+        await otel.client.model(Event).batch_put([Event(stream="s", seq=seq, kind="k") for seq in range(3)])
+    (span,) = otel.finished()
+    assert span.status.status_code is StatusCode.ERROR
+    assert dict(span.attributes or {})["error.type"] == "UnprocessedItemsError"
+    (duration,) = [
+        point
+        for point in otel.points("db.client.operation.duration")
+        if point.attributes["db.operation.name"] == "BatchWriteItem"
+    ]
+    assert duration.attributes["error.type"] == "UnprocessedItemsError"
 
 
 async def test_expressions_are_recorded_without_values() -> None:

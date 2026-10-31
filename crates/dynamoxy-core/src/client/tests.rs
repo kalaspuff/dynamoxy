@@ -103,6 +103,7 @@ async fn throttled_requests_are_retried_with_events_and_metrics() {
     let call = client.put_item(put("a")).await;
     assert!(call.result.is_ok());
     assert_eq!((call.stats.attempts, call.stats.throttles), (3, 2));
+    assert_eq!(call.stats.requests, 1, "one request, sent three times");
     assert_eq!(
         kinds(&client),
         [EventKind::RequestThrottled, EventKind::RequestRetry, EventKind::RequestThrottled, EventKind::RequestRetry]
@@ -475,4 +476,46 @@ fn request_tokens_look_like_uuids() {
     let token = request_token();
     assert_eq!(token.len(), 36);
     assert_eq!(token.matches('-').count(), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn partiql_writes_count_write_capacity() {
+    let client = client_with_table(config()).await;
+    let statement = |text: &str| ExecuteStatementInput {
+        statement: text.into(),
+        return_consumed_capacity: ReturnConsumedCapacity::Total,
+        ..Default::default()
+    };
+    for key in ["a", "b", "c"] {
+        let call = client.execute_statement(statement(&format!("INSERT INTO items VALUE {{'pk': '{key}'}}"))).await;
+        call.result.unwrap();
+    }
+    client.execute_statement(statement("SELECT * FROM items WHERE pk = 'a'")).await.result.unwrap();
+    let insert = |key: &str| ParameterizedStatement {
+        statement: format!("INSERT INTO items VALUE {{'pk': '{key}'}}"),
+        ..Default::default()
+    };
+    let batch = BatchExecuteStatementInput {
+        statements: vec![insert("d"), insert("e")],
+        return_consumed_capacity: ReturnConsumedCapacity::Total,
+    };
+    client.batch_execute_statement(batch).await.result.unwrap();
+    let snapshot = client.metrics().snapshot();
+    let units = |name: &str| {
+        let (_, metrics) = snapshot.operations.iter().find(|(operation, _)| *operation == name).unwrap();
+        (metrics.read_capacity_units, metrics.write_capacity_units)
+    };
+    assert_eq!(units("ExecuteStatement"), (0.5, 3.0), "three INSERTs and an eventually consistent SELECT");
+    assert_eq!(units("BatchExecuteStatement"), (0.0, 2.0));
+}
+
+#[test]
+fn capacity_without_a_split_counts_as_the_request_says() {
+    let total = |units: f64| ConsumedCapacity { table_name: "t".into(), capacity_units: units, ..Default::default() };
+    assert_eq!(split(&[total(2.0)], true), (0.0, 2.0));
+    assert_eq!(split(&[total(2.0)], false), (2.0, 0.0));
+    let reported =
+        ConsumedCapacity { capacity_units: 3.0, read_capacity_units: 1.0, write_capacity_units: 2.0, ..total(0.0) };
+    assert_eq!(split(std::slice::from_ref(&reported), false), (1.0, 2.0), "a reported split is kept");
+    assert_eq!(split(&[reported, total(1.0)], true), (1.0, 3.0));
 }

@@ -323,6 +323,21 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   from the item as stored now, and if it cannot be read, forget their stored copy, without an
   error. The guides now say what a `client.batch_writer()` block that raises does: it writes
   nothing more, and keeps what is queued in the writer for `flush()`.
+- Operation records and metrics miscounted. `client.metrics()` counted the capacity of PartiQL
+  writes as reads (three `INSERT`s showed 3 read units and no write units), and both it and
+  `collect()` counted capacity that DynamoDB reports without a read/write split by operation
+  only: PartiQL statements now count as reads for `SELECT` and as writes otherwise. Failed calls
+  lost their throttles: a `GetItem` throttled on every attempt recorded 0 throttles in
+  `collect()`, `dynamoxy.request.throttles` and the span's `dynamoxy.throttles`; errors of a call
+  now carry `.throttles` and `.requests` as well as `.attempts`. `collect().summary()["retries"]`
+  counted the requests of managed batches as retries (a 60-item `batch_write` without
+  throttling reported 2): a single call now sends one request however many attempts it takes
+  (`OperationRecord.requests` and `summary()["requests"]` were its attempts), and retries are
+  the attempts beyond the first of each request. A managed batch that ended in
+  `UnprocessedItemsError` was recorded as a success, with `operation.succeeded` and an unset span
+  status; it is now a failure (and counts only the items it wrote). And
+  `db.client.response.returned_rows` recorded the items that writes wrote, for an instrument of
+  "Items returned": it now records reads only.
 
 ### Security
 

@@ -24,7 +24,8 @@
 //! └── ShutdownError                    the client or the interpreter is shutting down
 //! ```
 //!
-//! Every instance also has `.attempts` and `.duration` (seconds) when it comes from a call.
+//! Every instance also has `.attempts`, `.throttles`, `.requests` and `.duration` (seconds) when it
+//! comes from a call.
 //! Python-only errors (`ItemNotFoundError`, `ItemAlreadyExistsError`, `VersionConflictError`,
 //! `UniqueConstraintError`, `ItemDecodeError`) are defined in `python/dynamoxy/errors.py`.
 
@@ -145,6 +146,8 @@ pub fn call_error_in(py: Python<'_>, error: Error, stats: &dynamoxy_core::Operat
     let err = error_in(py, error);
     let value = err.value(py);
     let _ = value.setattr("attempts", stats.attempts);
+    let _ = value.setattr("throttles", stats.throttles);
+    let _ = value.setattr("requests", stats.requests);
     let _ = value.setattr("duration", stats.duration.as_secs_f64());
     err
 }
@@ -234,7 +237,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Class-level defaults on the base class; instances created by `to_py_err` override them.
     let base = py.get_type::<DynamoxyError>();
     base.setattr("retryable", false)?;
-    for attribute in ["code", "message", "operation", "request_id", "status_code", "attempts", "duration"] {
+    for attribute in
+        ["code", "message", "operation", "request_id", "status_code", "attempts", "throttles", "requests", "duration"]
+    {
         base.setattr(attribute, py.None())?;
     }
     py.get_type::<ConditionalCheckFailedError>().setattr("item", py.None())?;

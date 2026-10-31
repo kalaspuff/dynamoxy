@@ -1509,7 +1509,7 @@ class Repository[M]:
             message += " (another writer stored the item after it was read: retry)"
         failed = ConditionalCheckFailedError(message)
         failed.item = item
-        for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
+        for name in ("code", "operation", "request_id", "status_code", "attempts", "throttles", "requests", "duration"):
             value = getattr(cause, name, None)
             if value is not None:
                 setattr(failed, name, value)

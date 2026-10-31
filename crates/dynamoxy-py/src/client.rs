@@ -2,7 +2,8 @@
 //!
 //! Every operation returns an awaitable resolving to `(output, stats)`: `output` is a dict shaped
 //! like the DynamoDB response (snake_case keys, plain Python values) and `stats` is
-//! `(attempts, throttles, requests, duration_seconds)`. Errors carry `.attempts` and `.duration`.
+//! `(attempts, throttles, requests, duration_seconds)`. Errors carry `.attempts`, `.throttles`,
+//! `.requests` and `.duration`.
 
 use std::collections::BTreeMap;
 use std::future::Future;
