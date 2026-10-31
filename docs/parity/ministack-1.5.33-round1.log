@@ -1,0 +1,332 @@
+# dynamoxy DynamoDB probes, round 1, 2026-10-31T14:17:20Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
+tables: dynamoxy-probe-de7379-*
+### setup: create dynamoxy-probe-de7379-idx
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456240, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-idx", "TableId": "eb01d4d4-4a47-431b-9335-aba036bdcbc0", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-idx/index/gsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-de7379-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-lsi", "TableId": "2964caa1-140f-4b4f-9c23-2dbf2486a777", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-de7379-big
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-big", "TableId": "8254bf27-a3db-4a19-81da-eed4fd0547c0", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-de7379-bill
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-bill", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill", "TableId": "769cda08-dc3b-47c7-b7c7-b7e459dc32ed", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi1"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-de7379-gsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-gsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-gsi", "TableId": "f18fb9b7-bdab-4570-ab0b-4a596a67bdd4", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+## 87: calls while a table is CREATING
+### setup: create dynamoxy-probe-de7379-ttl
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456242, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-ttl", "TableId": "51d65f00-6964-47bb-881a-2cc694449a31", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+status right after create: ACTIVE
+### 87-ttl-creating: UpdateTimeToLive while the table is CREATING
+exit: 0
+out: {"TimeToLiveSpecification": {"Enabled": true, "AttributeName": "expires"}}
+
+### 87-update-creating: UpdateTable (add a global index) while the table is CREATING
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456242, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-ttl", "TableId": "51d65f00-6964-47bb-881a-2cc694449a31", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-ttl/index/gsi1"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+tables active
+## 106: filters and projections of attributes an index does not project
+### setup: item
+exit: 0
+
+### 106-lsi-filter: Query KEYS_ONLY local index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-all: same with Select=ALL_ATTRIBUTES
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-count: same with Select=COUNT
+exit: 0
+out: {"Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-projection: same with a projection of that attribute (fetches from the table)
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-projection: Query KEYS_ONLY local index, projection of an attribute it does not project, no filter
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-entity-filter: Query KEYS_ONLY local index with dynamoxy's entity filter on _type, Select=ALL_ATTRIBUTES
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-filter: Query KEYS_ONLY global index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "gk": {"S": "g"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-entity-filter: Query KEYS_ONLY global index with dynamoxy's entity filter on _type
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "gk": {"S": "g"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-projection: Query KEYS_ONLY global index, projection of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-key-filter: control: Query global index, filter on a projected key attribute
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "gk": {"S": "g"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-filter: Scan KEYS_ONLY local index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-projection: Scan KEYS_ONLY local index, projection of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-scan-filter: Scan KEYS_ONLY global index, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "gk": {"S": "g"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-scan-projection: Scan KEYS_ONLY global index, projection of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+## 97: expression limits
+### 97-name-placeholder-255: a #name placeholder of 255 bytes (with the #)
+exit: 0
+out: {"Item": {}}
+
+### 97-value-placeholder-255: a :value placeholder of 255 bytes (with the :)
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}, "gk": {"S": "g"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-name-placeholder-256: a #name placeholder of 256 bytes (with the #)
+exit: 0
+out: {"Item": {}}
+
+### 97-value-placeholder-256: a :value placeholder of 256 bytes (with the :)
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}, "gk": {"S": "g"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-name-placeholder-257: a #name placeholder of 257 bytes (with the #)
+exit: 0
+out: {"Item": {}}
+
+### 97-value-placeholder-257: a :value placeholder of 257 bytes (with the :)
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}, "gk": {"S": "g"}, "secret": {"S": "s"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-item-name-65534: an item with an attribute name of 65534 bytes
+exit: 0
+
+### 97-expression-name-65534: a projection of an attribute name of 65534 bytes, through a placeholder
+exit: 0
+out: {"Item": {}}
+
+### 97-item-name-65535: an item with an attribute name of 65535 bytes
+exit: 0
+
+### 97-expression-name-65535: a projection of an attribute name of 65535 bytes, through a placeholder
+exit: 0
+out: {"Item": {}}
+
+### 97-item-name-65536: an item with an attribute name of 65536 bytes
+exit: 0
+
+### 97-expression-name-65536: a projection of an attribute name of 65536 bytes, through a placeholder
+exit: 0
+out: {"Item": {}}
+
+### setup: item
+exit: 0
+
+### 97-attribute-type-path-filter: attribute_type(a, b) in a filter, b a path holding "S" (a is a string)
+exit: 0
+out: {"Items": [{"pk": {"S": "atype"}, "sk": {"S": "1"}, "a": {"S": "x"}, "b": {"S": "S"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-attribute-type-path-condition: attribute_type(a, b) as an update condition
+exit: 0
+
+### 97-attribute-type-path-condition-names: attribute_type(#a, #b) as an update condition
+exit: 0
+
+### 97-attribute-type-control: control: attribute_type(a, :t)
+exit: 0
+out: {"Items": [{"pk": {"S": "atype"}, "sk": {"S": "1"}, "a": {"S": "x"}, "b": {"S": "S"}, "c": {"S": "c"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 97-name-placeholder-dash: a #a-b name placeholder
+exit: 255
+err: An error occurred (ValidationException) when calling the GetItem operation: Invalid ProjectionExpression: An expression attribute name used in the document path is not defined; attribute name: #a
+
+### 97-name-placeholder-dash-unused: a #a-b name placeholder that the expression does not use
+exit: 255
+err: An error occurred (ValidationException) when calling the GetItem operation: Value provided in ExpressionAttributeNames unused in expressions: keys: {#a-b}
+
+### 97-value-placeholder-dash: a :a-b value placeholder
+exit: 255
+err: An error occurred (ValidationException) when calling the Query operation: Invalid KeyConditionExpression: An expression attribute value used in expression is not defined; attribute value: :a
+
+### 97-value-placeholder-dash-unused: a :a-b value placeholder that the expression does not use
+exit: 255
+err: An error occurred (ValidationException) when calling the Query operation: Value provided in ExpressionAttributeValues unused in expressions: keys: {:a-b}
+
+### 97-tx-read-missing: ExecuteTransaction, one SELECT of a missing table
+exit: 255
+err: An error occurred (ResourceNotFoundException) when calling the ExecuteTransaction operation: Requested resource not found: Table: dynamoxy-probe-de7379-missing not found
+body: b'{"__type": "ResourceNotFoundException", "message": "Requested resource not found: Table: dynamoxy-probe-de7379-missing not found"}'
+
+### 97-tx-read-missing-second: ExecuteTransaction, SELECTs of an existing and a missing table
+exit: 255
+err: An error occurred (ResourceNotFoundException) when calling the ExecuteTransaction operation: Requested resource not found: Table: dynamoxy-probe-de7379-missing not found
+body: b'{"__type": "ResourceNotFoundException", "message": "Requested resource not found: Table: dynamoxy-probe-de7379-missing not found"}'
+
+### 97-tx-write-missing: control: ExecuteTransaction, one INSERT into a missing table
+exit: 255
+err: An error occurred (ResourceNotFoundException) when calling the ExecuteTransaction operation: Requested resource not found: Table: dynamoxy-probe-de7379-missing not found
+body: b'{"__type": "ResourceNotFoundException", "message": "Requested resource not found: Table: dynamoxy-probe-de7379-missing not found"}'
+
+### 97-transact-get-missing: TransactGetItems of a missing table
+exit: 255
+err: An error occurred (ResourceNotFoundException) when calling the TransactGetItems operation: Requested resource not found
+body: b'{"__type": "ResourceNotFoundException", "message": "Requested resource not found"}'
+
+## 93: local index entries in the 400 KB item limit (index projects ALL)
+### 93-lsi-put-150: PutItem of a 150 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-de7379-lsi", "CapacityUnits": 302.0, "Table": {"CapacityUnits": 151.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 151.0}}}}
+
+### 93-lsi-put-190: PutItem of a 190 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-de7379-lsi", "CapacityUnits": 382.0, "Table": {"CapacityUnits": 191.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 191.0}}}}
+
+### 93-lsi-put-210: PutItem of a 210 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-de7379-lsi", "CapacityUnits": 422.0, "Table": {"CapacityUnits": 211.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 211.0}}}}
+
+### 93-lsi-put-300: PutItem of a 300 KB item that the ALL local index holds
+exit: 0
+out: {"ConsumedCapacity": {"TableName": "dynamoxy-probe-de7379-lsi", "CapacityUnits": 602.0, "Table": {"CapacityUnits": 301.0}, "LocalSecondaryIndexes": {"lsi": {"CapacityUnits": 301.0}}}}
+
+### 93-lsi-put-300-unindexed: control: PutItem of a 300 KB item without the index key
+exit: 0
+
+### 93-keys-only-put-300: control: PutItem of a 300 KB item that a KEYS_ONLY local index holds
+exit: 0
+
+### 93-lsi-update-150-to-210: UpdateItem growing the 150 KB indexed item by 60 KB
+exit: 0
+
+### 93-lsi-transact-put-210: TransactWriteItems Put of the 210 KB indexed item
+exit: 0
+body: b'{}'
+
+## 93: 4 MB of items in TransactGetItems
+### setup: 390 KB item 0
+exit: 0
+
+### setup: 390 KB item 1
+exit: 0
+
+### setup: 390 KB item 2
+exit: 0
+
+### setup: 390 KB item 3
+exit: 0
+
+### setup: 390 KB item 4
+exit: 0
+
+### setup: 390 KB item 5
+exit: 0
+
+### setup: 390 KB item 6
+exit: 0
+
+### setup: 390 KB item 7
+exit: 0
+
+### setup: 390 KB item 8
+exit: 0
+
+### setup: 390 KB item 9
+exit: 0
+
+### setup: 390 KB item 10
+exit: 0
+
+### 93-transact-get-10: control: TransactGetItems of ten 390 KB items (3.9 MB)
+exit: 0
+out: 10
+body: b'{"Responses": [{"Item": {"pk": {"S": "big"}, "sk": {"S": "0"}, "filler": {"S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+### 93-transact-get-11: TransactGetItems of eleven 390 KB items (4.3 MB)
+exit: 0
+out: 11
+body: b'{"Responses": [{"Item": {"pk": {"S": "big"}, "sk": {"S": "0"}, "filler": {"S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+### 93-transact-update-10: control: TransactWriteItems of ten Updates writing 390 KB each
+exit: 0
+body: b'{}'
+
+### 93-transact-update-11: TransactWriteItems of eleven Updates writing 390 KB each
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+## 87: billing switches of a table with a global index
+### 87-provisioned-without-index: switch to PROVISIONED with capacity for the table only
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-bill", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill", "TableId": "769cda08-dc3b-47c7-b7c7-b7e459dc32ed", "BillingModeSummary": {"BillingMode": "PROVISIONED", "LastUpdateToPayPerRequestDateTime": 1793456259}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi1"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+status: ACTIVE gsi1=ACTIVE
+### 87-provisioned-with-index: control: switch to PROVISIONED with capacity for the table and the index
+exit: 255
+err: An error occurred (ValidationException) when calling the UpdateTable operation: The provisioned throughput for the table will not change. The requested value equals the current value.
+
+### 87-describe-provisioned: the table, now provisioned
+exit: 0
+out: {"billing": "PROVISIONED", "table": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}, "indexes": [{"name": "gsi1", "throughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}}]}
+
+### 87-create-index-without-throughput: add a global index without ProvisionedThroughput to the provisioned table
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}, {"AttributeName": "gk2", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-bill", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill", "TableId": "769cda08-dc3b-47c7-b7c7-b7e459dc32ed", "BillingModeSummary": {"BillingMode": "PROVISIONED", "LastUpdateToPayPerRequestDateTime": 1793456259}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi1"}, {"IndexName": "gsi2", "KeySchema": [{"AttributeName": "gk2", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi2"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### 87-on-demand: switch back to PAY_PER_REQUEST
+exit: 0
+out: "ACTIVE"
+
+### 87-describe-on-demand: the table, on-demand again: what remains of the capacity
+exit: 0
+out: {"billing": "PAY_PER_REQUEST", "table": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "indexes": [{"name": "gsi1", "throughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "on_demand": null}, {"name": "gsi2", "throughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}, "on_demand": null}]}
+
+### 87-on-demand-with-throughput: UpdateTable of the on-demand table giving the index ProvisionedThroughput
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}, {"AttributeName": "gk2", "AttributeType": "S"}], "TableName": "dynamoxy-probe-de7379-bill", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456241, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill", "TableId": "769cda08-dc3b-47c7-b7c7-b7e459dc32ed", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793456261}, "GlobalSecondaryIndexes": [{"IndexName": "gsi1", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi1"}, {"IndexName": "gsi2", "KeySchema": [{"AttributeName": "gk2", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-de7379-bill/index/gsi2"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+## 87: a second global index while the first is being created
+### setup: item
+exit: 0
+
+### 87-first-index: create index gsia
+exit: 0
+out: ["ACTIVE", [["gsia", "ACTIVE"]]]
+
+status: ACTIVE gsia=ACTIVE
+### 87-second-index-at-once: create index gsib right after (table UPDATING)
+exit: 0
+out: ["ACTIVE", [["gsia", "ACTIVE"], ["gsib", "ACTIVE"]]]
+
+after 1s: ACTIVE gsia=ACTIVE gsib=ACTIVE
+the table was never ACTIVE while gsia was CREATING
+final: ACTIVE gsia=ACTIVE gsib=ACTIVE
+## cleanup
+deleted dynamoxy-probe-de7379-idx
+deleted dynamoxy-probe-de7379-lsi
+deleted dynamoxy-probe-de7379-big
+deleted dynamoxy-probe-de7379-bill
+deleted dynamoxy-probe-de7379-gsi
+deleted dynamoxy-probe-de7379-ttl

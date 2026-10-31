@@ -13,10 +13,16 @@ description: Run and debug dynamoxy's end-to-end tests against MiniStack (the pi
 3. **Rust parity**: `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4599 cargo test -p dynamoxy-core
    --test emulator` (without the variable, the scenarios run on the memory backend only).
 4. **When a test fails only on the emulator**:
-   - Read the DynamoDB documentation for the operation. Usually the emulator is right and the
-     memory backend must be fixed (with a rule test in `backend/memory/tests.rs`).
+   - Read the DynamoDB documentation for the operation and the answers measured against DynamoDB
+     in `docs/parity/README.md`. Usually the emulator is right and the memory backend must be
+     fixed (with a rule test in `backend/memory/tests.rs`); MiniStack accepts much of what
+     DynamoDB refuses (index filters, size limits, table updates), so tests of those refusals
+     assert on the memory backend only.
    - If the documentation shows the emulator deviates, tolerate it narrowly with a comment naming
      MiniStack (`if backend == "memory": ...`), or normalize in the AWS adapter when real DynamoDB
      would agree (example: cancellation reason codes in `backend/aws/errors.rs`).
 5. **Interop** with boto3 lives in `tests/e2e/test_boto3_interop.py`; keep wire-format checks there.
 6. Kill a stray emulator by PID, never with `pkill -f`.
+7. **LocalStack** (DynamoDB Local inside, closer to DynamoDB than MiniStack) runs without Docker:
+   `docs/parity/README.md` shows how. Point `DYNAMOXY_TEST_ENDPOINT_URL` at it
+   (`http://127.0.0.1:4566`) to run the e2e tests against it.

@@ -140,6 +140,10 @@ protocol issue), fix, keep the test.
 * A test that fails only on MiniStack usually reveals real DynamoDB behaviour: check the DynamoDB
   documentation, model it in the memory backend, and only treat it as an emulator quirk (with a
   comment) when the documentation says otherwise.
+* [docs/parity](docs/parity/README.md) keeps DynamoDB's answers measured against the service, and
+  MiniStack's and LocalStack's, with the probe script that asked them. Look there before guessing
+  a message or a limit; when neither it nor the documentation settles a question, add a round of
+  probes for a maintainer to run against AWS.
 * Examples are tests: if you change the API, update `examples/`.
 * Never pipe test output through `head`/`tail` without `set -o pipefail`.
 

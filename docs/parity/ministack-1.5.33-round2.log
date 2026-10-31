@@ -1,0 +1,280 @@
+# dynamoxy DynamoDB probes, round 2, 2026-10-31T14:17:10Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
+tables: dynamoxy-probe-22de2a-*
+### setup: create dynamoxy-probe-22de2a-idx
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "gk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-idx", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx", "TableId": "9a4b35cd-dbc6-4645-acb4-65a5370b8f9f", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx/index/lsi"}], "GlobalSecondaryIndexes": [{"IndexName": "gsi", "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexStatus": "ACTIVE", "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-idx/index/gsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-22de2a-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-lsi", "TableId": "3a4ba093-68ac-4636-ae25-b879e2c1e73c", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-22de2a-keys
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-keys", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-keys", "TableId": "53889d71-fbb0-4959-8e75-9df7fb1e4675", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-keys/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-22de2a-big
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-big", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-big", "TableId": "97906824-35dd-4cd9-b6d1-43acd76c5cb8", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+### setup: create dynamoxy-probe-22de2a-big-with-a-longer-name
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-22de2a-big-with-a-longer-name", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793456231, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-22de2a-big-with-a-longer-name", "TableId": "f75d033d-3f92-44d9-9406-9bcfeb319ab7", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+
+tables active
+## 106: more reads of attributes an index does not project
+### setup: item
+exit: 0
+
+### 106-lsi-scan-all-filter: Scan KEYS_ONLY local index, Select=ALL_ATTRIBUTES, filter on an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-scan-projection-filter: Scan KEYS_ONLY local index, projection and filter of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-nested: Query local index, filter on a nested path of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-size: Query local index, size() of an attribute it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-two: Query local index, filter on two attributes it does not project (secret, then note)
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-two-reversed: same, note first
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-lsi-filter-mixed: Query local index, filter on a projected and an unprojected attribute
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}, "lsk": {"S": "x"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-projection-several: Query global index, projection of several attributes it does not project
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+### 106-gsi-scan-projection-filter: Scan global index, filter and projection of attributes it does not project
+exit: 0
+out: {"Items": [{}], "Count": 1, "ScannedCount": 1, "ConsumedCapacity": null}
+
+## 93: the 400 KB limit with local index entries, at the byte
+### 93-all-204690: PutItem of a 204690-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204700: PutItem of a 204700-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204740: PutItem of a 204740-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204750: PutItem of a 204750-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204751: PutItem of a 204751-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204760: PutItem of a 204760-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204790: PutItem of a 204790-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204800: PutItem of a 204800-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204801: PutItem of a 204801-byte item that an ALL local index holds
+exit: 0
+
+### 93-all-204850: PutItem of a 204850-byte item that an ALL local index holds
+exit: 0
+
+### 93-keys-409480: PutItem of a 409480-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409488: PutItem of a 409488-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409489: PutItem of a 409489-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409500: PutItem of a 409500-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409580: PutItem of a 409580-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409588: PutItem of a 409588-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409589: PutItem of a 409589-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-keys-409600: PutItem of a 409600-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)
+exit: 0
+
+### 93-plain-409600: control: PutItem of a 409600-byte item, table without indexes
+exit: 0
+
+### 93-plain-409601: control: PutItem of a 409601-byte item, table without indexes
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+## 93: what TransactWriteItems counts as its payload
+### 93-tx-base: TransactWriteItems, variant base
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-expression: TransactWriteItems, variant expression
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-long-table: TransactWriteItems, variant long-table
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-long-key: TransactWriteItems, variant long-key
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-condition: TransactWriteItems, variant condition
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-names: TransactWriteItems, variant names
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-puts: TransactWriteItems, variant puts
+exit: 255
+err: An error occurred (ValidationException) when calling the TransactWriteItems operation: Transaction request exceeds the 4MB transaction size limit
+body: b'{"__type": "ValidationException", "message": "Transaction request exceeds the 4MB transaction size limit"}'
+
+### 93-tx-decimal: TransactWriteItems, variant decimal
+exit: 0
+body: b'{}'
+
+## 93: what TransactGetItems counts towards 4 MB
+### setup: binary item 0
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 0
+exit: 0
+
+### setup: binary item 1
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 1
+exit: 0
+
+### setup: binary item 2
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 2
+exit: 0
+
+### setup: binary item 3
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 3
+exit: 0
+
+### setup: binary item 4
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 4
+exit: 0
+
+### setup: binary item 5
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 5
+exit: 0
+
+### setup: binary item 6
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 6
+exit: 0
+
+### setup: binary item 7
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 7
+exit: 0
+
+### setup: binary item 8
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 8
+exit: 0
+
+### setup: binary item 9
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 9
+exit: 0
+
+### setup: binary item 10
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size
+
+### setup: string item 10
+exit: 0
+
+### 93-get-binary: TransactGetItems of eleven 300 KB binary items (3.3 MB of items, 4.4 MB of base64)
+exit: 0
+out: 11
+body: b'{"Responses": [{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]}'
+
+### 93-get-decimal: TransactGetItems of eleven 363,700-byte string items (4,000,900 bytes, under 4 MiB)
+exit: 0
+out: 11
+body: b'{"Responses": [{"Item": {"pk": {"S": "decget"}, "sk": {"S": "00"}, "filler": {"S": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+
+## 97: long names elsewhere
+### 97-map-key-65536: an item with a map key of 65536 bytes
+exit: 0
+
+### 97-update-name-65535: UpdateItem SET of an attribute name of 65535 bytes, through a placeholder
+exit: 0
+
+### 97-update-name-65536: UpdateItem SET of an attribute name of 65536 bytes, through a placeholder
+exit: 0
+
+### 97-write-long-placeholder: PutItem with a 256-byte #name placeholder in its condition
+exit: 0
+
+### 97-write-dash-placeholder: PutItem with a #a-b placeholder in its condition
+exit: 255
+err: An error occurred (ValidationException) when calling the PutItem operation: 1 validation error detected: Invalid ConditionExpression: An expression attribute name used in the document path is not defined; attribute name: #a
+
+### 97-write-attribute-type-path: PutItem with attribute_type(a, b) in its condition
+exit: 255
+err: An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed
+
+## cleanup
+deleted dynamoxy-probe-22de2a-idx
+deleted dynamoxy-probe-22de2a-lsi
+deleted dynamoxy-probe-22de2a-keys
+deleted dynamoxy-probe-22de2a-big
+deleted dynamoxy-probe-22de2a-big-with-a-longer-name
