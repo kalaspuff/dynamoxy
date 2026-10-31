@@ -12,6 +12,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 - Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
 
+### Fixed
+
+- An error with an attribute that does not pickle could not cross process boundaries: the
+  `ItemNotFoundError` of a model class defined inside a function (its `.model`), or a
+  `UniqueConstraintError` whose `.value` does not pickle, reached the caller of a
+  `ProcessPoolExecutor` worker, multiprocessing or a task queue as a `PicklingError`. Pickles of
+  dynamoxy's errors now leave such values out (`None`), as they already did for
+  `FieldError.value`; copies keep them.
+
 ## [0.4.0] - 2026-10-31
 
 ### Changed
