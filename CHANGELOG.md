@@ -197,6 +197,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   without an inherited attribute could not be read. Subclasses now inherit the fields with their
   defaults and required state, as in pydantic, and redeclaring an inherited field no longer
   warns that it "shadows an attribute in parent".
+- `contains()` on a model field that holds a list or set of values with a codec
+  (`list[datetime]`, `list[date]`, `set[UUID]`, `list[timedelta]`, a list of plain `Enum`
+  members or of documents) put the value into the expression unencoded, so every filter or
+  condition with it raised `ValidationError` ("cannot store a value of type datetime") before
+  any request. The value is now validated and encoded as the field stores its elements, as
+  comparisons already were.
 
 ### Security
 

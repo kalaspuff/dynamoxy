@@ -430,7 +430,8 @@ Model attributes are typed paths: `User.visits > 3`, `User.name.begins_with("A")
 `User.tags.contains("admin")`, `User.age.between(18, 65)`, `User.status.is_in([...])`,
 `User.email.exists()`, `User.age.not_exists()`, `User.tags.size() > 2`,
 `User.address["city"] == "Lund"`. Combine with `&`, `|` and `~` (or `dynamoxy.and_`, `or_`,
-`not_`). Like in DynamoDB, a comparison with a missing attribute is false (except `!=`): items
+`not_`). Values are validated and encoded as the field stores them, also the element of
+`contains()` (`Bird.seen.contains(moment)` on a `list[datetime]`). Like in DynamoDB, a comparison with a missing attribute is false (except `!=`): items
 whose `tags` set is empty store no `tags` attribute, so select them with `User.tags.not_exists()`
 or `User.tags == set()`, not `User.tags.size() == 0`. `None` is no attribute for model fields:
 `User.age == None` matches items without `age`, or with a `NULL` (which reads as `None` too).

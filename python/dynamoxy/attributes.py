@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload, override
 
 from dynamoxy._utils import MISSING
 from dynamoxy.errors import FieldError, validation_error
-from dynamoxy.expressions import Operand, Path, Value
+from dynamoxy.expressions import Function, Operand, Path, Value
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -108,19 +108,20 @@ class FieldPath[T](Path[T]):
         """The field's codec (resolved lazily)."""
         return self.spec.codec
 
-    def _value(self, value: Any) -> Any:
-        spec = self.spec
+    def _value(self, value: Any, codec: Codec[Any] | None = None) -> Any:
+        """``value`` validated and encoded by ``codec`` (the field's own by default) as an operand."""
         if isinstance(value, Operand):
             return value
         if value is None:
             return Value(None)
+        codec = codec or self.spec.codec
         try:
-            checked = spec.codec.validate(value)
+            checked = codec.validate(value)
         except ValueError as error:
             raise validation_error(
                 f"{self.model.__name__}.{self._name}: {error}", [FieldError(self._name, str(error), value)]
             ) from None
-        return Value(spec.codec.encode(checked))
+        return Value(codec.encode(checked))
 
     @override
     def _none_is_missing(self) -> bool:
@@ -146,9 +147,15 @@ class FieldPath[T](Path[T]):
         return Path(*self._elements, key, encoder=encoder)
 
     def contains(self, value: Any) -> Any:
-        """``contains(path, value)``: substring, set member or list element."""
+        """``contains(path, value)``: substring, set member or list element.
+
+        A member or element is validated and encoded as the field stores its elements
+        (``Bird.seen.contains(moment)`` for a ``list[datetime]``).
+        """
         element = self.spec.codec.element()
-        return Path(*self._elements, encoder=element).contains(value) if element else super().contains(value)
+        if element is None:  # a string or binary field: a substring, as given
+            return super().contains(value)
+        return Function("contains", self, self._value(value, element))
 
     def __repr__(self) -> str:
         owner = self._owner.__name__ if self._owner is not None else "?"
