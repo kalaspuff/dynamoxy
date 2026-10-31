@@ -453,6 +453,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   during a long backfill), and `create_tables`/`ensure_tables(wait=False)` enabled Time to Live
   on a table DynamoDB was still creating: each step now waits for the one before it, and Time to
   Live is enabled before indexes are added, so that it does not wait for their backfills.
+- Type checkers typed `dynamoxy.errors.AccessDeniedError` as `Any` after a plain
+  `import dynamoxy` (Pylance and pyright resolved `dynamoxy.errors` and `dynamoxy.events` through
+  the package's `__getattr__`), and every misspelled name of the package too. The public
+  submodules are now attributes of the package with their types, and type checkers report names
+  the package does not define.
 
 ### Security
 
