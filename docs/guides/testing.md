@@ -57,8 +57,8 @@ as a dropped connection does: use it to test how your code handles
 
 `testing.purge_expired(client, at=datetime)` deletes items whose TTL is at or before `at` (now by
 default), as DynamoDB's background process would. Like DynamoDB, it leaves items whose TTL is
-more than five years in the past, such as `0` or a time in milliseconds read as seconds: they
-are never considered for expiry.
+more than five years in the past, such as `0` or a date decades ago: they are never considered
+for expiry.
 
 ## Events
 

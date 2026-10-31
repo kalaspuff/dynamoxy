@@ -135,7 +135,8 @@ pub enum FaultKind {
         /// Message.
         message: String,
     },
-    /// `BatchGetItem` / `BatchWriteItem` return every request unprocessed (nothing is written).
+    /// `BatchGetItem` / `BatchWriteItem` return requests unprocessed, and do not write them: those of
+    /// the fault's table when it has one (the others are processed), else every request.
     Unprocessed,
     /// Delay the operation.
     Latency(Duration),
@@ -241,8 +242,8 @@ impl MemoryBackend {
     ///
     /// DynamoDB deletes expired items in the background, typically within a few days; tests call
     /// this to make that happen deterministically. Like DynamoDB, it leaves items whose TTL is
-    /// more than five years before `at` (`0`, or milliseconds read as seconds the other way
-    /// round): "the TTL can't be more than five years in the past" to be considered for expiry.
+    /// more than five years before `at` (`0`, or a date decades ago): "the TTL can't be more than
+    /// five years in the past" to be considered for expiry.
     pub fn purge_expired(&self, at: Option<f64>) -> usize {
         let at = at.unwrap_or_else(now);
         let oldest = at - TTL_MAX_AGE;
