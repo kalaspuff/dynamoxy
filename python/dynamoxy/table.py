@@ -558,7 +558,7 @@ class Table:
             params["sse_specification"] = (True, "KMS", encryption_key)
         output = await self.client.call("create_table", "CreateTable", table=self.physical_name, **params)
         description = TableDescription.from_core(output)
-        if wait:
+        if wait or definition.ttl_attribute is not None:  # Time to Live needs an active table
             description = await self.wait_until_active()
         if definition.ttl_attribute is not None:
             await self.enable_time_to_live(definition.ttl_attribute)
@@ -566,6 +566,11 @@ class Table:
 
     async def sync_with(self, definition: TableDefinition, *, wait: bool = True) -> bool:
         """Adds missing global secondary indexes and enables TTL to match ``definition``.
+
+        DynamoDB changes a table one step at a time: each step waits until the table and its
+        indexes are active, when an earlier step (of this call with ``wait=False``, or of an
+        earlier call whose waiter gave up during a long backfill) is still in progress. With
+        ``wait=False``, only the last step is not waited for.
 
         Returns:
             Whether anything changed.
@@ -593,6 +598,7 @@ class Table:
             if description.billing_mode == "PAY_PER_REQUEST"
             else Billing.provisioned(description.read_capacity or 1, description.write_capacity or 1)
         )
+        missing: list[IndexDefinition] = []
         for index in definition.indexes:
             existing = description.indexes.get(index.name)
             if existing is not None:
@@ -611,11 +617,13 @@ class Table:
                     f"table {self.physical_name} lacks the local index {index.name!r}; local indexes can only "
                     "be created with the table"
                 )
-            await self.add_index(index, billing=billing, wait=wait)
-            changed = True
+            missing.append(index)
         if definition.ttl_attribute is not None:
             ttl = await self.time_to_live()
             if not ttl.enabled:
+                # Before the indexes, so that it does not wait for their backfills.
+                if description.status != "ACTIVE":
+                    description = await self.wait_until_active()
                 await self.enable_time_to_live(definition.ttl_attribute)
                 changed = True
             elif ttl.attribute != definition.ttl_attribute:
@@ -624,6 +632,13 @@ class Table:
                     f"{definition.ttl_attribute!r}: a table has one TTL attribute; disable it first "
                     "(table.disable_time_to_live(); DynamoDB takes up to an hour) or keep the attribute"
                 )
+        in_progress = not description.active
+        for index in missing:
+            if in_progress:  # DynamoDB adds one index at a time
+                await self.wait_until_active()
+            await self.add_index(index, billing=billing, wait=wait)
+            in_progress = not wait
+            changed = True
         return changed
 
     async def delete_table(self, *, wait: bool = True, missing_ok: bool = False) -> None:
@@ -666,12 +681,25 @@ class Table:
         table_class: Literal["STANDARD", "STANDARD_INFREQUENT_ACCESS"] | None = None,
         wait: bool = True,
     ) -> TableDescription:
-        """Changes table settings (``stream=False`` disables the stream)."""
+        """Changes table settings (``stream=False`` disables the stream).
+
+        A switch to provisioned billing gives every global index the table's capacity, since
+        DynamoDB needs capacity for each of them: change an index's afterwards with
+        ``client.call("update_table", "UpdateTable", ...)`` and a ``{"update": ...}`` index change.
+        """
         params: dict[str, Any] = {"table_name": self.physical_name}
         if billing is not None:
             params["billing_mode"] = billing.mode
             if billing.throughput is not None:
-                params["provisioned_throughput"] = (billing.throughput.read, billing.throughput.write)
+                throughput = (billing.throughput.read, billing.throughput.write)
+                params["provisioned_throughput"] = throughput
+                current = await self.describe()
+                if current.billing_mode != "PROVISIONED":
+                    params["global_secondary_index_updates"] = [
+                        {"update": {"index_name": index.name, "provisioned_throughput": throughput}}
+                        for index in current.indexes.values()
+                        if index.kind == "global"
+                    ]
         if stream is False:
             params["stream_specification"] = (False, None)
         elif stream is not None:

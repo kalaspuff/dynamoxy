@@ -20,7 +20,9 @@ await client.ensure_tables(User, Order)
   `exist_ok=True` skips existing tables, also a table that another process creates at the same
   time (replicas or test workers starting together).
 - `ensure_tables()` creates missing tables and adds missing global indexes (one at a time, as
-  DynamoDB requires, waiting for each backfill) and TTL settings. It never deletes indexes or
+  DynamoDB requires, waiting for each backfill) and TTL settings. With `wait=False` it waits only
+  where DynamoDB needs it: for a table it created before enabling TTL, and for each index before
+  adding the next one (also for one an earlier call left backfilling), but not for the last. It never deletes indexes or
   tables, and raises `TypeError` when what exists differs from the models in a way it cannot
   change: the key schema of the table or of an index with the same name (the attributes or their
   types), or the TTL attribute. A table that another process creates at the same time is checked
@@ -43,7 +45,7 @@ table = client.table("events")
 
 description = await table.describe()          # keys, indexes (status, backfilling), billing, stream, counts
 await table.exists()
-await table.update_settings(billing=dynamoxy.Billing.provisioned(10, 5))
+await table.update_settings(billing=dynamoxy.Billing.provisioned(10, 5))  # global indexes get 10/5 too
 await table.update_settings(stream="NEW_AND_OLD_IMAGES")   # stream=False disables it
 await table.update_settings(deletion_protection=True, table_class="STANDARD_INFREQUENT_ACCESS")
 await table.add_index(dynamoxy.IndexDefinition(name="by_kind", kind="global", partition_key=("kind", "S")))
@@ -51,6 +53,10 @@ await table.delete_index("by_kind")
 await table.delete_table()
 names = await client.list_tables()
 ```
+
+A switch from on-demand to provisioned billing gives every global index the table's capacity,
+since DynamoDB needs capacity for each of them; switches between provisioned capacities change
+the table's only.
 
 ## Time to Live
 
