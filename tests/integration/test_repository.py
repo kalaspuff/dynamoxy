@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
 import pytest
@@ -594,6 +594,69 @@ async def test_scans_filters_and_segments(events: dynamoxy.Repository[Event]) ->
     filtered = await events.scan().filter(Event.seq >= 30).all()
     assert sorted(event.seq for event in filtered) == list(range(30, 40))
     assert await events.count() == 40
+
+
+class Habitat(enum.Enum):
+    """A plain enum: members are stored as their values."""
+
+    POND = "pond"
+    FOREST = "forest"
+
+
+class Spot(dynamoxy.Document):
+    name: Attr[str]
+
+
+class Sighting(Model, table="sightings"):
+    """Lists and sets of values that a codec encodes, for ``contains()``."""
+
+    sighting_id: Attr[str] = partition_key()
+    seen: Attr[list[datetime]] = field(default_factory=list)
+    days: Attr[list[date]] = field(default_factory=list)
+    observers: Attr[set[uuid.UUID]] = field(default_factory=set)
+    durations: Attr[list[timedelta]] = field(default_factory=list)
+    habitats: Attr[list[Habitat]] = field(default_factory=list)
+    spots: Attr[list[Spot]] = field(default_factory=list)
+    tags: Attr[set[str]] = field(default_factory=set)
+    note: Attr[str] = field(default="")
+
+
+async def test_contains_encodes_members_and_elements_as_stored(client: dynamoxy.Client) -> None:
+    await client.create_tables(Sighting)
+    sightings = client.model(Sighting)
+    observer = uuid.uuid4()
+    await sightings.create(
+        Sighting(
+            sighting_id="s1",
+            seen=[at(1), at(2)],
+            days=[date(2026, 1, 2)],
+            observers={observer},
+            durations=[timedelta(minutes=5)],
+            habitats=[Habitat.POND],
+            spots=[Spot(name="reeds")],
+            tags={"heron"},
+            note="a grey heron",
+        )
+    )
+    await sightings.create(Sighting(sighting_id="s2", seen=[at(3)], habitats=[Habitat.FOREST]))
+    conditions = [
+        Sighting.seen.contains(at(2)),
+        Sighting.days.contains(date(2026, 1, 2)),
+        Sighting.observers.contains(observer),
+        Sighting.durations.contains(timedelta(minutes=5)),
+        Sighting.habitats.contains(Habitat.POND),
+        Sighting.spots.contains(Spot(name="reeds")),
+        Sighting.tags.contains("heron"),
+        Sighting.note.contains("grey"),  # a substring
+    ]
+    for condition in conditions:
+        found = await sightings.scan().filter(condition).all()
+        assert [sighting.sighting_id for sighting in found] == ["s1"], condition
+    assert await sightings.scan().filter(Sighting.seen.contains(at(4))).count() == 0
+    stored = await sightings.get_or_raise("s1")
+    assert await sightings.update(stored, Sighting.note.set("seen"), condition=Sighting.seen.contains(at(1)))
+    with pytest.raises(dynamoxy.ValidationError, match=r"^Sighting\.seen: expected datetime"):
+        Sighting.seen.contains("yesterday")  # when the condition is built, before any request
 
 
 async def test_consistent_queries_and_scans(client: dynamoxy.Client, events: dynamoxy.Repository[Event]) -> None:

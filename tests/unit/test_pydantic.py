@@ -313,3 +313,14 @@ def test_paths_answer_class_access_outside_class_creation() -> None:
         type("Broken", (Tracked,), namespace, table="pydantic-broken")
     assert repr(Tracked.hits) == "<attribute Tracked.hits>", "a failed class creation leaves paths as they were"
     assert Counter.model_fields["hits"].default == 0
+
+
+class Flock(dynamoxy.PydanticModel, table="pydantic-flocks"):
+    flock_id: Annotated[str, dynamoxy.PartitionKey()]
+    seen: list[datetime] = pydantic.Field(default_factory=list)
+
+
+def test_contains_encodes_list_elements_as_stored() -> None:
+    builder = ExpressionBuilder()
+    builder.condition(dynamoxy.attr(Flock.seen).contains(datetime(2026, 1, 1, tzinfo=UTC)))
+    assert builder.values == {":v0": "2026-01-01T00:00:00.000000+00:00"}
