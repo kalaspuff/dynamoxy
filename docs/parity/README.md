@@ -89,11 +89,12 @@ measured in rounds 1 and 2; an update of a key attribute stays bare), and refuse
 | `TransactWriteItems` of ten `Update`s writing 390 KB each | accepted | accepted | accepted |
 | the same with eleven | `Transaction payload size cannot exceed 4MB. Payload Size: 4393445` | `Transaction request exceeds the 4MB transaction size limit` | `... Payload Size: 4393214` |
 
-The in-memory backend refuses these with DynamoDB's messages and kinds. Until round 2 measures
-them, it counts a local index entry as the attributes the index holds (without the 100 bytes of
-overhead the documentation mentions for storage; DynamoDB Local does the same), counts the
-4 MB of a read as the items returned, and reports its own count of the items written as the
-payload size (4,393,081 for the request above, where DynamoDB says 4,393,445).
+The in-memory backend refuses these with DynamoDB's messages and kinds, counts a local index entry
+as the attributes it holds, the 4 MB of a read as the items returned (4 MiB), and the payload
+size of a write transaction as DynamoDB does, from the request (exact for puts and updates;
+conditions, deletes and checks add bytes DynamoDB counts and it does not). It holds a standalone
+`UpdateItem` to 400 KB by the same update charge before it reads the item (dynoxide-rs), and
+reports item collection sizes as whole gigabytes, `[0.0, 1.0]` for a small collection.
 
 How DynamoDB counts that payload size (round 2, one change at a time to eleven 390 KB updates
 that read 4,393,455): a `Put` counts its item's size (eleven puts of the same items: 4,393,125). An

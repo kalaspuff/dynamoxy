@@ -2272,6 +2272,113 @@ async fn updates_count_toward_the_size_of_a_transaction() {
 }
 
 #[tokio::test]
+async fn the_payload_size_of_a_transaction_is_counted_like_dynamodb() {
+    // Round 2 against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): eleven 390 KB updates,
+    // one change at a time, and the payload size each was refused with.
+    let backend = MemoryBackend::default();
+    backend
+        .create_table(CreateTableInput {
+            attribute_definitions: vec![definition("pk", ScalarType::S), definition("sk", ScalarType::S)],
+            key_schema: keys("pk", Some("sk")),
+            local_secondary_indexes: vec![],
+            global_secondary_indexes: vec![],
+            ..table_input("big")
+        })
+        .await
+        .unwrap();
+    let filler = s(&"c".repeat(390 * 1024));
+    let update = |pk: &str, sk: usize, expression: &str, names: Names, vals: Values| TransactWriteItem::Update {
+        target: TransactTarget {
+            table_name: "big".into(),
+            expression_attribute_names: names,
+            expression_attribute_values: vals,
+            ..Default::default()
+        },
+        key: item([("pk", s(pk)), ("sk", s(&format!("{sk:02}")))]),
+        update_expression: expression.into(),
+    };
+    let variants: Vec<(&str, Vec<TransactWriteItem>, usize)> = vec![
+        (
+            "base",
+            (0..11)
+                .map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])))
+                .collect(),
+            4_393_455,
+        ),
+        (
+            "a second value",
+            (0..11)
+                .map(|sk| {
+                    update(
+                        "upd",
+                        sk,
+                        "SET filler = :v, note = :w",
+                        Names::new(),
+                        values(&[(":v", filler.clone()), (":w", s("x"))]),
+                    )
+                })
+                .collect(),
+            4_393_719,
+        ),
+        (
+            "a longer key",
+            (0..11)
+                .map(|sk| update("updupd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])))
+                .collect(),
+            4_393_488,
+        ),
+        (
+            "a placeholder",
+            (0..11)
+                .map(|sk| {
+                    update("upd", sk, "SET #f = :v", names(&[("#f", "filler")]), values(&[(":v", filler.clone())]))
+                })
+                .collect(),
+            4_393_455,
+        ),
+        (
+            "puts",
+            (0..11)
+                .map(|sk| TransactWriteItem::Put {
+                    target: TransactTarget { table_name: "big".into(), ..Default::default() },
+                    item: item([("pk", s("upd")), ("sk", s(&format!("{sk:02}"))), ("filler", filler.clone())]),
+                })
+                .collect(),
+            4_393_125,
+        ),
+    ];
+    for (variant, transact_items, size) in variants {
+        let error = backend
+            .transact_write_items(TransactWriteItemsInput { transact_items, ..Default::default() })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            message(&error),
+            format!("Transaction payload size cannot exceed 4MB. Payload Size: {size}"),
+            "{variant}"
+        );
+    }
+    let ten = (0..10).map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])));
+    backend
+        .transact_write_items(TransactWriteItemsInput { transact_items: ten.collect(), ..Default::default() })
+        .await
+        .unwrap();
+    // A standalone update is held to 400 KB by what its request carries, before the item is read
+    // (captured by dynoxide-rs): 3 + 19 + 6 + 409,580 bytes.
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "big".into(),
+            key: item([("pk", s("new")), ("sk", s("00"))]),
+            update_expression: Some("SET filler = :v".into()),
+            expression_attribute_values: values(&[(":v", s(&"c".repeat(409_580)))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Item size to update has exceeded the maximum allowed size");
+}
+
+#[tokio::test]
 async fn local_index_entries_count_toward_the_size_of_an_item() {
     // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): an item and its
     // entries in the local indexes that hold it share the 400 KB limit; a transaction cancels

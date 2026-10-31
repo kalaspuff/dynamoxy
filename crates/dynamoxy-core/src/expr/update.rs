@@ -11,7 +11,7 @@ use std::hash::Hash;
 use super::ast::{Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
 use super::eval::resolve;
 use crate::error::{Error, Result};
-use crate::value::{AttributeValue, Item, Number};
+use crate::value::{AttributeValue, Item, Number, value_size};
 
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::validation_exception(format!("Invalid UpdateExpression: {message}"))
@@ -334,6 +334,50 @@ pub fn apply_update(update: &UpdateExpression, item: &Item) -> Result<Item> {
         delete(&mut result, path, value)?;
     }
     Ok(result)
+}
+
+impl UpdateExpression {
+    /// What DynamoDB charges an update for what its request carries, from the request alone
+    /// (captured by dynoxide-rs against eu-west-2 on 2026-10-09 across 86 statements, and
+    /// matching the payload size of `TransactWriteItems` measured in eu-north-1 on 2026-10-31,
+    /// docs/parity): 3, plus 19 + target + value for each `SET` and `ADD`, and 1 + target for each
+    /// `REMOVE` and `DELETE`. A target is its first element, plus 4 + element for each later one;
+    /// a path read as an operand 1, plus 14 + element for each element; an element the bytes of
+    /// its name or the digits of a list index; a value its size; `a + b` 34, `a - b` 37,
+    /// `if_not_exists(p, v)` 39 and `list_append(a, b)` 37 more than their operands.
+    pub fn request_charge(&self) -> usize {
+        fn element(element: &PathElement) -> usize {
+            match element {
+                PathElement::Name(name) => name.len(),
+                PathElement::Index(index) => index.to_string().len(),
+            }
+        }
+        fn target(path: &Path) -> usize {
+            path.0.iter().enumerate().map(|(i, part)| element(part) + if i == 0 { 0 } else { 4 }).sum()
+        }
+        fn read(path: &Path) -> usize {
+            1 + path.0.iter().map(|part| 14 + element(part)).sum::<usize>()
+        }
+        fn operand(value: &UpdateOperand) -> usize {
+            match value {
+                UpdateOperand::Path(path) => read(path),
+                UpdateOperand::Value(value) => value_size(value),
+                UpdateOperand::IfNotExists(path, fallback) => 39 + read(path) + operand(fallback),
+                UpdateOperand::ListAppend(a, b) => 37 + operand(a) + operand(b),
+            }
+        }
+        let set = self.set.iter().map(|(path, value)| {
+            19 + target(path)
+                + match value {
+                    SetValue::Operand(single) => operand(single),
+                    SetValue::Plus(a, b) => 34 + operand(a) + operand(b),
+                    SetValue::Minus(a, b) => 37 + operand(a) + operand(b),
+                }
+        });
+        let add = self.add.iter().map(|(path, value)| 19 + target(path) + value_size(value));
+        let removes = self.remove.iter().chain(self.delete.iter().map(|(path, _)| path)).map(|path| 1 + target(path));
+        3 + set.sum::<usize>() + add.sum::<usize>() + removes.sum::<usize>()
+    }
 }
 
 #[cfg(test)]

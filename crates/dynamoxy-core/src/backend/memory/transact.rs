@@ -10,7 +10,7 @@ use super::items::{
 use super::table::{CapacityMeter, read_units};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
-use crate::expr::{ExpressionInput, parse_request, project};
+use crate::expr::{ExpressionInput, UpdateExpression, parse_request, project};
 use crate::types::{
     TransactGetItemsInput, TransactGetItemsOutput, TransactWriteItem, TransactWriteItemsInput, TransactWriteItemsOutput,
 };
@@ -20,9 +20,7 @@ use crate::value::{AttributeValue, Item, item_size};
 const TRANSACTION_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 
 /// DynamoDB's refusal of a `TransactWriteItems` over 4 MB (measured in eu-north-1 on 2026-10-31,
-/// docs/parity: eleven updates writing 390 KB each). DynamoDB's payload size counts what the
-/// request carries; this counts the items the transaction writes, which comes within bytes of it
-/// (4,393,445 there) but is not its exact count.
+/// docs/parity: eleven updates writing 390 KB each).
 fn payload_too_large(size: usize) -> Error {
     invalid(format!("Transaction payload size cannot exceed 4MB. Payload Size: {size}"))
 }
@@ -200,10 +198,7 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         )?;
         let table = state.table(&target.table_name)?;
         let key = match operation {
-            TransactWriteItem::Put { item, .. } => {
-                total_size += item_size(item);
-                table.validate_item(item)?
-            }
+            TransactWriteItem::Put { item, .. } => table.validate_item(item)?,
             TransactWriteItem::ConditionCheck { key, .. }
             | TransactWriteItem::Delete { key, .. }
             | TransactWriteItem::Update { key, .. } => table.key.exact_key(key)?,
@@ -211,6 +206,17 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         if let Some(update) = &expressions.update {
             validate_update_for(table, update)?;
         }
+        // DynamoDB's payload size, from the request alone (measured, docs/parity): a put's item;
+        // an update's key, its request charge and 8 bytes. Table names and placeholder names
+        // count nothing. Conditions add bytes too (73 for `attribute_not_exists(absent)`), and
+        // deletes and checks some for their key, which were not measured further: left out.
+        total_size += match operation {
+            TransactWriteItem::Put { item, .. } => item_size(item),
+            TransactWriteItem::Update { key, .. } => {
+                item_size(key) + expressions.update.as_ref().map_or(0, UpdateExpression::request_charge) + 8
+            }
+            TransactWriteItem::ConditionCheck { key, .. } | TransactWriteItem::Delete { key, .. } => item_size(key),
+        };
         if !seen.insert((target.table_name.clone(), key)) {
             return Err(invalid("Transaction request cannot include multiple operations on one item"));
         }
@@ -239,10 +245,6 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         };
         match result {
             Ok(write) => {
-                // An update's item counts toward the transaction's size as it will be stored.
-                if matches!(operation, TransactWriteItem::Update { .. }) {
-                    total_size += write.new.as_ref().map_or(0, item_size);
-                }
                 reasons.push(CancellationReason::none());
                 prepared.push(write);
             }
@@ -266,9 +268,6 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
     }
     if canceled {
         return Err(ServiceError::transaction_canceled(reasons).into());
-    }
-    if total_size > TRANSACTION_SIZE_LIMIT {
-        return Err(payload_too_large(total_size));
     }
     let mut meter = CapacityMeter::default();
     let mut output = TransactWriteItemsOutput::default();

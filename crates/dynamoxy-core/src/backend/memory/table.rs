@@ -559,10 +559,12 @@ impl Table {
             .filter(|(stored, _)| stored.hash == key.hash && stored.partition == key.partition)
             .map(|(_, item)| item_size(item))
             .sum();
-        let gigabytes = size as f64 / (1024.0 * 1024.0 * 1024.0);
+        // Whole gigabytes around the size: [0.0, 1.0] for a small collection, as DynamoDB reports
+        // it (measured in eu-north-1 on 2026-10-31, docs/parity).
+        let lower = (size as f64 / (1024.0 * 1024.0 * 1024.0)).floor();
         Some(ItemCollectionMetrics {
             item_collection_key: [(self.key.partition.name.clone(), partition)].into_iter().collect(),
-            size_estimate_range_gb: vec![gigabytes, gigabytes.max(1.0)],
+            size_estimate_range_gb: vec![lower, lower + 1.0],
         })
     }
 
