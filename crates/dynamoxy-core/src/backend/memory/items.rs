@@ -12,7 +12,7 @@ use crate::types::{
     DeleteItemInput, GetItemInput, GetItemOutput, PutItemInput, ReturnValues, ReturnValuesOnConditionCheckFailure,
     UpdateItemInput, WriteItemOutput,
 };
-use crate::value::{Item, item_size};
+use crate::value::{Item, MAX_ITEM_SIZE, item_size};
 
 /// Why a write could not be prepared.
 #[derive(Debug)]
@@ -295,6 +295,11 @@ pub fn update_item(state: &mut State, input: UpdateItemInput) -> Result<WriteIte
         // a key attribute is refused bare (dynoxide-rs, src/actions/helpers.rs).
         crate::expr::validate_update(update, &[]).map_err(enveloped)?;
         validate_update_for(table, update)?;
+        // DynamoDB holds an update to 400 KB by what its request carries before it reads the item
+        // (captured by dynoxide-rs, src/actions/update_item.rs).
+        if update.request_charge() > MAX_ITEM_SIZE {
+            return Err(Error::validation_exception("Item size to update has exceeded the maximum allowed size"));
+        }
     }
     let mut meter = CapacityMeter::default();
     let prepared = prepare_update(
