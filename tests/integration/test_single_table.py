@@ -405,3 +405,80 @@ async def test_counts_of_projected_reads(client: dynamoxy.Client) -> None:
     assert page.cursor is not None
     with pytest.raises(TypeError, match=r"counts every segment from its start"):
         await client.model(Seat).scan().after(page.cursor).segments(2).count()
+
+
+class Place(dynamoxy.Document):
+    city: Attr[str] = field(default="")
+
+
+class PostalPlace(Place):
+    postcode: Attr[str] = field(default="")
+
+
+class Member(Model, table="members-and-admins", entity="Member"):
+    member_id: Attr[str] = partition_key()
+    name: Attr[str] = field(default="")
+    place: Attr[Place | None] = field(default=None)
+
+
+class Admin(Member, entity="Admin"):
+    level: Attr[int] = field(default=0)
+
+
+async def test_repositories_refuse_instances_of_subclasses(client: dynamoxy.Client) -> None:
+    # A repository of Member stored an Admin as a Member: without level, and with _type "Member",
+    # so that Admin queries no longer found it.
+    await client.create_tables(Member)
+    members, admins = client.model(Member), client.model(Admin)
+    admin = await admins.create(Admin(member_id="a", level=9))
+    refused = "expected a Member, got an instance of its subclass Admin"
+    for write in (
+        lambda: members.create(Admin(member_id="b", level=1)),
+        lambda: members.put(admin),
+        lambda: members.save(admin),
+        lambda: members.update(admin, Member.name.set("x")),
+        lambda: members.delete(admin),
+        lambda: members.refresh(admin),
+    ):
+        with pytest.raises(TypeError, match=refused):
+            await write()
+    with pytest.raises(TypeError, match=refused):
+        async with client.transaction() as tx:
+            tx.delete(admin, model=Member)
+    with pytest.raises(TypeError, match=refused):
+        async with client.batch_writer() as batch:
+            await batch.delete(admin, model=Member)
+    [stored] = await members.table.scan(consistent=True).all()
+    assert (stored["_type"], stored["level"]) == ("Admin", 9)
+    assert await admins.query(member_id="a").all() == [admin]
+
+
+async def test_reads_refuse_items_that_another_model_stores(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member)
+    members, admins = client.model(Member), client.model(Admin)
+    await admins.create(Admin(member_id="a", level=9))
+    # Read as a Member, its save() would have stored it as one.
+    with pytest.raises(
+        dynamoxy.ItemDecodeError, match=r"it stores another model, Admin \(_type is 'Admin'\)"
+    ) as caught:
+        await members.get("a")
+    assert caught.value.key == {"member_id": "a"}
+    with pytest.raises(dynamoxy.ItemDecodeError, match=r"read it with client\.model\(Admin\)"):
+        await members.batch_get(["a"])
+    assert await members.query(member_id="a").all() == []
+    assert (await admins.get_or_raise("a")).level == 9
+    # An entity name no model declares (one renamed since) still decodes.
+    await members.table.put({"member_id": "m", "name": "Old", "_type": "LegacyMember"})
+    assert (await members.get_or_raise("m")).name == "Old"
+
+
+async def test_documents_refuse_instances_of_subclasses(client: dynamoxy.Client) -> None:
+    # Encoded as a Place, a PostalPlace lost its postcode.
+    await client.create_tables(Member)
+    members = client.model(Member)
+    with pytest.raises(dynamoxy.ValidationError, match="expected Place, got PostalPlace, a subclass"):
+        await members.create(Member(member_id="m", place=PostalPlace(city="Lund", postcode="22100")))
+    member = await members.create(Member(member_id="m", place=Place(city="Lund")))
+    with pytest.raises(dynamoxy.ValidationError, match="expected Place, got PostalPlace"):
+        await members.update(member, Member.place.set(PostalPlace(city="Lund", postcode="22100")))
+    assert (await members.get_or_raise("m")).place == Place(city="Lund")

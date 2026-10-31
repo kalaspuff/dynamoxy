@@ -413,6 +413,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   returned a key of no item, and an immutable value stored that way made `save()` raise "is
   immutable". Writes through a loaded instance (batches and transactions included) and its
   `primary_key()` now use the key as stored, as ADR 0015 says, and keep such immutable values.
+- A repository stored instances of its model's subclasses as its own model:
+  `client.model(Member).create(Admin(...))` wrote `_type: "Member"` and dropped the subclass's
+  fields, and a `Member` read by key of an `Admin` item decoded it as a `Member`, whose `save()`
+  rewrote its type attribute, so that `Admin` queries no longer found it. Writes through a
+  repository now raise `TypeError` for instances of subclasses (write them through
+  `client.model(Admin)`), and its reads raise `ItemDecodeError` for items whose type attribute
+  names another model of the table (entity names no model declares still decode). A field typed
+  as a native document refuses instances of the document's subclasses, whose fields it dropped.
 
 ### Security
 

@@ -67,7 +67,7 @@ from dynamoxy.errors import (
 from dynamoxy.events import EventKind
 from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition
 from dynamoxy.query import Query, Scan
-from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, schema_of
+from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, models_for_table, schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -293,12 +293,38 @@ class Repository[M]:
         return self.client.hook_context(operation, self.model_class)
 
     def _load(self, item: dict[str, Any]) -> M:
+        schema = self.schema
+        if schema.type_attribute is not None:
+            self._check_entity(item)
         # Items come straight from responses: the instance's stored copy is the item itself.
-        instance = self.schema._decode(item, item, self)
+        instance = schema._decode(item, item, self)
         hooks = self.client.hooks
         if hooks.has("after_load", self.model_class):
             hooks.run_sync("after_load", instance, self._context("load"))
         return instance
+
+    def _check_entity(self, item: dict[str, Any]) -> None:
+        """Refuses an item that the type attribute says another model of the table stores.
+
+        Decoded as this model, it would lose the other model's fields, and a save would store it
+        as this model. Entity names no model declares (an entity renamed since) still decode.
+
+        Raises:
+            ItemDecodeError: The item is another model's.
+        """
+        schema = self.schema
+        stored = item.get(schema.type_attribute)  # type: ignore[arg-type]
+        if stored is None or stored == schema.entity or not isinstance(stored, str):
+            return
+        other = models_for_table(schema.table or "").get(stored)
+        if other is None:
+            return
+        raise ItemDecodeError(
+            f"cannot decode {self.model_class.__name__} from a stored item (see .key): it stores another model, "
+            f"{other.__name__} ({schema.type_attribute} is {stored!r}): read it with client.model({other.__name__})",
+            model=self.model_class,
+            key=schema.key_values(item),
+        )
 
     def _load_written(self, item: dict[str, Any], operation: str) -> M:
         """:meth:`_load` of the item a write returned: a decode error says that the write was made."""
@@ -328,8 +354,25 @@ class Repository[M]:
         """
         return self.schema.key_from(key, key_values)
 
+    def _own(self, target: Any) -> M | None:
+        """``target`` when it is an instance of this repository's model, ``None`` for a key.
+
+        Raises:
+            TypeError: ``target`` is an instance of a subclass: this repository would store it as
+                its own model (dropping the subclass's fields and entity type).
+        """
+        if not isinstance(target, self.model_class):
+            return None
+        if type(target) is not self.model_class:
+            name, other = self.model_class.__name__, type(target).__name__
+            raise TypeError(
+                f"expected a {name}, got an instance of its subclass {other}, which a repository of {name} would "
+                f"store as a {name}: write it through client.model({other})"
+            )
+        return target
+
     def _target_key(self, target: Any) -> dict[str, Any]:
-        if isinstance(target, self.model_class):
+        if self._own(target) is not None:
             key = self.schema.key_of(target)
             stored = self._stored(target)
             return self._check_key_unchanged(stored, key) if stored is not None else key
@@ -412,6 +455,7 @@ class Repository[M]:
             ItemNotFoundError: The item no longer exists.
         """
         # A loaded instance reloads the item it was loaded from, also when a key field changed.
+        self._own(instance)
         stored = self._stored(instance)
         key = self.schema.key_values(stored) if stored is not None else self.schema.key_of(instance)
         item = await self._get_raw(key, consistent=consistent)
@@ -630,7 +674,7 @@ class Repository[M]:
         A ``standalone`` write (not part of a transaction or batch) stores a new write id.
         """
         schema = self.schema
-        if not isinstance(instance, self.model_class):
+        if self._own(instance) is None:
             raise TypeError(f"expected a {self.model_class.__name__}, got {type(instance).__name__}")
         schema.validate(instance)
         values = schema.values(instance)
@@ -937,7 +981,7 @@ class Repository[M]:
         A ``fresh`` plan is made again, from the item as stored now (its hooks ran already).
         """
         schema = self.schema
-        instance = target if isinstance(target, self.model_class) else None
+        instance = self._own(target)
         actions_list = list(actions)
         if not actions_list:
             raise ValueError("update() needs at least one action, e.g. User.visits.add(1)")
@@ -1373,7 +1417,7 @@ class Repository[M]:
         item as it does for other models.
         """
         schema = self.schema
-        instance = target if isinstance(target, self.model_class) else None
+        instance = self._own(target)
         key = self._target_key(target)
         hooks = self.client.hooks
         if not fresh and instance is not None and hooks.has("before_delete", type(instance)):
@@ -1583,7 +1627,7 @@ class Repository[M]:
         targets = list(targets)
         hooks = self.client.hooks
         for target in targets:
-            if isinstance(target, self.model_class) and hooks.has("before_delete", type(target)):
+            if self._own(target) is not None and hooks.has("before_delete", type(target)):
                 await hooks.run("before_delete", target, self._context("batch_delete"))
         keys = {stored_identity(key): key for key in (self._target_key(target) for target in targets)}
         if not keys:
