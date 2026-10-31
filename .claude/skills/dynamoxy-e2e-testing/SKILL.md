@@ -25,4 +25,5 @@ description: Run and debug dynamoxy's end-to-end tests against MiniStack (the pi
 6. Kill a stray emulator by PID, never with `pkill -f`.
 7. **LocalStack** (DynamoDB Local inside, closer to DynamoDB than MiniStack) runs without Docker:
    `docs/parity/README.md` shows how. Point `DYNAMOXY_TEST_ENDPOINT_URL` at it
-   (`http://127.0.0.1:4566`) to run the e2e tests against it.
+   (`http://127.0.0.1:4566`) to run the e2e tests against it; tests take the `target` fixture
+   (`"memory"`, `"ministack"`, `"localstack"`) to skip an emulator's gaps, with a comment.

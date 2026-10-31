@@ -39,7 +39,7 @@ async def test_order_by(client: dynamoxy.Client, table: str, backend: str) -> No
         await client.execute(f'SELECT * FROM "{table}" WHERE pk = ? ORDER BY n', "a")
 
 
-async def test_transactions_and_batches(client: dynamoxy.Client, table: str) -> None:
+async def test_transactions_and_batches(client: dynamoxy.Client, table: str, target: str) -> None:
     insert = f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}"
     await client.execute_transaction([(insert, ["t", 1]), (insert, ["t", 2])])
     rows = await client.execute_transaction(
@@ -48,7 +48,10 @@ async def test_transactions_and_batches(client: dynamoxy.Client, table: str) -> 
     assert rows == [{"pk": "t", "sk": 1}, {"pk": "t", "sk": 2}, None]
     with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
         await client.execute_transaction([(insert, ["t", 3]), (insert, ["t", 1])])
-    assert [reason.code for reason in caught.value.cancellation_reasons] == ["None", "DuplicateItem"]
+    # LocalStack (DynamoDB Local) gives the duplicate INSERT the reason ValidationError, with the
+    # message "Duplicate primary key exists in table" (docs/parity, round 3).
+    duplicate = "ValidationError" if target == "localstack" else "DuplicateItem"
+    assert [reason.code for reason in caught.value.cancellation_reasons] == ["None", duplicate]
     results = await client.batch_execute([(insert, ["b", 1]), (insert, ["t", 1])])
     assert results[0]["error"] is None
     assert results[1]["error"] is not None
@@ -68,7 +71,7 @@ async def test_transactions_name_each_item_once(client: dynamoxy.Client, table: 
     assert await client.execute(f'SELECT a, b FROM "{table}" WHERE pk = ? AND sk = ?', "x", 1) == [{"a": 0, "b": 0}]
 
 
-async def test_pages_continue_after_the_rows_a_page_returned(client: dynamoxy.Client, table: str) -> None:
+async def test_pages_continue_after_the_rows_a_page_returned(client: dynamoxy.Client, table: str, target: str) -> None:
     # A cleanup loop: select a page, delete its rows, continue with the page's token.
     for sk in range(7):
         await client.execute(f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}", "a", sk)
@@ -91,5 +94,6 @@ async def test_pages_continue_after_the_rows_a_page_returned(client: dynamoxy.Cl
         token = output["next_token"]
         if token is None:
             break
-        assert output["last_evaluated_key"] == {"pk": "a", "sk": rows[-1]}
+        if target != "localstack":  # LocalStack (DynamoDB Local) returns no LastEvaluatedKey here
+            assert output["last_evaluated_key"] == {"pk": "a", "sk": rows[-1]}
     assert seen == list(range(7))

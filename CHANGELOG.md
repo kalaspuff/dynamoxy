@@ -497,6 +497,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   the reason. It also refuses a `TransactGetItems` that would return more than 4 MB ("Payload in
   response is too large."), and refuses a `TransactWriteItems` over 4 MB with DynamoDB's message
   ("Transaction payload size cannot exceed 4MB. Payload Size: ...").
+- A PartiQL `INSERT` of an item that exists raised a plain `ServiceError` against LocalStack,
+  whose DynamoDB Local sends the code `DuplicateItem` instead of `DuplicateItemException`: both
+  raise `DuplicateItemError` now. dynamoxy's end-to-end tests pass against LocalStack too
+  (`docs/parity`).
 
 ### Security
 

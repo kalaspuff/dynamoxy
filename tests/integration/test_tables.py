@@ -10,6 +10,7 @@ import pytest
 
 import dynamoxy
 from dynamoxy import Attr, F, GlobalIndex, Model, field, partition_key, sort_key, ttl
+from tests.conftest import ClientFactory
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, Event, Order, User
 
@@ -196,7 +197,9 @@ async def test_settings(client: dynamoxy.Client) -> None:
     await table.delete_table()
 
 
-async def test_backups_and_restores(client: dynamoxy.Client) -> None:
+async def test_backups_and_restores(client: dynamoxy.Client, target: str) -> None:
+    if target == "localstack":
+        pytest.skip("LocalStack's free edition has no backups (UnknownOperationException)")
     await client.create_tables(Event)
     table = client.table("events")
     await table.put({"stream": "s", "seq": 1, "kind": "before"})
@@ -214,7 +217,9 @@ async def test_backups_and_restores(client: dynamoxy.Client) -> None:
     assert await table.backups() == []
 
 
-async def test_point_in_time_recovery(client: dynamoxy.Client, backend: str) -> None:
+async def test_point_in_time_recovery(client: dynamoxy.Client, backend: str, target: str) -> None:
+    if target == "localstack":
+        pytest.skip("LocalStack's free edition has no point-in-time restores (UnknownOperationException)")
     await client.create_tables(Event)
     table = client.table("events")
     assert not (await table.continuous_backups()).point_in_time_recovery
@@ -272,8 +277,10 @@ async def test_dict_level_consistent_reads(client: dynamoxy.Client) -> None:
         await table.scan(index="by_kind", consistent=True).all()
 
 
-async def test_writes_return_item_collection_metrics(client: dynamoxy.Client, backend: str) -> None:
+async def test_writes_return_item_collection_metrics(client: dynamoxy.Client, backend: str, target: str) -> None:
     # Tables with a local index have item collections; Event has one (by_kind_local).
+    if target == "localstack":
+        pytest.skip("LocalStack (DynamoDB Local) returns no item collection metrics")
     await client.create_tables(Event)
     name = client.table_name("events")
 
@@ -342,7 +349,7 @@ def record_operations(client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch) 
 
 
 async def test_steps_without_waiting_wait_for_the_step_before(
-    client: dynamoxy.Client, monkeypatch: pytest.MonkeyPatch
+    client: dynamoxy.Client, client_factory: ClientFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # DynamoDB changes a table one step at a time, and Time to Live needs an active table: with
     # wait=False, the second index was added while the first was being created, and Time to Live
@@ -350,13 +357,15 @@ async def test_steps_without_waiting_wait_for_the_step_before(
     operations = record_operations(client, monkeypatch)
     await client.ensure_tables(Visit, wait=False)
     assert operations == ["DescribeTable", "CreateTable", "wait", "DescribeTimeToLive", "UpdateTimeToLive"]
-    await client.table("visits").delete_table()
-    await client.table("visits").create(partition_key=("visit_id", "S"))
-    operations.clear()
-    await client.ensure_tables(Visit, wait=False)
+    # A table with the key alone (under another name: LocalStack keeps the Time to Live of a
+    # table deleted and created again, which DynamoDB does not; docs/parity, round 3).
+    again = client_factory(table_prefix=client.table_name("again-"))
+    await again.table("visits").create(partition_key=("visit_id", "S"))
+    operations = record_operations(again, monkeypatch)
+    await again.ensure_tables(Visit, wait=False)
     changes = [operation for operation in operations if operation in ("wait", "UpdateTable", "UpdateTimeToLive")]
     assert changes == ["UpdateTimeToLive", "UpdateTable", "wait", "UpdateTable"], "the last step is not waited for"
-    assert await client.ensure_tables(Visit, wait=False) == []
+    assert await again.ensure_tables(Visit, wait=False) == []
 
 
 async def test_switching_to_provisioned_billing_gives_global_indexes_capacity(client: dynamoxy.Client) -> None:

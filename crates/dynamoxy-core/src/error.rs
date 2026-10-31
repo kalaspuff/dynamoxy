@@ -129,7 +129,8 @@ impl ErrorKind {
             "PointInTimeRecoveryUnavailableException" | "ContinuousBackupsUnavailableException" => {
                 Self::ContinuousBackups
             }
-            "DuplicateItemException" => Self::DuplicateItem,
+            // DynamoDB Local (LocalStack's DynamoDB) sends `DuplicateItem` (docs/parity, round 3).
+            "DuplicateItemException" | "DuplicateItem" => Self::DuplicateItem,
             "AccessDeniedException"
             | "MissingAuthenticationTokenException"
             | "UnrecognizedClientException"
@@ -369,6 +370,7 @@ mod tests {
         assert_eq!(ErrorKind::from_code("ProvisionedThroughputExceededException"), ErrorKind::Throttling);
         assert_eq!(ErrorKind::from_code("ConditionalCheckFailedException"), ErrorKind::ConditionalCheckFailed);
         assert_eq!(ErrorKind::from_code("MissingAuthenticationTokenException"), ErrorKind::AccessDenied);
+        assert_eq!(ErrorKind::from_code("DuplicateItem"), ErrorKind::DuplicateItem, "DynamoDB Local's code");
         assert_eq!(ErrorKind::from_code("SomethingNew"), ErrorKind::Other);
         assert!(ErrorKind::Throttling.is_retryable());
         assert!(!ErrorKind::Validation.is_retryable());
