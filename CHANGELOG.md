@@ -120,7 +120,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   pickling one failed with `PicklingError`: an error raised in a `ProcessPoolExecutor` worker,
   multiprocessing or a task queue reached the caller as a `PicklingError` (or broke the pool),
   and `except dynamoxy.ConditionalCheckFailedError` never matched. `UnprocessedItemsError` could
-  not be unpickled. They now name `dynamoxy._core` and pickle with their attributes.
+  not be unpickled. They now name `dynamoxy.errors`, where they are documented, and pickle with
+  their attributes; tracebacks show `dynamoxy.errors.AccessDeniedError` like those of the
+  Python-defined errors (`dynamoxy.errors.ItemAlreadyExistsError`), not `_core.AccessDeniedError`.
 - A field with a codec of its own refused `None` although its annotation allowed it:
   `Attr[datetime | None] = field(default=None, codec=DateTimeCodec("iso_z"))` and
   `Attr[dict[str, Any] | None] = field(default=None, codec=JsonCodec())` failed on construction
