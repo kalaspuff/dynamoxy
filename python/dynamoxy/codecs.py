@@ -607,6 +607,7 @@ class LiteralCodec(Codec[Any]):
                 )
             stored.append(plain)
         self._stored = tuple(stored)
+        self._unchanged = not any(_is_plain_member(value) for value in self.values)
         if all(isinstance(value, str) for value in self._stored):
             self._dynamo_type: str | None = "S"
         elif all(isinstance(value, int) and not isinstance(value, bool) for value in self._stored):
@@ -738,9 +739,20 @@ class AnyCodec(Codec[Any]):
 
 #: Codec classes whose ``encode`` returns values unchanged (exact types: subclasses may override
 #: it), so collections of their values are copied without calling it.
-_ENCODED_UNCHANGED = frozenset(
-    {Codec, AnyCodec, StrCodec, IntCodec, FloatCodec, DecimalCodec, BoolCodec, BytesCodec, LiteralCodec}
-)
+_ENCODED_UNCHANGED = frozenset({Codec, AnyCodec, StrCodec, IntCodec, FloatCodec, DecimalCodec, BoolCodec, BytesCodec})
+
+
+def _encodes_unchanged(codec: Codec[Any]) -> bool:
+    """Whether ``codec.encode`` returns values unchanged (exact types, as ``_ENCODED_UNCHANGED``).
+
+    A ``LiteralCodec`` does unless it has members of a plain ``Enum``, which it stores as their
+    values.
+    """
+    kind = type(codec)
+    if kind is LiteralCodec:
+        return typing.cast("LiteralCodec", codec)._unchanged
+    return kind in _ENCODED_UNCHANGED
+
 
 #: The function that the ``decode`` of these codec classes is (exact types: a cheaper call).
 _CONVERSIONS: dict[type, Callable[[Any], Any]] = {
@@ -848,7 +860,7 @@ class ListCodec[T](Codec[list[T]]):
     @override
     def encode(self, value: Any) -> list[Any]:
         inner = self.inner
-        if type(inner) in _ENCODED_UNCHANGED:
+        if _encodes_unchanged(inner):
             return list(value)
         return [inner.encode(element) for element in value]
 
@@ -900,7 +912,7 @@ class SetCodec[T](Codec[set[T]]):
     @override
     def encode(self, value: Any) -> Any:
         inner = self.inner
-        if type(inner) in _ENCODED_UNCHANGED:
+        if _encodes_unchanged(inner):
             return set(value) or None
         return {inner.encode(element) for element in value} or None
 
@@ -956,7 +968,7 @@ class DictCodec[T](Codec[dict[str, T]]):
     @override
     def encode(self, value: dict[str, T]) -> dict[str, Any]:
         inner = self.inner
-        if type(inner) in _ENCODED_UNCHANGED:
+        if _encodes_unchanged(inner):
             return dict(value.items())
         return {key: inner.encode(element) for key, element in value.items()}
 

@@ -504,6 +504,9 @@ class Print(Model, table="prints"):
     finish: Attr[Literal[Finish.MATTE, Finish.GLOSS]]
     size: Attr[Literal[Finish.MATTE, "large"] | None] = field(default=None)
     gsi1pk: Attr[str] = field(template="FINISH#{finish}")
+    layers: Attr[list[Literal[Finish.MATTE, Finish.GLOSS]]] = field(default_factory=list)
+    options: Attr[set[Literal[Finish.MATTE, Finish.GLOSS]]] = field(default_factory=set)
+    sides: Attr[dict[str, Literal[Finish.MATTE, Finish.GLOSS]]] = field(default_factory=dict)
 
     by_finish = GlobalIndex("gsi1", partition_key=gsi1pk)
 
@@ -511,12 +514,30 @@ class Print(Model, table="prints"):
 async def test_literals_of_plain_enum_members_are_stored_as_their_values(client: dynamoxy.Client) -> None:
     await client.create_tables(Print)
     prints = client.model(Print)
-    created = await prints.create(Print(print_id="p1", finish=Finish.GLOSS, size=Finish.MATTE))
+    created = await prints.create(
+        Print(
+            print_id="p1",
+            finish=Finish.GLOSS,
+            size=Finish.MATTE,
+            layers=[Finish.MATTE, Finish.GLOSS],
+            options={Finish.MATTE},
+            sides={"front": Finish.GLOSS},
+        )
+    )
     assert (created.pk, created.gsi1pk) == ("PRINT#p1#gloss", "FINISH#gloss")
     [stored] = await client.table("prints").scan().all()
     assert (stored["finish"], stored["size"]) == ("gloss", "matte")
+    assert (stored["layers"], stored["options"], stored["sides"]) == (["matte", "gloss"], {"matte"}, {"front": "gloss"})
     loaded = await prints.get_or_raise(print_id="p1", finish=Finish.GLOSS)
     assert (loaded.finish, loaded.size) == (Finish.GLOSS, Finish.MATTE)
+    assert (loaded.layers, loaded.options, loaded.sides) == (
+        [Finish.MATTE, Finish.GLOSS],
+        {Finish.MATTE},
+        {"front": Finish.GLOSS},
+    )
+    await prints.update(loaded, Print.layers.append([Finish.MATTE]), Print.options.add({Finish.GLOSS}))
+    [stored] = await client.table("prints").scan().all()
+    assert (stored["layers"], stored["options"]) == (["matte", "gloss", "matte"], {"matte", "gloss"})
     await loaded.save()  # the key it renders is the stored key
     await prints.update(loaded, Print.size.set("large"))
     assert [item.size for item in await prints.query(index=Print.by_finish, finish=Finish.GLOSS).all()] == ["large"]
