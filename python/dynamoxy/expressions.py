@@ -739,7 +739,9 @@ class RawCondition(Condition):
         self.values = dict(values)
 
     def compile(self, builder: ExpressionBuilder) -> str:
-        return f"({builder.raw(self.text, self.names, self.values)})"
+        # Unparenthesized: `&`, `|` and `~` put their parts in parentheses already, and DynamoDB
+        # refuses redundant ones (`((#s = :v)) AND (...)`).
+        return builder.raw(self.text, self.names, self.values)
 
 
 def condition(

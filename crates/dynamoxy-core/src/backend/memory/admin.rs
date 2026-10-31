@@ -367,7 +367,7 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                 let Some((mut index, definitions)) = created.take() else { continue };
                 // Backfill: items whose index key attributes have the wrong type are not indexed.
                 for (stored, item) in &table.items {
-                    if index.check_item(item).is_ok()
+                    if index.check_item(item, false).is_ok()
                         && let Some(entry) = index.entry_key(item)
                     {
                         index.entries.insert((entry, stored.clone()));

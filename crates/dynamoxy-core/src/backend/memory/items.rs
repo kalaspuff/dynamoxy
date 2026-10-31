@@ -140,7 +140,13 @@ pub fn prepare_update(
         Some(update) => (apply_update(update, base)?, update.paths().cloned().collect()),
         None => (base.clone(), Vec::new()),
     };
-    table.validate_item(&new)?;
+    // An item without an update (a key alone) is written as given; an updated one has the
+    // update's messages.
+    if update.is_some() {
+        table.validate_updated(&new)?
+    } else {
+        table.validate_item(&new)?
+    };
     Ok(Prepared::write(table, stored, Some(new), updated_paths))
 }
 

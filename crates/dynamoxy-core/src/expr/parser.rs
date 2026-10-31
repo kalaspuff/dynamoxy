@@ -258,9 +258,28 @@ struct Parser<'p, 'a> {
     placeholders: &'p mut Placeholders<'a>,
     /// How many parentheses, `NOT`s and functions enclose the current position.
     depth: usize,
+    /// Operators and functions so far (see [`MAX_OPERATORS`]).
+    operators: usize,
+    /// The token positions of the opening and closing parenthesis of the last group parsed.
+    last_group: Option<(usize, usize)>,
 }
 
+/// DynamoDB's limit of operators and functions in one expression: comparators, `AND`, `OR`,
+/// `NOT`, `BETWEEN`, `IN`, functions (`size` too) and `+`/`-` of updates (Constraints.html).
+const MAX_OPERATORS: usize = 300;
+
 impl<'p, 'a> Parser<'p, 'a> {
+    /// Counts an operator or function, refusing the one past [`MAX_OPERATORS`].
+    fn operator(&mut self) -> Result<()> {
+        self.operators += 1;
+        if self.operators > MAX_OPERATORS {
+            return Err(
+                self.error(format!("The expression contains too many operators; operator count: {}", self.operators))
+            );
+        }
+        Ok(())
+    }
+
     fn new(kind: ExpressionKind, text: &'p str, placeholders: &'p mut Placeholders<'a>) -> Result<Self> {
         if text.trim().is_empty() {
             return Err(Error::validation_exception(format!(
@@ -276,7 +295,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             )));
         }
         let tokens = lex(kind, text)?;
-        Ok(Self { kind, text, tokens, position: 0, placeholders, depth: 0 })
+        Ok(Self { kind, text, tokens, position: 0, placeholders, depth: 0, operators: 0, last_group: None })
     }
 
     /// Runs `parse` one nesting level deeper (see [`MAX_NESTING`]).
@@ -421,6 +440,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                     return Err(self.error(format!("Invalid function name; function: {name}")));
                 }
                 self.position += 2;
+                self.operator()?;
                 let path = self.path()?;
                 self.expect(Token::RParen)?;
                 Ok(Operand::Size(path))
@@ -436,6 +456,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         let mut left = self.and_condition()?;
         while self.at_keyword("OR") {
             self.position += 1;
+            self.operator()?;
             let right = self.and_condition()?;
             left = Condition::Or(Box::new(left), Box::new(right));
         }
@@ -446,6 +467,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         let mut left = self.not_condition()?;
         while self.at_keyword("AND") {
             self.position += 1;
+            self.operator()?;
             let right = self.not_condition()?;
             left = Condition::And(Box::new(left), Box::new(right));
         }
@@ -455,14 +477,23 @@ impl<'p, 'a> Parser<'p, 'a> {
     fn not_condition(&mut self) -> Result<Condition> {
         if self.at_keyword("NOT") {
             self.position += 1;
+            self.operator()?;
             return self.nested(|parser| Ok(Condition::Not(Box::new(parser.not_condition()?))));
         }
         // Parentheses are handled here rather than in `primary_condition`, whose large frame then
         // stays off the stack of nested conditions.
         if self.peek() == Some(Token::LParen) {
+            let open = self.position;
             self.position += 1;
             let inner = self.nested(Self::condition)?;
+            let close = self.position;
             self.expect(Token::RParen)?;
+            // A group that holds nothing but another group: `((a = :v))`, as DynamoDB refuses it
+            // (captured against DynamoDB by dynoxide-rs, tests/expression_syntax_errors.rs).
+            if self.last_group == Some((open + 1, close - 1)) {
+                return Err(self.error("The expression has redundant parentheses;"));
+            }
+            self.last_group = Some((open, close));
             return Ok(inner);
         }
         self.primary_condition()
@@ -477,6 +508,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                 return Err(self.error(format!("Invalid function name; function: {name}")));
             }
             self.position += 2;
+            self.operator()?;
             return self.function_condition(name);
         }
         let left = self.operand()?;
@@ -491,11 +523,13 @@ impl<'p, 'a> Parser<'p, 'a> {
         };
         if let Some(comparator) = comparator {
             self.position += 1;
+            self.operator()?;
             let right = self.operand()?;
             return Ok(Condition::Compare(left, comparator, right));
         }
         if self.at_keyword("BETWEEN") {
             self.position += 1;
+            self.operator()?;
             let low = self.operand()?;
             if !self.at_keyword("AND") {
                 return Err(self.unexpected());
@@ -506,6 +540,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         }
         if self.at_keyword("IN") {
             self.position += 1;
+            self.operator()?;
             self.expect(Token::LParen)?;
             let mut candidates = vec![self.operand()?];
             while self.peek() == Some(Token::Comma) {
@@ -579,10 +614,12 @@ impl<'p, 'a> Parser<'p, 'a> {
                         let value = match self.peek() {
                             Some(Token::Plus) => {
                                 self.position += 1;
+                                self.operator()?;
                                 SetValue::Plus(left, self.update_operand()?)
                             }
                             Some(Token::Minus) => {
                                 self.position += 1;
+                                self.operator()?;
                                 SetValue::Minus(left, self.update_operand()?)
                             }
                             _ => SetValue::Operand(left),
@@ -621,6 +658,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             }
             Some(Token::Ident(name)) if self.peek_at(1) == Some(Token::LParen) => {
                 self.position += 2;
+                self.operator()?;
                 let operand = self.nested(|parser| match name {
                     "if_not_exists" => {
                         let path = parser.path()?;

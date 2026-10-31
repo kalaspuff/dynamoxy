@@ -239,7 +239,12 @@ impl AttributeValue {
             Self::Ns(values) => check_set(values, "An number set  may not be empty"),
             Self::Bs(values) => check_set(values, "Binary sets should not be empty"),
             Self::L(values) => values.iter().try_for_each(|value| value.validate_at_depth(depth + 1)),
-            Self::M(values) => values.values().try_for_each(|value| value.validate_at_depth(depth + 1)),
+            Self::M(values) => values.iter().try_for_each(|(name, value)| {
+                if name.is_empty() {
+                    return Err(crate::expr::EMPTY_NAME.into());
+                }
+                value.validate_at_depth(depth + 1)
+            }),
             _ => Ok(()),
         }
     }

@@ -64,6 +64,11 @@ pub struct ParsedExpressions {
     pub projection: Option<Vec<Path>>,
 }
 
+/// DynamoDB's refusal of an empty attribute name, in an item, a key, a map at any depth or as
+/// the value of an `ExpressionAttributeNames` placeholder (captured against DynamoDB by
+/// dynoxide-rs, `src/empty_names.rs`).
+pub const EMPTY_NAME: &str = "Empty attribute name";
+
 /// Parses every expression of a request and checks the placeholder maps the way DynamoDB does:
 /// keys start with `#`/`:`, values are valid, every placeholder is defined and every one is used.
 pub fn parse_request(input: ExpressionInput<'_>, names: &Names, values: &Values) -> Result<ParsedExpressions> {
@@ -87,10 +92,15 @@ pub fn parse_request(input: ExpressionInput<'_>, names: &Names, values: &Values)
             "ExpressionAttributeValues can only be specified when using expressions: ConditionExpression, FilterExpression, KeyConditionExpression and UpdateExpression are null",
         ));
     }
-    for key in names.keys() {
+    for (key, name) in names {
         if !key.starts_with('#') || key.len() < 2 {
             return Err(Error::validation_exception(format!(
                 "ExpressionAttributeNames contains invalid key: Syntax error; key: \"{key}\""
+            )));
+        }
+        if name.is_empty() {
+            return Err(Error::validation_exception(format!(
+                "ExpressionAttributeNames contains invalid value: {EMPTY_NAME} for key {key}"
             )));
         }
     }

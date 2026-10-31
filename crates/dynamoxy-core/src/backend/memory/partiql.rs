@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 
 use super::items::{Failure, Prepared, apply, prepare_delete, prepare_put, prepare_update};
-use super::table::{CapacityMeter, Index, KeyInfo, PageRead, StoredKey, Table};
+use super::table::{CapacityMeter, Index, KeyInfo, PageRead, StoredKey, Table, read_units};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
@@ -37,7 +37,7 @@ use crate::types::{
     ExecuteStatementInput, ExecuteStatementOutput, ExecuteTransactionInput, ExecuteTransactionOutput,
     ParameterizedStatement, ReturnValuesOnConditionCheckFailure,
 };
-use crate::value::{AttributeValue, Item, Number};
+use crate::value::{AttributeValue, Item, Number, item_size};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
@@ -57,12 +57,28 @@ enum Token {
     Symbol(&'static str),
 }
 
-fn lex(text: &str) -> Result<Vec<Token>> {
+/// Words after which a `-` directly followed by a digit starts a negative number literal
+/// (`BETWEEN -5 AND 5`, `x = 1 OR -3 = n`), as after an operator.
+const BEFORE_OPERAND: [&str; 7] = ["AND", "OR", "NOT", "BETWEEN", "IN", "WHERE", "VALUE"];
+
+/// Where a token is in its statement: its first and its last character (exclusive).
+type Span = (usize, usize);
+
+/// The tokens of a statement and where each is.
+fn lex(text: &str) -> Result<(Vec<Token>, Vec<Span>)> {
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
+    let mut spans = Vec::new();
     let mut index = 0;
     while index < chars.len() {
         let c = chars[index];
+        let start = index;
+        // Records where the token just pushed is.
+        let close = |tokens: &Vec<Token>, spans: &mut Vec<Span>, end: usize| {
+            if spans.len() < tokens.len() {
+                spans.push((start, end));
+            }
+        };
         if c.is_whitespace() {
             index += 1;
             continue;
@@ -71,6 +87,7 @@ fn lex(text: &str) -> Result<Vec<Token>> {
         if let Some(symbol) = ["<<", ">>", "<>", "!=", "<=", ">="].into_iter().find(|symbol| *symbol == two) {
             tokens.push(Token::Symbol(symbol));
             index += 2;
+            close(&tokens, &mut spans, index);
             continue;
         }
         if let Some(symbol) = ["(", ")", "[", "]", "{", "}", ",", ".", ":", "*", "=", "<", ">", "+", "-"]
@@ -80,14 +97,16 @@ fn lex(text: &str) -> Result<Vec<Token>> {
             // A sign directly followed by a digit after an operator is part of a number literal.
             let negative_number = c == '-'
                 && chars.get(index + 1).is_some_and(char::is_ascii_digit)
-                && !matches!(
-                    tokens.last(),
-                    Some(Token::Word(_) | Token::Quoted(_) | Token::Number(_) | Token::Str(_) | Token::Param)
-                        | Some(Token::Symbol(")" | "]"))
-                );
+                && match tokens.last() {
+                    Some(Token::Word(word)) => BEFORE_OPERAND.iter().any(|keyword| word.eq_ignore_ascii_case(keyword)),
+                    Some(Token::Quoted(_) | Token::Number(_) | Token::Str(_) | Token::Param) => false,
+                    Some(Token::Symbol(")" | "]")) => false,
+                    _ => true,
+                };
             if !negative_number {
                 tokens.push(Token::Symbol(symbol));
                 index += 1;
+                close(&tokens, &mut spans, index);
                 continue;
             }
         }
@@ -95,6 +114,7 @@ fn lex(text: &str) -> Result<Vec<Token>> {
             '?' => {
                 tokens.push(Token::Param);
                 index += 1;
+                close(&tokens, &mut spans, index);
             }
             '\'' | '"' => {
                 let mut value = String::new();
@@ -122,6 +142,7 @@ fn lex(text: &str) -> Result<Vec<Token>> {
                     }
                 }
                 tokens.push(if c == '\'' { Token::Str(value) } else { Token::Quoted(value) });
+                close(&tokens, &mut spans, index);
             }
             _ if c.is_ascii_digit() || c == '-' => {
                 let start = index;
@@ -134,6 +155,7 @@ fn lex(text: &str) -> Result<Vec<Token>> {
                     index += 1;
                 }
                 tokens.push(Token::Number(chars[start..index].iter().collect()));
+                close(&tokens, &mut spans, index);
             }
             _ if c.is_alphanumeric() || c == '_' => {
                 let start = index;
@@ -141,11 +163,19 @@ fn lex(text: &str) -> Result<Vec<Token>> {
                     index += 1;
                 }
                 tokens.push(Token::Word(chars[start..index].iter().collect()));
+                close(&tokens, &mut spans, index);
             }
             other => return Err(syntax(&other.to_string())),
         }
     }
-    Ok(tokens)
+    Ok((tokens, spans))
+}
+
+/// DynamoDB's `line:column:length` of the characters `start..end` of a statement (1-based).
+fn location(text: &[char], (start, end): Span) -> String {
+    let line = text[..start].iter().filter(|c| **c == '\n').count() + 1;
+    let column = start - text[..start].iter().rposition(|c| *c == '\n').map_or(0, |newline| newline + 1) + 1;
+    format!("{line}:{column}:{}", end - start)
 }
 
 /// Which attributes an `UPDATE` / `DELETE` returns.
@@ -212,6 +242,9 @@ const MAX_NESTING: usize = 100;
 
 struct Parser<'a> {
     tokens: Vec<Token>,
+    /// Where each token is in `text` (see [`location`]).
+    spans: Vec<Span>,
+    text: Vec<char>,
     position: usize,
     parameters: &'a [AttributeValue],
     next_parameter: usize,
@@ -235,6 +268,11 @@ impl Parser<'_> {
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position)
+    }
+
+    /// DynamoDB's `line:column:length` of the token at `position`.
+    fn at(&self, position: usize) -> String {
+        self.spans.get(position).map_or_else(String::new, |span| location(&self.text, *span))
     }
 
     fn next(&mut self) -> Option<Token> {
@@ -449,15 +487,21 @@ impl Parser<'_> {
     fn primary(&mut self) -> Result<Condition> {
         if let Some(Token::Word(name)) = self.peek().cloned()
             && self.tokens.get(self.position + 1) == Some(&Token::Symbol("("))
-            && ["begins_with", "contains", "attribute_type", "exists"]
-                .iter()
-                .any(|function| name.eq_ignore_ascii_case(function))
+            && !name.eq_ignore_ascii_case("size")
         {
+            let lower = name.to_ascii_lowercase();
+            // DynamoDB's PartiQL has no `exists()`: `attribute_exists(path)` it has.
+            if !["begins_with", "contains", "attribute_type", "attribute_exists", "attribute_not_exists"]
+                .contains(&lower.as_str())
+            {
+                return Err(invalid(format!("Unrecognized function: {lower} at {}", self.at(self.position))));
+            }
             self.position += 2;
             let path = self.path()?;
-            let lower = name.to_ascii_lowercase();
-            let condition = if lower == "exists" {
+            let condition = if lower == "attribute_exists" {
                 Condition::AttributeExists(path)
+            } else if lower == "attribute_not_exists" {
+                Condition::AttributeNotExists(path)
             } else {
                 self.symbol(",")?;
                 let argument = Operand::Value(self.literal()?);
@@ -589,7 +633,12 @@ impl Parser<'_> {
         } else if self.at_keyword("INSERT") {
             self.position += 1;
             self.keyword("INTO")?;
-            let (table, _) = self.table_ref()?;
+            let (table, index) = self.table_ref()?;
+            if index.is_some() {
+                return Err(invalid(
+                    "FROM clause may only contain a single table name in data manipulation statements",
+                ));
+            }
             self.keyword("VALUE")?;
             let AttributeValue::M(item) = self.literal()? else {
                 return Err(invalid("Unsupported operation: Inserting a value that is not a tuple is not supported"));
@@ -597,8 +646,16 @@ impl Parser<'_> {
             Statement::Insert { table, item }
         } else if self.at_keyword("UPDATE") {
             self.position += 1;
-            let (table, _) = self.table_ref()?;
+            let (table, index) = self.table_ref()?;
+            if index.is_some() {
+                return Err(invalid("This operation is not supported on an index"));
+            }
             let mut update = UpdateExpression::default();
+            if !self.at_keyword("SET") && !self.at_keyword("REMOVE") {
+                return Err(invalid(
+                    "Statement wasn't well formed, can't be processed: UPDATE requires at least one SET or REMOVE clause",
+                ));
+            }
             loop {
                 if self.at_keyword("SET") {
                     self.position += 1;
@@ -634,10 +691,18 @@ impl Parser<'_> {
         } else if self.at_keyword("DELETE") {
             self.position += 1;
             self.keyword("FROM")?;
-            let (table, _) = self.table_ref()?;
+            let (table, index) = self.table_ref()?;
+            if index.is_some() {
+                return Err(invalid("This operation is not supported on an index"));
+            }
             self.keyword("WHERE")?;
             let condition = self.condition()?;
             let returning = self.returning()?;
+            if returning == Returning::AllNew {
+                return Err(invalid(
+                    "Invalid returning clause: RETURNING ALL NEW *. Only RETURNING ALL OLD * is allowed in DELETE statements.",
+                ));
+            }
             Statement::Delete { table, condition, returning }
         } else {
             return Err(self.error());
@@ -664,12 +729,54 @@ impl Parser<'_> {
         Ok(OrderKey { name, descending })
     }
 
+    /// `SET path = set_add(path, <<...>>)` (or `set_delete`), refused as DynamoDB refuses it:
+    /// two arguments, the first the assigned path, the second a set. Captured against DynamoDB
+    /// by dynoxide-rs (`tests/partiql_set_functions.rs`).
+    fn set_function(&mut self, path: Path, name: &str, update: &mut UpdateExpression) -> Result<()> {
+        let function = self.position;
+        let upper = name.to_ascii_uppercase();
+        self.position += 2;
+        let mut arguments = Vec::new();
+        while !self.at_symbol(")") {
+            arguments.push((self.position, self.update_operand()?));
+            if !self.at_symbol(")") {
+                self.symbol(",")?;
+            }
+        }
+        self.symbol(")")?;
+        let [(first_at, first), (_, second)] = <[_; 2]>::try_from(arguments)
+            .map_err(|_| invalid(format!("{upper} must have exactly two arguments at {}", self.at(function))))?;
+        if first != UpdateOperand::Path(path.clone()) {
+            return Err(invalid(format!(
+                "The first argument to {upper} must equal the assignment value at {}",
+                self.at(function)
+            )));
+        }
+        let UpdateOperand::Value(value @ (AttributeValue::Ss(_) | AttributeValue::Ns(_) | AttributeValue::Bs(_))) =
+            second
+        else {
+            return Err(invalid(format!(
+                "The second argument to {upper} must be a value with type SET at {}",
+                self.at(first_at)
+            )));
+        };
+        if name == "set_add" {
+            update.add.push((path, value))
+        } else {
+            update.delete.push((path, value))
+        }
+        Ok(())
+    }
+
     fn set_value(&mut self, path: Path, update: &mut UpdateExpression) -> Result<()> {
         if let Some(Token::Word(name)) = self.peek().cloned()
             && self.tokens.get(self.position + 1) == Some(&Token::Symbol("("))
         {
             let lower = name.to_ascii_lowercase();
-            if ["list_append", "set_add", "set_delete", "if_not_exists"].contains(&lower.as_str()) {
+            if lower == "set_add" || lower == "set_delete" {
+                return self.set_function(path, &lower, update);
+            }
+            if ["list_append", "if_not_exists"].contains(&lower.as_str()) {
                 self.position += 2;
                 let first = self.update_operand()?;
                 self.symbol(",")?;
@@ -688,8 +795,6 @@ impl Parser<'_> {
                             .set
                             .push((path, SetValue::Operand(UpdateOperand::IfNotExists(existing, Box::new(second)))));
                     }
-                    ("set_add", UpdateOperand::Value(value)) => update.add.push((path, value)),
-                    ("set_delete", UpdateOperand::Value(value)) => update.delete.push((path, value)),
                     _ => return Err(self.error()),
                 }
                 return Ok(());
@@ -742,8 +847,9 @@ fn parse(statement: &str, parameters: &[AttributeValue]) -> Result<Statement> {
              less than or equal to {MAX_STATEMENT_LENGTH}"
         )));
     }
-    let tokens = lex(statement)?;
-    Parser { tokens, position: 0, parameters, next_parameter: 0, depth: 0 }.statement()
+    let (tokens, spans) = lex(statement)?;
+    let text = statement.chars().collect();
+    Parser { tokens, spans, text, position: 0, parameters, next_parameter: 0, depth: 0 }.statement()
 }
 
 /// What a statement does, for the client's retries of attempts that may have been applied (any
@@ -913,8 +1019,32 @@ fn addressed_item<'a>(state: &State, statement: &'a Statement) -> Option<(&'a st
     Some((statement.table(), key.ok()?))
 }
 
+/// The key an `UPDATE` or `DELETE` writes: like [`full_key`], refusing a key attribute given
+/// two values ("Multiple conditions on same key pk. Only single item Update/Insert/Delete are
+/// supported", captured against DynamoDB by dynoxide-rs); the same value twice is one key.
+fn write_key(table: &Table, condition: &Condition) -> Result<Item> {
+    let mut found = Vec::new();
+    equalities(condition, &mut found);
+    for name in table.key.names() {
+        let mut values = found.iter().filter(|(attribute, _)| attribute == name).map(|(_, value)| value);
+        if let Some(first) = values.next()
+            && values.any(|value| value != first)
+        {
+            return Err(invalid(format!(
+                "Multiple conditions on same key {name}. Only single item Update/Insert/Delete are supported"
+            )));
+        }
+    }
+    full_key(table, condition)
+}
+
 /// Prepares a write statement (shared by single statements, batches and transactions).
-fn prepare_write(state: &State, statement: &Statement) -> Result<(Prepared, Returning), Failure> {
+/// `on_failure` says what a failed condition returns (`ALL_OLD`: the stored item).
+fn prepare_write(
+    state: &State,
+    statement: &Statement,
+    on_failure: ReturnValuesOnConditionCheckFailure,
+) -> Result<(Prepared, Returning), Failure> {
     let table = state.table(statement.table())?;
     let none = ReturnValuesOnConditionCheckFailure::None;
     match statement {
@@ -929,15 +1059,15 @@ fn prepare_write(state: &State, statement: &Statement) -> Result<(Prepared, Retu
         }
         Statement::Update { update, condition, returning, .. } => {
             validate_update(update, &table.key.names())?;
-            let key = full_key(table, condition)?;
+            let key = write_key(table, condition)?;
             let stored = table.key.exact_key(&key)?;
             if !table.items.contains_key(&stored) {
                 return Err(Failure::Condition(None));
             }
-            Ok((prepare_update(table, &key, Some(update), Some(condition), none)?, *returning))
+            Ok((prepare_update(table, &key, Some(update), Some(condition), on_failure)?, *returning))
         }
         Statement::Delete { condition, returning, .. } => {
-            let key = full_key(table, condition)?;
+            let key = write_key(table, condition)?;
             let stored = table.key.exact_key(&key)?;
             if !table.items.contains_key(&stored) {
                 let prepared = Prepared {
@@ -950,7 +1080,7 @@ fn prepare_write(state: &State, statement: &Statement) -> Result<(Prepared, Retu
                 };
                 return Ok((prepared, *returning));
             }
-            Ok((prepare_delete(table, &key, Some(condition), none)?, *returning))
+            Ok((prepare_delete(table, &key, Some(condition), on_failure)?, *returning))
         }
         Statement::Select { .. } => Err(Failure::Invalid(invalid("not a write statement"))),
     }
@@ -1027,6 +1157,7 @@ fn select(
     consistent: bool,
     limit: Option<u32>,
     next_token: Option<&str>,
+    mode: crate::types::ReturnConsumedCapacity,
 ) -> Result<ExecuteStatementOutput> {
     let Statement::Select { table: table_name, index, projection, condition, order } = statement else {
         return Err(invalid("not a SELECT statement"));
@@ -1130,44 +1261,43 @@ fn select(
     }
     let mut meter = CapacityMeter::default();
     read.charge(&mut meter, &table.name, index.map(|index| (index.name.as_str(), index.global)));
-    output.consumed_capacity = meter.table_report(&table.name, crate::types::ReturnConsumedCapacity::Total);
+    output.consumed_capacity = meter.table_report(&table.name, mode);
     Ok(output)
 }
 
 /// `ExecuteStatement`.
 pub fn execute_statement(state: &mut State, input: &ExecuteStatementInput) -> Result<ExecuteStatementOutput> {
+    // Request members are checked before the statement is parsed.
+    if input.limit == Some(0) {
+        return Err(invalid(
+            "1 validation error detected: Value '0' at 'limit' failed to satisfy constraint: Member must have value greater than or equal to 1",
+        ));
+    }
     let statement = parse(&input.statement, &input.parameters)?;
     if statement.is_read() {
-        let mut output = select(state, &statement, input.consistent_read, input.limit, input.next_token.as_deref())?;
-        if input.return_consumed_capacity == crate::types::ReturnConsumedCapacity::None {
-            output.consumed_capacity = None;
-        }
-        return Ok(output);
+        return select(
+            state,
+            &statement,
+            input.consistent_read,
+            input.limit,
+            input.next_token.as_deref(),
+            input.return_consumed_capacity,
+        );
     }
-    let (prepared, returning) = prepare_write(state, &statement).map_err(|failure| match failure {
-        Failure::Condition(_) => {
-            let item = match input.return_values_on_condition_check_failure {
-                ReturnValuesOnConditionCheckFailure::AllOld => {
-                    state.tables.get(statement.table()).and_then(|table| match &statement {
-                        Statement::Update { condition, .. } | Statement::Delete { condition, .. } => {
-                            full_key(table, condition)
-                                .ok()
-                                .and_then(|key| table.key.exact_key(&key).ok())
-                                .and_then(|key| table.items.get(&key).cloned())
-                        }
-                        _ => None,
-                    })
-                }
-                ReturnValuesOnConditionCheckFailure::None => None,
-            };
-            ServiceError::conditional_check_failed(item).into()
-        }
-        Failure::Invalid(error) => error,
-    })?;
+    let on_failure = input.return_values_on_condition_check_failure;
+    let (prepared, returning) = prepare_write(state, &statement, on_failure).map_err(Failure::into_error)?;
     let table_name = prepared.table.clone();
     let new = prepared.new.clone();
     let mut meter = CapacityMeter::default();
-    let old = if prepared.writes { apply(state, prepared, &mut meter, 1.0) } else { None };
+    let old = if prepared.writes {
+        apply(state, prepared, &mut meter, 1.0)
+    } else {
+        // A DELETE of a missing item writes nothing, and is charged a write of the table.
+        if let Some(table) = state.tables.get(&table_name) {
+            meter.write(table, None, None, 1.0);
+        }
+        None
+    };
     Ok(ExecuteStatementOutput {
         items: returned(old, new, returning),
         next_token: None,
@@ -1194,7 +1324,20 @@ fn statement_error(error: &Error) -> BatchStatementError {
     BatchStatementError { code, message: Some(message), item: None }
 }
 
+/// The error of a statement whose condition failed, with the stored item when it asked for it.
+fn condition_failed(item: Option<Item>) -> BatchStatementError {
+    BatchStatementError {
+        code: "ConditionalCheckFailed".into(),
+        message: Some("The conditional request failed".into()),
+        item,
+    }
+}
+
 /// `BatchExecuteStatement`: up to 25 statements, each succeeding or failing on its own.
+///
+/// Like DynamoDB, the batch is refused as a whole when its statements mix reads and writes, or
+/// name one item twice; statements that fail on their own take no part in either check.
+/// Captured against DynamoDB by dynoxide-rs (`src/actions/batch_execute_statement.rs`).
 pub fn batch_execute_statement(
     state: &mut State,
     input: &BatchExecuteStatementInput,
@@ -1204,61 +1347,96 @@ pub fn batch_execute_statement(
             "1 validation error detected: Value at 'statements' failed to satisfy constraint: Member must have length less than or equal to 25 and greater than or equal to 1",
         ));
     }
+    let parsed: Vec<Result<Statement>> =
+        input.statements.iter().map(|request| parse(&request.statement, &request.parameters)).collect();
+    let statements = || parsed.iter().filter_map(|statement| statement.as_ref().ok());
+    if statements().any(Statement::is_read) && statements().any(|statement| !statement.is_read()) {
+        return Err(invalid("Read and write requests together in the same batch is not supported."));
+    }
+    let mut items = BTreeSet::new();
+    for statement in statements() {
+        if let Some(item) = addressed_item(state, statement)
+            && !items.insert(item)
+        {
+            return Err(invalid("Provided list of item keys contains duplicates"));
+        }
+    }
     let mut output = BatchExecuteStatementOutput::default();
     let mut meter = CapacityMeter::default();
-    for request in &input.statements {
-        let response = match parse(&request.statement, &request.parameters) {
+    for (request, statement) in input.statements.iter().zip(parsed) {
+        let response = match statement {
             Err(error) => BatchStatementResponse { error: Some(statement_error(&error)), table_name: None, item: None },
             Ok(statement) if statement.is_read() => {
                 let table_name = statement.table().to_owned();
-                let has_key = state.tables.get(&table_name).is_some_and(|table| match &statement {
-                    Statement::Select { condition: Some(condition), index: None, .. } => {
-                        full_key(table, condition).is_ok()
-                    }
-                    _ => false,
-                });
-                if !has_key {
-                    BatchStatementResponse {
+                match state.tables.get(&table_name) {
+                    None => BatchStatementResponse {
                         error: Some(BatchStatementError {
-                            code: "ValidationError".into(),
-                            message: Some("Select statements within BatchExecuteStatement must specify the primary key in the where clause".into()),
+                            code: "ResourceNotFound".into(),
+                            message: Some("Requested resource not found".into()),
                             item: None,
                         }),
                         table_name: Some(table_name),
                         item: None,
-                    }
-                } else {
-                    match select(state, &statement, request.consistent_read, None, None) {
-                        Ok(result) => BatchStatementResponse {
-                            error: None,
-                            table_name: Some(table_name),
-                            item: result.items.into_iter().next(),
-                        },
-                        Err(error) => BatchStatementResponse {
-                            error: Some(statement_error(&error)),
-                            table_name: Some(table_name),
+                    },
+                    Some(table)
+                        if !matches!(
+                            &statement,
+                            Statement::Select { condition: Some(condition), index: None, .. }
+                                if full_key(table, condition).is_ok()
+                        ) =>
+                    {
+                        BatchStatementResponse {
+                            error: Some(BatchStatementError {
+                                code: "ValidationError".into(),
+                                message: Some("Select statements within BatchExecuteStatement must specify the primary key in the where clause.".into()),
+                                item: None,
+                            }),
+                            table_name: None,
                             item: None,
-                        },
+                        }
+                    }
+                    Some(_) => {
+                        let mode = crate::types::ReturnConsumedCapacity::Total;
+                        match select(state, &statement, request.consistent_read, None, None, mode) {
+                            Ok(result) => {
+                                // Each keyed read is charged on the table, summed per table.
+                                if let Some(capacity) = &result.consumed_capacity {
+                                    meter.read(&table_name, None, capacity.capacity_units);
+                                }
+                                BatchStatementResponse {
+                                    error: None,
+                                    table_name: Some(table_name),
+                                    item: result.items.into_iter().next(),
+                                }
+                            }
+                            Err(error) => BatchStatementResponse {
+                                error: Some(statement_error(&error)),
+                                table_name: Some(table_name),
+                                item: None,
+                            },
+                        }
                     }
                 }
             }
             Ok(statement) => {
                 let table_name = statement.table().to_owned();
-                match prepare_write(state, &statement) {
+                match prepare_write(state, &statement, request.return_values_on_condition_check_failure) {
                     Ok((prepared, _)) => {
                         if prepared.writes {
                             apply(state, prepared, &mut meter, 1.0);
                         }
                         BatchStatementResponse { error: None, table_name: Some(table_name), item: None }
                     }
-                    Err(failure) => {
-                        let error = failure.into_error();
-                        BatchStatementResponse {
-                            error: Some(statement_error(&error)),
-                            table_name: Some(table_name),
-                            item: None,
-                        }
-                    }
+                    Err(Failure::Condition(item)) => BatchStatementResponse {
+                        error: Some(condition_failed(item)),
+                        table_name: Some(table_name),
+                        item: None,
+                    },
+                    Err(Failure::Invalid(error)) => BatchStatementResponse {
+                        error: Some(statement_error(&error)),
+                        table_name: Some(table_name),
+                        item: None,
+                    },
                 }
             }
         };
@@ -1269,20 +1447,44 @@ pub fn batch_execute_statement(
 }
 
 /// `ExecuteTransaction`: all reads or all writes; writes are applied all or nothing.
+///
+/// DynamoDB checks the request members, then each statement's parse and `RETURNING` clause,
+/// then that the statements are all reads or all writes, then per statement its key; messages
+/// captured against DynamoDB by dynoxide-rs (`src/actions/execute_transaction.rs`).
 pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -> Result<ExecuteTransactionOutput> {
     if input.transact_statements.is_empty() || input.transact_statements.len() > 100 {
         return Err(invalid(
             "1 validation error detected: Value at 'transactStatements' failed to satisfy constraint: Member must have length less than or equal to 100 and greater than or equal to 1",
         ));
     }
+    if let Some(token) = &input.client_request_token
+        && token.chars().count() > 36
+    {
+        return Err(invalid(format!(
+            "1 validation error detected: Value '{token}' at 'clientRequestToken' failed to satisfy constraint: Member must have length less than or equal to 36"
+        )));
+    }
     let statements = input
         .transact_statements
         .iter()
         .map(|statement: &ParameterizedStatement| parse(&statement.statement, &statement.parameters))
         .collect::<Result<Vec<_>>>()?;
+    for (index, statement) in statements.iter().enumerate() {
+        let returning = match statement {
+            Statement::Update { returning, .. } | Statement::Delete { returning, .. } => *returning,
+            _ => Returning::None,
+        };
+        if returning != Returning::None {
+            return Err(invalid(format!(
+                "Validation failed in TransactStatements[{index}]: RETURNING clause is not supported in ExecuteTransaction."
+            )));
+        }
+    }
     let reads = statements.iter().filter(|statement| statement.is_read()).count();
     if reads != 0 && reads != statements.len() {
-        return Err(invalid("Transaction must contain either all reads or all writes"));
+        return Err(invalid(
+            "ExecuteTransaction API does not support both read and write operations in the same request.",
+        ));
     }
     // DynamoDB refuses a transaction that names an item twice, like TransactWriteItems and
     // TransactGetItems (every write is prepared against the items as they were, so the second
@@ -1318,24 +1520,30 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
         }
     }
     let mut output = ExecuteTransactionOutput::default();
+    let mut meter = CapacityMeter::default();
     if reads > 0 {
-        for statement in &statements {
+        for (index, statement) in statements.iter().enumerate() {
             let Statement::Select { condition: Some(condition), table, .. } = statement else {
-                return Err(invalid(
-                    "Select statements within a transaction must specify the primary key in the where clause",
-                ));
+                return Err(invalid(format!(
+                    "Validation failed in TransactStatements[{index}]: Select statements within ExecuteTransaction must specify the primary key in the where clause."
+                )));
             };
             let table = state.table(table)?;
             full_key(table, condition)?;
-            output.responses.push(select(state, statement, true, None, None)?.items.into_iter().next());
+            let mode = crate::types::ReturnConsumedCapacity::None;
+            let item = select(state, statement, true, None, None, mode)?.items.into_iter().next();
+            // A transactional read: 2 units per 4 KB of the item, on the table.
+            meter.read(&table.name, None, 2.0 * read_units(item.as_ref().map_or(0, item_size), true));
+            output.responses.push(item);
         }
+        output.consumed_capacity = meter.reports(input.return_consumed_capacity);
         return Ok(output);
     }
     let mut prepared = Vec::new();
     let mut reasons = Vec::new();
     let mut canceled = false;
-    for statement in &statements {
-        match prepare_write(state, statement) {
+    for (statement, request) in statements.iter().zip(&input.transact_statements) {
+        match prepare_write(state, statement, request.return_values_on_condition_check_failure) {
             Ok((write, _)) => {
                 reasons.push(CancellationReason::none());
                 prepared.push(write);
@@ -1365,7 +1573,6 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
         }
         return Err(ServiceError::transaction_canceled(reasons).into());
     }
-    let mut meter = CapacityMeter::default();
     for write in prepared {
         if write.writes {
             apply(state, write, &mut meter, 2.0);
