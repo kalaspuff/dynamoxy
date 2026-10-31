@@ -45,25 +45,21 @@ uv run python scripts/probe_backends.py iam-policy --account <account-id>  # wha
 
 A run on AWS takes about 15 minutes and costs cents; its tables are named `dynamoxy-probe-*` and
 deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs are
-kept here: [DynamoDB](probe-aws-eu-north-1-2026-10-31.json) (eu-north-1, 2026-10-31),
+kept here: DynamoDB's in eu-north-1 on 2026-10-31 ([run 1](probe-aws-eu-north-1-2026-10-31.json),
+[run 2](probe-aws-eu-north-1-2026-10-31-run2.json) and [run 3](probe-aws-eu-north-1-2026-10-31-run3.json)),
 [the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
 [LocalStack](probe-localstack-2026.3.0.json).
-A second DynamoDB run of `sizes` and `tables`
-([run 2](probe-aws-eu-north-1-2026-10-31-run2.json), with the probe's first version) stopped
-early again, but every fact it holds matches the in-memory backend except the accepted 3.9 MB
-transaction, which DynamoDB answered with an `InternalServerError` once (an unknown outcome to
-dynamoxy).
 
-The in-memory backend's run answers every fact the DynamoDB run holds alike (`compare` counts the
-facts both runs hold apart from those only one holds). The DynamoDB run stopped two scenarios
-early: on-demand throttling of eleven 390 KB writes to a new table ended `sizes` before its
-`TransactGetItems` and `UpdateItem` facts, and a backfill longer than the 300-second wait ended
-`tables` before its billing facts (the probe now retries and waits longer). It showed that
-DynamoDB refuses `DescribeTimeToLive` of a table it is still creating, and how conditions, deletes
-and checks count toward a transaction's payload. The other condition forms, asked since, have no
-DynamoDB answer yet: 22 facts are in the other runs only, and the DynamoDB run alone holds the
-`scenario_failed` facts of its two early stops. Of the facts both runs hold, MiniStack
-differs from DynamoDB in 39 and LocalStack in 34, each an emulator difference listed below.
+Runs 1 and 2 stopped the `sizes` and `tables` scenarios early (on-demand throttling of eleven 390 KB
+writes to a new table, an index backfill longer than the wait); run 3, with more retries and longer
+waits, completed them. Run 1's other scenarios and run 3's `sizes` and `tables` hold every fact
+the probe asks, and the in-memory backend answers every one of them as DynamoDB does (`compare`
+counts the facts both runs hold apart from those only one holds). Run 2 differs in one fact only:
+DynamoDB answered the accepted 3.9 MB transaction with an `InternalServerError` once, an unknown
+outcome to dynamoxy. The runs led to fixes in the in-memory backend: `DescribeTimeToLive` of a
+table being created, `ensure_tables` waiting before it, and how conditions, deletes and checks
+count toward a transaction's payload. Against the same facts, MiniStack differs from DynamoDB in
+57 and LocalStack in 53, each an emulator difference listed below.
 
 ## What DynamoDB answered
 
