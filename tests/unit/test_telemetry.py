@@ -144,6 +144,25 @@ async def test_partiql_writes_record_no_returned_rows(otel: Telemetry) -> None:
     ], "the SELECT only"
 
 
+async def test_metrics_without_traces_record_the_same_rows() -> None:
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    settings = dynamoxy.Telemetry(meter_provider=meter_provider)  # no tracer provider: no spans
+    async with testing.memory_client(telemetry=settings) as client:
+        await client.create_tables(Event)
+        assert client._recorder.recording_tracer() is None, "the untraced path"
+        await client.model(Event).put(Event(stream="s", seq=1, kind="k"))
+        await client.model(Event).get("s", 1)
+        await client.execute("UPDATE events SET kind = 'x' WHERE stream = 's' AND seq = 1 RETURNING ALL NEW *")
+        await client.execute("SELECT * FROM events WHERE stream = 's'")
+    rows = Telemetry(client, InMemorySpanExporter(), reader).points("db.client.response.returned_rows")
+    meter_provider.shutdown()
+    assert sorted((point.attributes["db.operation.name"], point.count, point.sum) for point in rows) == [
+        ("ExecuteStatement", 1, 1),
+        ("GetItem", 1, 1),
+    ]
+
+
 async def test_failed_calls_record_their_throttles(otel: Telemetry) -> None:
     testing.inject_fault(otel.client, operation="GetItem", error="throttling", times=10)
     with pytest.raises(dynamoxy.ThrottlingError):
