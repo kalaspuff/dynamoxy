@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import sysconfig
 import textwrap
 
 import pytest
@@ -114,3 +115,22 @@ def test_children_of_fork_get_a_fresh_runtime() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.split() == ["parent", "child", "child", "exit", "0"]
+
+
+@pytest.mark.skipif(
+    not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="needs a free-threaded interpreter (3.13t, 3.14t)"
+)
+def test_free_threaded_interpreters_turn_the_gil_on_for_dynamoxy() -> None:
+    # The extension declares that it needs the GIL until dynamoxy is tested without it (#178).
+    env = {name: value for name, value in os.environ.items() if name != "PYTHON_GIL"}
+    completed = subprocess.run(
+        [sys.executable, "-W", "always::RuntimeWarning", "-c", "import sys, dynamoxy; print(sys._is_gil_enabled())"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=env,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "True"
+    assert "dynamoxy._core" in completed.stderr

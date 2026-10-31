@@ -172,7 +172,11 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "e2e: end-to-end tests against the DynamoDB emulator (MiniStack); started automatically unless DYNAMOXY_TEST_ENDPOINT_URL is set",
 ]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Free-threaded interpreters turn the GIL on when they import dynamoxy._core (#178).
+    "ignore:The global interpreter lock \\(GIL\\) has been enabled to load module 'dynamoxy._core':RuntimeWarning",
+]
 
 [tool.coverage.run]
 source = ["dynamoxy"]
