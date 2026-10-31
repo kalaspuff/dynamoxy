@@ -8,6 +8,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Changed
+
+- Building dynamoxy from source (the sdist, or a checkout) needs Rust 1.99 or newer, up from 1.94.
+
 ## [0.4.0] - 2026-10-31
 
 ### Changed
