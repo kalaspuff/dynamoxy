@@ -32,6 +32,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   raises `WriteOutcomeUnknownError` (a `TransportError` that is not retryable) and emits
   `request.outcome_unknown`, and model writes settle it by their write id like any other unknown
   outcome. Reads keep raising a retryable `TransportError`.
+- A managed `BatchGetItem` (`batch_get()` of repositories and tables) took time quadratic in the
+  number of keys to split them into requests of 100, before any I/O: 10,000 keys spent 0.2 s of
+  CPU and 20,000 keys 1.3 s, on the event loop with the in-memory backend. Keys are now moved into
+  the requests instead of copied, and 10,000 keys take 6 ms on the in-memory backend.
 - A write that removed or changed a unique value deleted the value's guard item even when another
   item owned it, so when two items held one value (items stored before the field became
   `unique=True`, or written by other tools), deleting or changing one of them silently removed
