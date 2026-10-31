@@ -112,7 +112,7 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - Items stored before their model had a `version()` field could never be saved: `save()` of such
   a loaded instance (version `None`) required that the item did not exist, like a new instance,
   and raised an unexplained `ConditionalCheckFailedError`, also in transactions. It now requires
-  that the item still has no version, stores version 1, and raises `VersionConflictError` when
+  that the item still has no version, stores its first version, and raises `VersionConflictError` when
   another writer saved or deleted the item meanwhile.
 - A member of a `(str, Enum)` or `(int, Enum)` (the mixins that predate `StrEnum` and `IntEnum`)
   in a `str`, `int` or `Literal` field was stored as its value (`"book"`), but keys, templates
