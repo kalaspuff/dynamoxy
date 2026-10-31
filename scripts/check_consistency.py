@@ -203,6 +203,25 @@ def public_api_defined() -> Iterator[str]:
 
 
 @check
+def submodules_typed() -> Iterator[str]:
+    # Runtime binds every imported submodule on the package; type checkers only see the ones
+    # `__init__.py` imports as `from dynamoxy import m as m` or lists in `__all__`.
+    tree = ast.parse(read("python/dynamoxy/__init__.py"))
+    bound = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "dynamoxy"
+        for alias in node.names
+        if alias.asname == alias.name or alias.name in dynamoxy.__all__
+    }
+    for path in sorted((ROOT / "python" / "dynamoxy").glob("*.py")):
+        if not path.stem.startswith("_") and path.stem not in bound:
+            yield f"python/dynamoxy/__init__.py must import `from dynamoxy import {path.stem} as {path.stem}`"
+    if any(isinstance(node, ast.FunctionDef) and node.name == "__getattr__" for node in tree.body):
+        yield "python/dynamoxy/__init__.py must define __getattr__ under `if not TYPE_CHECKING:`"
+
+
+@check
 def examples_listed() -> Iterator[str]:
     readme = read("examples/README.md")
     for path in sorted((ROOT / "examples").glob("*.py")):
