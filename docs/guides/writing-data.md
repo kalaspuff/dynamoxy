@@ -223,8 +223,9 @@ another service may have written them. Remove one with an update:
 replaces the item, as before.
 
 Documents do the same with the keys of their map: a document read from an item writes back the
-keys no field of its class declares, in `save()`, `put()` and update values. A document the
-application builds (`user.address = Address(city="Lund")`) replaces the map.
+keys no field of its class declares, in `save()`, `put()` and update values, also through copies
+(`user.copy(user_id="u2")` keeps the keys of its documents). A document the application builds
+(`user.address = Address(city="Lund")`) replaces the map.
 
 ## Deleting
 
