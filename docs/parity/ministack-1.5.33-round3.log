@@ -1,16 +1,16 @@
-# dynamoxy DynamoDB probes, round 3, 2026-10-31T14:31:32Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
-tables: dynamoxy-probe-dca726-*
-### setup: create dynamoxy-probe-dca726-pq
+# dynamoxy DynamoDB probes, round 3, 2026-10-31T14:36:56Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
+tables: dynamoxy-probe-ded2bd-*
+### setup: create dynamoxy-probe-ded2bd-pq
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-dca726-pq", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457119, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-pq", "TableId": "47fd6dfc-96b1-4aea-9adc-c4af7cf9e0e9", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-ded2bd-pq", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457416, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-pq", "TableId": "a727a6ec-2459-4e2f-b128-166e7cf7551c", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-dca726-lsi
+### setup: create dynamoxy-probe-ded2bd-lsi
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-dca726-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457120, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-lsi", "TableId": "a19308ef-0576-4759-b331-c4d80e1897ce", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-ded2bd-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457417, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-lsi", "TableId": "fac2ec70-8674-4096-ac22-006160df0871", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-lsi/index/lsi"}], "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-dca726-ttl
+### setup: create dynamoxy-probe-ded2bd-ttl
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-dca726-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457120, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-ttl", "TableId": "035c3c98-db49-41f3-b71b-e0e683ac80e6", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-ded2bd-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457417, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-ttl", "TableId": "cad4ad03-301d-40c2-8245-2fed46d3e464", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
 tables active
 ## PartiQL: an INSERT of an item that exists
@@ -30,8 +30,8 @@ body: b'{"__type": "TransactionCanceledException", "message": "Transaction cance
 
 ### pq-batch-insert-existing: BatchExecuteStatement: INSERT of a new item, then of one that exists
 exit: 0
-out: {"Responses": [{"TableName": "dynamoxy-probe-dca726-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-dca726-pq"}]}
-body: b'{"Responses": [{"TableName": "dynamoxy-probe-dca726-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-dca726-pq"}]}'
+out: {"Responses": [{"TableName": "dynamoxy-probe-ded2bd-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-ded2bd-pq"}]}
+body: b'{"Responses": [{"TableName": "dynamoxy-probe-ded2bd-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-ded2bd-pq"}]}'
 
 ### setup: item
 exit: 0
@@ -56,11 +56,11 @@ out: {"TimeToLiveSpecification": {"Enabled": true, "AttributeName": "expires"}}
 
 ### setup: delete
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-dca726-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "DELETING", "CreationDateTime": 1793457120, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-ttl", "TableId": "035c3c98-db49-41f3-b71b-e0e683ac80e6", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-ded2bd-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "DELETING", "CreationDateTime": 1793457417, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-ttl", "TableId": "cad4ad03-301d-40c2-8245-2fed46d3e464", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
-### setup: create dynamoxy-probe-dca726-ttl
+### setup: create dynamoxy-probe-ded2bd-ttl again
 exit: 0
-out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-dca726-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457126, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-dca726-ttl", "TableId": "87a2e34d-24fd-4562-8371-efabc5e73254", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-ded2bd-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457421, "ProvisionedThroughput": {"ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-ded2bd-ttl", "TableId": "bdafb067-c742-4995-bf69-252f1138c738", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false, "WarmThroughput": {"ReadUnitsPerSecond": 0, "WriteUnitsPerSecond": 0, "Status": "ACTIVE"}}}
 
 ### ttl-recreated: DescribeTimeToLive of the table created again with the same name
 exit: 0
@@ -83,7 +83,6 @@ exit: 0
 exit: 0
 
 ## cleanup
-deleted dynamoxy-probe-dca726-pq
-deleted dynamoxy-probe-dca726-lsi
-deleted dynamoxy-probe-dca726-ttl
-!!! dynamoxy-probe-dca726-ttl not active after 900s: MISSING
+deleted dynamoxy-probe-ded2bd-pq
+deleted dynamoxy-probe-ded2bd-lsi
+deleted dynamoxy-probe-ded2bd-ttl

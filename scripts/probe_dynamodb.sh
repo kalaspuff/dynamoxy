@@ -599,7 +599,9 @@ log "## Time to Live of a table created again"
 probe setup "ttl" update-time-to-live --table-name "$P-ttl" --time-to-live-specification Enabled=true,AttributeName=expires >/dev/null
 probe setup "delete" delete-table --table-name "$P-ttl" >/dev/null
 ddb wait table-not-exists --table-name "$P-ttl"
-create "$P-ttl" --billing-mode PAY_PER_REQUEST --attribute-definitions AttributeName=pk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH
+# Created again without create(), which would list it twice for the cleanup.
+probe setup "create $P-ttl again" create-table --table-name "$P-ttl" --billing-mode PAY_PER_REQUEST \
+    --attribute-definitions AttributeName=pk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH >/dev/null
 wait_active "$P-ttl"
 probe ttl-recreated "DescribeTimeToLive of the table created again with the same name" \
     describe-time-to-live --table-name "$P-ttl"
