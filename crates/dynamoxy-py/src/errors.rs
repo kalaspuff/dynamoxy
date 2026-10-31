@@ -28,6 +28,8 @@
 //! comes from a call.
 //! Python-only errors (`ItemNotFoundError`, `ItemAlreadyExistsError`, `VersionConflictError`,
 //! `UniqueConstraintError`, `ItemDecodeError`) are defined in `python/dynamoxy/errors.py`.
+//! The native classes name `dynamoxy.errors` as their module too: it re-exports them, so tracebacks
+//! show the public name and `pickle` finds them there.
 
 use dynamoxy_core::{Error, ErrorKind};
 use pyo3::create_exception;
@@ -37,78 +39,78 @@ use pyo3::types::PyList;
 
 use crate::convert::item_to_py;
 
-create_exception!(dynamoxy._core, DynamoxyError, PyException, "Base class of all dynamoxy errors.");
-create_exception!(dynamoxy._core, ConfigurationError, DynamoxyError, "Invalid client configuration.");
+create_exception!(dynamoxy.errors, DynamoxyError, PyException, "Base class of all dynamoxy errors.");
+create_exception!(dynamoxy.errors, ConfigurationError, DynamoxyError, "Invalid client configuration.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     ValidationError,
     DynamoxyError,
     "An invalid request, detected locally or by DynamoDB."
 );
-create_exception!(dynamoxy._core, ServiceError, DynamoxyError, "An error returned by DynamoDB.");
+create_exception!(dynamoxy.errors, ServiceError, DynamoxyError, "An error returned by DynamoDB.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     ConditionalCheckFailedError,
     ServiceError,
     "A condition expression evaluated to false."
 );
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     TransactionCanceledError,
     ServiceError,
     "DynamoDB canceled a transaction; see `.reasons`."
 );
-create_exception!(dynamoxy._core, TransactionConflictError, ServiceError, "Another transaction is updating the item.");
+create_exception!(dynamoxy.errors, TransactionConflictError, ServiceError, "Another transaction is updating the item.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     TransactionInProgressError,
     ServiceError,
     "A transaction with the same token is still running."
 );
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     IdempotentParameterMismatchError,
     ServiceError,
     "A client request token was reused with other parameters."
 );
-create_exception!(dynamoxy._core, ThrottlingError, ServiceError, "DynamoDB throttled the request.");
-create_exception!(dynamoxy._core, ResourceNotFoundError, ServiceError, "The table, index or backup does not exist.");
-create_exception!(dynamoxy._core, ResourceInUseError, ServiceError, "The table exists already or is being changed.");
+create_exception!(dynamoxy.errors, ThrottlingError, ServiceError, "DynamoDB throttled the request.");
+create_exception!(dynamoxy.errors, ResourceNotFoundError, ServiceError, "The table, index or backup does not exist.");
+create_exception!(dynamoxy.errors, ResourceInUseError, ServiceError, "The table exists already or is being changed.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     LimitExceededError,
     ServiceError,
     "Too many tables or concurrent control-plane operations."
 );
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     ItemCollectionSizeLimitExceededError,
     ServiceError,
     "An item collection exceeds 10 GB (tables with local secondary indexes)."
 );
-create_exception!(dynamoxy._core, DuplicateItemError, ServiceError, "A PartiQL INSERT targets an existing item.");
-create_exception!(dynamoxy._core, BackupError, ServiceError, "A backup or point-in-time recovery operation failed.");
+create_exception!(dynamoxy.errors, DuplicateItemError, ServiceError, "A PartiQL INSERT targets an existing item.");
+create_exception!(dynamoxy.errors, BackupError, ServiceError, "A backup or point-in-time recovery operation failed.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     AccessDeniedError,
     ServiceError,
     "The credentials are not allowed to perform the request."
 );
-create_exception!(dynamoxy._core, InternalServerError, ServiceError, "DynamoDB failed internally (retryable).");
-create_exception!(dynamoxy._core, TransportError, DynamoxyError, "A network failure or a timeout.");
+create_exception!(dynamoxy.errors, InternalServerError, ServiceError, "DynamoDB failed internally (retryable).");
+create_exception!(dynamoxy.errors, TransportError, DynamoxyError, "A network failure or a timeout.");
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     WriteOutcomeUnknownError,
     TransportError,
     "A write that may have been applied, without an answer that says whether it was."
 );
 create_exception!(
-    dynamoxy._core,
+    dynamoxy.errors,
     CredentialsError,
     DynamoxyError,
     "AWS credentials are missing or could not be loaded."
 );
-create_exception!(dynamoxy._core, ShutdownError, DynamoxyError, "The client is closed or the interpreter is exiting.");
+create_exception!(dynamoxy.errors, ShutdownError, DynamoxyError, "The client is closed or the interpreter is exiting.");
 
 fn service_class(kind: ErrorKind) -> fn(String) -> PyErr {
     match kind {
