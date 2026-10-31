@@ -576,6 +576,13 @@ impl<'p, 'a> Parser<'p, 'a> {
                 self.expect(Token::Comma)?;
                 let argument = self.operand()?;
                 match name {
+                    "attribute_type" if matches!(argument, Operand::Path(_)) => {
+                        // A path as the type: DynamoDB's message lists every type it knows, its
+                        // internal ones too (measured in eu-north-1 on 2026-10-31, docs/parity).
+                        return Err(self.error(
+                            "Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}",
+                        ));
+                    }
                     "attribute_type" => Condition::AttributeType(path, argument),
                     "begins_with" => Condition::BeginsWith(path, argument),
                     _ => Condition::Contains(path, argument),

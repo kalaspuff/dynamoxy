@@ -1595,14 +1595,34 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
     let mut output = ExecuteTransactionOutput::default();
     let mut meter = CapacityMeter::default();
     if reads > 0 {
+        // A read of a missing table cancels the transaction, like a write of one: reason
+        // ResourceNotFound, None for the others (measured in eu-north-1 on 2026-10-31,
+        // docs/parity).
+        let mut reasons = Vec::new();
         for (index, statement) in statements.iter().enumerate() {
             let Statement::Select { condition: Some(condition), table, .. } = statement else {
                 return Err(invalid(format!(
                     "Validation failed in TransactStatements[{index}]: Select statements within ExecuteTransaction must specify the primary key in the where clause."
                 )));
             };
+            match state.tables.get(table) {
+                Some(table) => {
+                    full_key(table, condition)?;
+                    reasons.push(CancellationReason::none());
+                }
+                None => reasons.push(CancellationReason {
+                    code: "ResourceNotFound".into(),
+                    message: Some("Requested resource not found".into()),
+                    item: None,
+                }),
+            }
+        }
+        if reasons.iter().any(|reason| reason.code != "None") {
+            return Err(ServiceError::transaction_canceled(reasons).into());
+        }
+        for statement in &statements {
+            let Statement::Select { table, .. } = statement else { continue };
             let table = state.table(table)?;
-            full_key(table, condition)?;
             let mode = crate::types::ReturnConsumedCapacity::None;
             let item = select(state, statement, true, None, None, mode)?.items.into_iter().next();
             // A transactional read: 2 units per 4 KB of the item, on the table.

@@ -2519,9 +2519,228 @@ async fn partiql_capacity_follows_dynamodb() {
 }
 
 #[tokio::test]
+async fn placeholders_names_and_operands_are_refused_like_dynamodb() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
+    let backend = backend_with_table().await;
+    let key = || item([("pk", s("a")), ("sk", n(1))]);
+    let get = |projection: &str, names: Names| GetItemInput {
+        table_name: "items".into(),
+        key: key(),
+        projection_expression: Some(projection.into()),
+        expression_attribute_names: names,
+        ..Default::default()
+    };
+    let long = |sigil: char, size: usize| format!("{sigil}{}", "n".repeat(size - 1));
+    backend.get_item(get(&long('#', 255), names(&[(&long('#', 255), "x")]))).await.unwrap();
+    let error = backend.get_item(get(&long('#', 256), names(&[(&long('#', 256), "x")]))).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "ExpressionAttributeNames contains invalid key: The expression attribute map contains a key that is too long; size of key: 256"
+    );
+    let error = backend
+        .query(query(&format!("pk = {}", long(':', 257)), values(&[(&long(':', 257), s("a"))])))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "ExpressionAttributeValues contains invalid key: The expression attribute map contains a key that is too long; size of key: 257"
+    );
+    for projection in ["#a-b", "pk"] {
+        let error = backend.get_item(get(projection, names(&[("#a-b", "x")]))).await.unwrap_err();
+        assert_eq!(message(&error), "ExpressionAttributeNames contains invalid key: Syntax error; key: \"#a-b\"");
+    }
+    let error = backend.query(query("pk = :p", values(&[(":p", s("a")), (":a-b", s("a"))]))).await.unwrap_err();
+    assert_eq!(message(&error), "ExpressionAttributeValues contains invalid key: Syntax error; key: \":a-b\"");
+    backend.get_item(get("#_a, #A9", names(&[("#_a", "x"), ("#A9", "y")]))).await.unwrap();
+
+    // Attribute names of 64 KB or more: in an item, inside the envelope of a PutItem; through a
+    // placeholder, bare in a read and inside the envelope of a write.
+    let named = |size: usize| item([("pk", s("names")), ("sk", n(size as i64)), (&"n".repeat(size), s("v"))]);
+    put(&backend, named(65_535)).await;
+    let error = backend
+        .put_item(PutItemInput { table_name: "items".into(), item: named(65_536), ..Default::default() })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes"
+    );
+    let error = backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_536))]))).await.unwrap_err();
+    assert_eq!(message(&error), "Attribute name is too large, must be less than 65536 bytes for key #n");
+    let map = AttributeValue::M(item([(&"n".repeat(65_536), s("v"))]));
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: item([("pk", s("names")), ("sk", n(1)), ("m", map)]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes"
+    );
+    backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_535))]))).await.unwrap();
+
+    // attribute_type with a path as the type.
+    put(&backend, item([("pk", s("t")), ("sk", n(1)), ("a", s("x")), ("b", s("S"))])).await;
+    const TYPES: &str =
+        "{S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}";
+    let error = backend
+        .query(QueryInput {
+            filter_expression: Some("attribute_type(a, b)".into()),
+            ..query("pk = :p", values(&[(":p", s("t"))]))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        format!(
+            "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {TYPES}"
+        )
+    );
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "items".into(),
+            key: item([("pk", s("t")), ("sk", n(1))]),
+            update_expression: Some("SET c = :c".into()),
+            condition_expression: Some("attribute_type(a, b)".into()),
+            expression_attribute_values: values(&[(":c", s("c"))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        format!(
+            "1 validation error detected: Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {TYPES}"
+        )
+    );
+    // Single-item writes put their expression errors in the envelope; reads do not.
+    for condition in ["attribute_exists(status)", "((a = :v))", "a = "] {
+        let error = backend
+            .delete_item(DeleteItemInput {
+                table_name: "items".into(),
+                key: key(),
+                condition_expression: Some(condition.into()),
+                expression_attribute_values: if condition.contains(":v") {
+                    values(&[(":v", n(1))])
+                } else {
+                    Values::new()
+                },
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(message(&error).starts_with("1 validation error detected: Invalid ConditionExpression: "), "{error}");
+    }
+    let error = backend.get_item(get("status", Names::new())).await.unwrap_err();
+    assert!(message(&error).starts_with("Invalid ProjectionExpression: "), "{error}");
+    // Placeholder errors and update path checks are in the envelope too (dynoxide-rs: every
+    // parse-time error of a single-item write), in each of the three writes.
+    let update = |expression: &str, names: Names, vals: Values| UpdateItemInput {
+        table_name: "items".into(),
+        key: key(),
+        update_expression: Some(expression.into()),
+        expression_attribute_names: names,
+        expression_attribute_values: vals,
+        ..Default::default()
+    };
+    for (input, expected) in [
+        (update("SET a = :v, a = :v", Names::new(), values(&[(":v", n(1))])), "Two document paths conflict"),
+        (update("SET a = :v, a.b = :v", Names::new(), values(&[(":v", n(1))])), "Two document paths overlap"),
+        (update("ADD a :v", Names::new(), values(&[(":v", s("x"))])), "Incorrect operand type"),
+        (update("SET a = :v", names(&[("#a-b", "x")]), values(&[(":v", n(1))])), "Syntax error; key: \"#a-b\""),
+        (update("SET a = :v", names(&[("#u", "x")]), values(&[(":v", n(1))])), "unused in expressions"),
+        (
+            update("SET a = :w", Names::new(), values(&[(":v", n(1))])),
+            "attribute value used in expression is not defined",
+        ),
+    ] {
+        let error = backend.update_item(input).await.unwrap_err();
+        assert!(message(&error).starts_with("1 validation error detected: "), "{error}");
+        assert!(message(&error).contains(expected), "{error}");
+    }
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: key(),
+            condition_expression: Some("attribute_not_exists(pk)".into()),
+            expression_attribute_values: values(&[(":unused", n(1))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        message(&error).starts_with("1 validation error detected: Value provided in ExpressionAttributeValues unused"),
+        "{error}"
+    );
+    let error = backend
+        .delete_item(DeleteItemInput {
+            table_name: "items".into(),
+            key: key(),
+            condition_expression: Some("attribute_exists(#n)".into()),
+            expression_attribute_names: names(&[("#n", &"n".repeat(65_536))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes for key #n"
+    );
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "items".into(),
+            key: key(),
+            update_expression: Some("SET sk = :v".into()),
+            expression_attribute_values: values(&[(":v", n(2))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        message(&error).starts_with("One or more parameter values were invalid: Cannot update attribute sk"),
+        "bare: {error}"
+    );
+}
+
+#[tokio::test]
+async fn read_transactions_of_a_missing_table_are_canceled() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
+    let backend = backend_with_table().await;
+    let error = backend
+        .execute_transaction(ExecuteTransactionInput {
+            transact_statements: vec![
+                ParameterizedStatement {
+                    statement: "SELECT * FROM items WHERE pk = 'a' AND sk = 1".into(),
+                    ..Default::default()
+                },
+                ParameterizedStatement {
+                    statement: "SELECT * FROM missing WHERE pk = 'a' AND sk = 1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    let service = error.as_service().unwrap();
+    assert_eq!(service.code, "TransactionCanceledException");
+    assert_eq!(
+        service.message,
+        "Transaction cancelled, please refer cancellation reasons for specific reasons [None, ResourceNotFound]"
+    );
+    let reasons: Vec<_> =
+        service.cancellation_reasons.iter().map(|reason| (reason.code.as_str(), reason.message.as_deref())).collect();
+    assert_eq!(reasons, [("None", None), ("ResourceNotFound", Some("Requested resource not found"))]);
+}
+
+#[tokio::test]
 async fn names_values_and_messages_follow_dynamodb() {
     let backend = backend_with_table().await;
-    // Empty attribute names (captured against DynamoDB by dynoxide-rs, src/empty_names.rs).
+    // Empty attribute names (captured against DynamoDB by dynoxide-rs, src/empty_names.rs: in the
+    // request-validation envelope of a PutItem).
     let error = backend
         .put_item(PutItemInput {
             table_name: "items".into(),
@@ -2530,7 +2749,7 @@ async fn names_values_and_messages_follow_dynamodb() {
         })
         .await
         .unwrap_err();
-    assert_eq!(message(&error), "Empty attribute name");
+    assert_eq!(message(&error), "1 validation error detected: Empty attribute name");
     let nested = AttributeValue::M(item([("", n(1))]));
     let error = backend
         .put_item(PutItemInput {
@@ -2540,7 +2759,7 @@ async fn names_values_and_messages_follow_dynamodb() {
         })
         .await
         .unwrap_err();
-    assert_eq!(message(&error), "Empty attribute name");
+    assert_eq!(message(&error), "1 validation error detected: Empty attribute name");
     let error = backend
         .get_item(GetItemInput {
             table_name: "items".into(),

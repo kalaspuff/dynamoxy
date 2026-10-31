@@ -66,6 +66,12 @@ before any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals
 | `ExecuteTransaction` of `SELECT`s, one of a missing table | `TransactionCanceledException`, reasons `[None, ResourceNotFound]` (`Requested resource not found` on the missing one, no message on the others) | `ResourceNotFoundException` | `ResourceNotFoundException` |
 | `TransactGetItems` of a missing table | `ResourceNotFoundException: Requested resource not found` | same | `Cannot do operations on a non-existent table` |
 
+The in-memory backend answers like DynamoDB. It also puts the expression and placeholder errors of
+`PutItem`, `UpdateItem` and `DeleteItem`, and the attribute names they refuse in an item, in the
+`1 validation error detected: ` envelope (captured by dynoxide-rs in us-east-1 and eu-west-2, and
+measured in rounds 1 and 2; an update of a key attribute stays bare), and refuses a map key of
+64 KB or more like a top-level name (round 2).
+
 ### Size limits (#93)
 
 | Request | DynamoDB | MiniStack | LocalStack |
