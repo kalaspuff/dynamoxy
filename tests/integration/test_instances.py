@@ -36,6 +36,32 @@ class ProfileV2(dynamoxy.Model, table="profiles_v"):
     version: Attr[int] = dynamoxy.version()
 
 
+class Street(dynamoxy.Document):
+    """A document of an older version: a newer one stores ``Street.number`` too."""
+
+    name: Attr[str] = field(default="")
+
+
+class Postal(dynamoxy.Document):
+    city: Attr[str] = field(default="")
+    street: Attr[Street | None] = field(default=None)
+
+
+class PostalModel(pydantic.BaseModel):
+    city: str = ""
+
+
+class Mailbox(dynamoxy.Model, table="mailboxes"):
+    mailbox_id: Attr[str] = partition_key()
+    postal: Attr[Postal | None] = field(default=None)
+    history: Attr[list[Postal]] = field(default_factory=list)
+
+
+class MailboxRecord(dynamoxy.PydanticModel, table="mailbox_records"):
+    mailbox_id: Annotated[str, PartitionKey()]
+    postal: PostalModel | None = None
+
+
 @pytest.fixture
 async def players(client: dynamoxy.Client) -> dynamoxy.Repository[Player]:
     await client.create_tables(Player)
@@ -717,3 +743,40 @@ async def test_writes_of_loaded_instances_keep_attributes_their_model_does_not_d
     assert replaced is not None
     assert re.fullmatch(r"[0-9a-f]{16}", replaced.pop("_wid")), "the id of the write"
     assert replaced == {"profile_id": "p1", "name": "New", "version": 1}
+
+
+async def test_documents_keep_the_keys_their_class_does_not_declare(client: dynamoxy.Client) -> None:
+    # A newer version of the application stored zip and number in the maps: saves of an older
+    # version kept the item's top-level attributes but erased these.
+    await client.create_tables(Mailbox, MailboxRecord)
+    mailboxes, records = client.model(Mailbox), client.model(MailboxRecord)
+    newer = {"city": "Lund", "zip": "22100", "street": {"name": "Main", "number": 5}}
+    await mailboxes.table.put({"mailbox_id": "m", "postal": newer, "history": [{"city": "Ystad", "zip": "27100"}]})
+    mailbox = await mailboxes.get_or_raise("m")
+    assert mailbox.postal == Postal(city="Lund", street=Street(name="Main"))
+    assert mailbox.postal is not None
+    mailbox.postal.city = "Malmö"
+    await mailboxes.save(mailbox)
+    await mailboxes.update(mailbox, Mailbox.history.set([*mailbox.history, Postal(city="Lund")]))
+    stored = await mailboxes.table.get({"mailbox_id": "m"})
+    assert stored is not None
+    assert stored["postal"] == {"city": "Malmö", "zip": "22100", "street": {"name": "Main", "number": 5}}
+    assert stored["history"] == [{"city": "Ystad", "zip": "27100"}, {"city": "Lund"}]
+    # Copies keep the keys of their documents, not the item's undeclared attributes.
+    await mailboxes.table.put({"mailbox_id": "m", "postal": newer, "legacy": True})
+    moved = (await mailboxes.get_or_raise("m")).copy(mailbox_id="n")
+    await mailboxes.create(moved)
+    copied = await mailboxes.table.get({"mailbox_id": "n"})
+    assert copied is not None
+    copied.pop("_wid")
+    assert copied == {"mailbox_id": "n", "postal": newer, "history": []}
+    # A new document replaces the map, as a write of an instance that was not loaded replaces the item.
+    mailbox.postal = Postal(city="Lund")
+    await mailboxes.save(mailbox)
+    assert (await mailboxes.table.get({"mailbox_id": "m"}) or {})["postal"] == {"city": "Lund"}
+
+    await records.table.put({"mailbox_id": "m", "postal": {"city": "Lund", "zip": "22100"}})
+    record = await records.get_or_raise("m")
+    assert record.postal == PostalModel(city="Lund")
+    await records.save(record)
+    assert (await records.table.get({"mailbox_id": "m"}) or {})["postal"] == {"city": "Lund", "zip": "22100"}

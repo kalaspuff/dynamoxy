@@ -1040,6 +1040,12 @@ class JsonCodec(Codec[Any]):
         return None
 
 
+#: Where a document decoded from a map keeps the map's keys that no field declares. Native and
+#: pydantic models compare, show and serialize their fields only, not this entry; copies of the
+#: document keep it (``copy.copy()``, ``model_copy()``, and ``copy()`` of the model holding it).
+_UNDECLARED = "__dynamoxy_undeclared__"
+
+
 class DocumentCodec(Codec[Any]):
     """A nested model (``dynamoxy.Document``, ``dynamoxy.Model`` or a pydantic model) as ``M``."""
 
@@ -1078,13 +1084,22 @@ class DocumentCodec(Codec[Any]):
     def encode(self, value: Any) -> dict[str, Any]:
         if self._exact and type(value) is not self.model and isinstance(value, self.model):
             raise self._subclass_error(value)
-        return self._schema().encode(value, include_type=False)
+        encoded = self._schema().encode(value, include_type=False)
+        undeclared = getattr(value, "__dict__", {}).get(_UNDECLARED)
+        return {**undeclared, **encoded} if undeclared else encoded
 
     @override
     def decode(self, value: Any) -> Any:
         if type(value) is not dict and not isinstance(value, Mapping):
             raise _type_error("a map", value)
-        return self._schema().decode(value)
+        schema = self._schema()
+        instance = schema.decode(value)
+        # Keys no field declares (a newer version of the application or another writer added them):
+        # the instance writes them back, as a loaded item keeps such attributes.
+        declared = schema._stored_names
+        if any(name not in declared for name in value):
+            instance.__dict__[_UNDECLARED] = {name: member for name, member in value.items() if name not in declared}
+        return instance
 
     @override
     def member(self, key: str) -> Codec[Any] | None:
