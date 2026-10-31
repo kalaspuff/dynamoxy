@@ -997,7 +997,9 @@ class Repository[M]:
         completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
         if upsert:
             provided = self._field_values_of(target) if instance is None else {}
-            completion_actions, completion = self._upsert_completion(instance, touched, provided)
+            # What default factories that take data (pydantic) get: the key and the set values.
+            known = {**self._key_field_values(target), **literals} if instance is None else {}
+            completion_actions, completion = self._upsert_completion(instance, touched, provided, known)
             actions_list.extend(completion_actions)
         loaded = state.stored if state is not None and state.loaded and not fresh else None
         stored_old = loaded
@@ -1133,8 +1135,25 @@ class Repository[M]:
             return {}
         return {name: value for name, value in target.items() if name in self.schema.fields}
 
+    def _key_field_values(self, target: Any) -> dict[str, Any]:
+        """The values of the key fields without a template in a stored key (``{"pk": "a"}``)."""
+        if not isinstance(target, dict):
+            return {}
+        values: dict[str, Any] = {}
+        for spec in self.schema.key_fields():
+            if spec.template is None and spec.attribute in target:
+                try:
+                    values[spec.name] = spec.codec.decode(target[spec.attribute])
+                except (ValueError, TypeError):
+                    continue
+        return values
+
     def _upsert_completion(
-        self, instance: M | None, touched: Mapping[str, FieldSpec], provided: Mapping[str, Any]
+        self,
+        instance: M | None,
+        touched: Mapping[str, FieldSpec],
+        provided: Mapping[str, Any],
+        known: Mapping[str, Any] | None = None,
     ) -> tuple[list[UpdateAction], dict[str, Any]]:
         """Actions that make an item created by ``update(..., upsert=True)`` a complete model item.
 
@@ -1169,7 +1188,7 @@ class Repository[M]:
             elif spec.has_default and spec.empty() is not MISSING:
                 continue  # an existing item's None or empty set is no attribute either
             else:
-                value = spec.initial()
+                value = spec.initial({**(known or {}), **provided, **values})
             if value is MISSING or value is None:
                 if value is MISSING and not spec.optional:
                     missing.append(spec.name)

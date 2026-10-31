@@ -400,6 +400,8 @@ class FieldSpec:
         default: The default value, or ``MISSING``: of new instances, and of stored items without
             the attribute, unless the field stores a value as no attribute (see :meth:`empty`).
         default_factory: Creates the default value, or ``None``.
+        default_factory_takes_data: ``default_factory`` takes the values of the fields declared
+            before it (a pydantic ``Field(default_factory=lambda data: ...)``).
         role: ``"partition"`` or ``"sort"`` for primary key fields.
         template: Builds the value from other fields (derived fields are not set by hand).
         unique: Enforce uniqueness across items (see the constraints guide).
@@ -417,7 +419,8 @@ class FieldSpec:
     codec: Codec[Any]
     annotation: Any = None
     default: Any = MISSING
-    default_factory: Callable[[], Any] | None = None
+    default_factory: Callable[..., Any] | None = None
+    default_factory_takes_data: bool = False
     role: KeyRole | None = None
     template: KeyTemplate | None = None
     unique: bool = False
@@ -449,13 +452,16 @@ class FieldSpec:
         """Whether the constructor accepts this field."""
         return self.template is None and self.auto not in ("created_at", "updated_at", "version")
 
-    def initial(self) -> Any:
+    def initial(self, data: Mapping[str, Any] | None = None) -> Any:
         """The default value: a new one per call for factories, and a copy of a mutable default.
 
         Instances never share a mutable default (``field(default=[])``, a document), as in
-        pydantic: changing the value of one instance would change it for all of them.
+        pydantic: changing the value of one instance would change it for all of them. A factory
+        that takes data gets ``data``, the values of the other fields by Python name.
         """
         if self.default_factory is not None:
+            if self.default_factory_takes_data:
+                return self.default_factory(dict(data or {}))
             return self.default_factory()
         default = self.default
         if default.__class__ in _SHARED_DEFAULTS or isinstance(default, enum.Enum):
@@ -923,6 +929,8 @@ class ModelSchema:
                 # fields read their default (items written before the field existed).
                 value = spec.empty()
                 if value is MISSING:
+                    if spec.default_factory_takes_data:
+                        continue  # pydantic calls it with the validated data, in declaration order
                     value = spec.initial()
                     if value is MISSING:
                         errors.append(FieldError(name, f"the stored item has no {spec.attribute!r} attribute"))
@@ -1228,6 +1236,7 @@ def make_field(
         annotation=annotation,
         default=options.get("default", MISSING),
         default_factory=options.get("default_factory"),
+        default_factory_takes_data=bool(options.get("default_factory_takes_data", False)),
         role=options.get("role"),
         template=KeyTemplate(template) if isinstance(template, str) else template,
         unique=bool(options.get("unique", False)),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
@@ -125,3 +126,110 @@ async def test_subclasses_inherit_the_defaults_and_required_fields_of_their_base
     assert Counted.model_fields["views"].default == 0, "the base keeps its own defaults"
     found = await Article.query(client, article_id="a1").filter(dynamoxy.attr(Article.views) == 2).all()
     assert [each.article_id for each in found] == ["a1"]
+
+
+class Finish(enum.Enum):
+    MATTE = "matte"
+    GLOSS = "gloss"
+
+
+class Paint(dynamoxy.PydanticModel, table="paints"):
+    """Pydantic holds the values of enum members with ``use_enum_values=True``."""
+
+    model_config = pydantic.ConfigDict(use_enum_values=True)
+
+    paint_id: Annotated[str, dynamoxy.PartitionKey()]
+    finish: Finish = Finish.MATTE
+    finishes: list[Finish] = pydantic.Field(default_factory=list)
+    gsi1pk: Annotated[str, dynamoxy.Template("FINISH#{finish}")] = ""
+
+    by_finish = dynamoxy.GlobalIndex("gsi1", partition_key="gsi1pk")
+
+
+async def test_models_may_use_enum_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Paint)
+    paints = client.model(Paint)
+    created = await paints.create(Paint(paint_id="p1", finish=Finish.GLOSS, finishes=[Finish.MATTE]))
+    assert (created.finish, created.gsi1pk) == ("gloss", "FINISH#gloss")
+    [stored] = await client.table("paints").scan().all()
+    assert (stored["finish"], stored["finishes"]) == ("gloss", ["matte"])
+    loaded = await paints.get_or_raise("p1")
+    assert (loaded.finish, loaded.finishes) == ("gloss", ["matte"])
+    await paints.save(loaded)
+    await paints.update(loaded, dynamoxy.attr(Paint.finishes).append([Finish.GLOSS]))
+    assert (await paints.get_or_raise("p1")).finishes == ["matte", "gloss"]
+    assert [paint.paint_id for paint in await paints.query(index=Paint.by_finish, finish="gloss").all()] == ["p1"]
+    assert await paints.scan().filter(dynamoxy.attr(Paint.finish) == "gloss").count() == 1
+
+
+class Shipment(dynamoxy.PydanticModel, table="shipments"):
+    """Annotations that name classes declared below the model."""
+
+    shipment_id: Annotated[str, dynamoxy.PartitionKey()]
+    address: Destination | None = None
+    stops: list[Destination] = pydantic.Field(default_factory=list)
+
+
+class Destination(pydantic.BaseModel):
+    city: str
+    next: Destination | None = None
+
+
+async def test_models_may_refer_to_classes_declared_later(client: dynamoxy.Client) -> None:
+    await client.create_tables(Shipment)
+    shipments = client.model(Shipment)
+    nested = Destination(city="Oslo", next=Destination(city="Bergen"))
+    await Shipment.create(client, shipment_id="s1", address=nested, stops=[Destination(city="Lund")])
+    loaded = await shipments.get_or_raise("s1")
+    assert loaded.address == nested
+    assert loaded.stops == [Destination(city="Lund")]
+
+
+def test_unresolvable_annotations_name_the_missing_class() -> None:
+    class Parcel(dynamoxy.PydanticModel, table="parcels"):
+        parcel_id: Annotated[str, dynamoxy.PartitionKey()]
+        sender: Nowhere | None = None  # noqa: F821  # pyrefly: ignore[unknown-name] - never declared
+
+    with pytest.raises(TypeError, match=r"Parcel: the annotation 'Nowhere' is not defined"):
+        dynamoxy.schema_of(Parcel)
+
+
+class Labels(pydantic.RootModel[list[str]]):
+    pass
+
+
+class Dimensions(pydantic.RootModel[dict[str, int]]):
+    pass
+
+
+class Parcel(dynamoxy.PydanticModel, table="parcels"):
+    """``RootModel`` fields, stored as their root values; a default factory that takes the data."""
+
+    parcel_id: Annotated[str, dynamoxy.PartitionKey()]
+    labels: Labels = pydantic.Field(default_factory=lambda: Labels([]))
+    size: Dimensions | None = None
+    slug: str = pydantic.Field(default_factory=lambda data: data["parcel_id"].lower())
+
+
+async def test_root_model_fields_are_stored_as_their_root(client: dynamoxy.Client) -> None:
+    await client.create_tables(Parcel)
+    parcels = client.model(Parcel)
+    await parcels.create(Parcel(parcel_id="P1", labels=Labels(["fragile"]), size=Dimensions({"width": 2})))
+    [stored] = await client.table("parcels").scan().all()
+    assert (stored["labels"], stored["size"]) == (["fragile"], {"width": 2})
+    loaded = await parcels.get_or_raise("P1")
+    assert (loaded.labels, loaded.size) == (Labels(["fragile"]), Dimensions({"width": 2}))
+    await parcels.update(loaded, dynamoxy.attr(Parcel.labels).append(Labels(["heavy"])))
+    assert (await parcels.get_or_raise("P1")).labels == Labels(["fragile", "heavy"])
+    assert await parcels.scan().filter(dynamoxy.attr(Parcel.labels).contains("heavy")).count() == 1
+
+
+async def test_default_factories_may_take_the_data(client: dynamoxy.Client) -> None:
+    await client.create_tables(Parcel)
+    parcels = client.model(Parcel)
+    assert (await parcels.create(Parcel(parcel_id="P1"))).slug == "p1"
+    await client.table("parcels").put({"parcel_id": "P2"})  # written without the attribute
+    loaded = await parcels.get_or_raise("P2")
+    assert (loaded.slug, loaded.labels) == ("p2", Labels([]))
+    await parcels.update(Parcel.key("P3"), dynamoxy.attr(Parcel.size).set(Dimensions({"width": 1})), upsert=True)
+    assert (await parcels.get_or_raise("P3")).slug == "p3"
