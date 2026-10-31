@@ -47,14 +47,18 @@ testing.inject_fault(client, operation="UpdateItem", lose_response=True)  # appl
 ```
 
 Faults apply to the next `times` matching calls (attempts count, so throttling twice with four
-attempts still succeeds). `lose_response=True` applies the write and then loses its response,
+attempts still succeeds). A fault for a `table=` matches every call that uses the table, also
+among others: a batch or transaction of several tables, or a PartiQL statement on it. With
+`unprocessed=True` only that table's requests of a batch come back unprocessed. `lose_response=True` applies the write and then loses its response,
 as a dropped connection does: use it to test how your code handles
 [writes with unknown outcome](errors-and-retries.md#writes-with-unknown-outcome).
 
 ## Time to Live
 
 `testing.purge_expired(client, at=datetime)` deletes items whose TTL is at or before `at` (now by
-default), as DynamoDB's background process would.
+default), as DynamoDB's background process would. Like DynamoDB, it leaves items whose TTL is
+more than five years in the past, such as `0` or a date decades ago: they are never considered
+for expiry.
 
 ## Events
 

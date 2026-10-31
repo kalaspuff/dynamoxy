@@ -268,10 +268,10 @@ and TTL settings and never deletes anything.
 | --- | --- | --- |
 | `target` | required | An in-memory client or `MemoryStore` |
 | `operation` | `None` | DynamoDB operation (`"PutItem"`); every operation when omitted |
-| `table` | `None` | Physical table name; every table when omitted |
+| `table` | `None` | Physical table name; every table when omitted. A call matches when it uses the table, also among others (a batch or transaction of several tables, a PartiQL statement on it) |
 | `error` | `None` | `"throttling"`, `"request_limit"`, `"internal"`, `"unavailable"`, `"conflict"`, `"access_denied"` or any DynamoDB error code |
 | `message` | `None` | Error message |
-| `unprocessed` | `False` | Batch operations return every request unprocessed |
+| `unprocessed` | `False` | Batch operations return requests unprocessed: those of `table` when it is given (the others are processed), else every request |
 | `latency` | `None` | Seconds to wait before the call runs |
 | `lose_response` | `False` | The call runs, then its response is lost (a `TransportError`, which the client retries), as when a connection drops after a write was applied |
 | `times` | `1` | Number of calls affected |

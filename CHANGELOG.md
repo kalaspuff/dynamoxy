@@ -338,6 +338,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   status; it is now a failure (and counts only the items it wrote). And
   `db.client.response.returned_rows` recorded the items that writes wrote, for an instrument of
   "Items returned": it now records reads only.
+- The in-memory DynamoDB's test helpers differed from DynamoDB. `testing.purge_expired()`
+  deleted items whose TTL is more than five years in the past (a TTL of `0`, or of ten years
+  ago), which DynamoDB never considers for expiry; it now leaves them. `inject_fault(table=...)`
+  only looked at the first table of a call, so a fault for `bbb` never fired for a
+  `BatchWriteItem` or transaction that writes `aaa` and `bbb`, nor for `SELECT * FROM bbb`
+  (it stayed pending and fired on a later call), and `unprocessed=True` for `aaa` returned both
+  tables' requests unprocessed: a fault now matches any table of a call, and returns only its
+  table's requests unprocessed. A `TransactWriteItems` replayed with the same client request
+  token reported no consumed capacity; it now reports what DynamoDB bills a replay, a
+  transactional read of the items the first call wrote.
 
 ### Security
 

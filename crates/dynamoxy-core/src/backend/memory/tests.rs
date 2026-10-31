@@ -704,6 +704,17 @@ async fn transaction_tokens_are_idempotent() {
         .item
         .unwrap();
     assert_eq!(item["hits"], n(1), "a replay with the same token is not applied twice");
+    // A replay is billed as a transactional read of the item the first call wrote.
+    let capacity = |output: TransactWriteItemsOutput| {
+        output
+            .consumed_capacity
+            .iter()
+            .map(|report| (report.capacity_units, report.read_capacity_units))
+            .collect::<Vec<_>>()
+    };
+    let replay = TransactWriteItemsInput { return_consumed_capacity: ReturnConsumedCapacity::Total, ..input(1) };
+    assert_eq!(capacity(backend.transact_write_items(replay.clone()).await.unwrap()), [(2.0, 2.0)]);
+    assert_eq!(backend.transact_write_items(input(1)).await.unwrap().consumed_capacity, [], "unless not asked for");
     let error = backend.transact_write_items(input(2)).await.unwrap_err();
     assert_eq!(code(&error), "IdempotentParameterMismatchException");
 }
@@ -760,12 +771,21 @@ async fn time_to_live_settings_and_purging() {
     backend.update_time_to_live(input.clone()).await.unwrap();
     let error = backend.update_time_to_live(input).await.unwrap_err();
     assert!(message(&error).contains("TimeToLive is already enabled"));
-    put(&backend, item([("pk", s("old")), ("sk", n(1)), ("expires", n(1_000))])).await;
-    put(&backend, item([("pk", s("new")), ("sk", n(1)), ("expires", n(4_000_000_000))])).await;
+    let at: i64 = 1_800_000_000;
+    let year = 365 * 86_400;
+    put(&backend, item([("pk", s("old")), ("sk", n(1)), ("expires", n(at - 4 * year))])).await;
+    put(&backend, item([("pk", s("now")), ("sk", n(1)), ("expires", n(at))])).await;
+    put(&backend, item([("pk", s("new")), ("sk", n(1)), ("expires", n(at + 1))])).await;
     put(&backend, item([("pk", s("none")), ("sk", n(1))])).await;
-    assert_eq!(backend.purge_expired(None), 1);
+    // "To be considered for expiry and deletion, the TTL can't be more than five years in the
+    // past": a TTL of 0 or of ten years ago is never deleted.
+    put(&backend, item([("pk", s("zero")), ("sk", n(1)), ("expires", n(0))])).await;
+    put(&backend, item([("pk", s("ancient")), ("sk", n(1)), ("expires", n(at - 10 * year))])).await;
+    assert_eq!(backend.purge_expired(Some(at as f64)), 2, "old and now");
     let left = backend.scan(ScanInput { table_name: "items".into(), ..Default::default() }).await.unwrap();
-    assert_eq!(left.count, 2);
+    let mut keys: Vec<_> = left.items.iter().map(|item| item["pk"].clone()).collect();
+    keys.sort_by_key(|key| format!("{key:?}"));
+    assert_eq!(keys, [s("ancient"), s("new"), s("none"), s("zero")]);
 }
 
 #[tokio::test]
@@ -1403,6 +1423,70 @@ async fn faults_inject_errors_unprocessed_batches_and_latency() {
     let started = tokio::time::Instant::now();
     backend.describe_table("items").await.unwrap();
     assert!(started.elapsed() >= Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn faults_for_a_table_apply_to_calls_that_use_it_among_others() {
+    let backend = backend_with_table().await;
+    backend.create_table(table_input("other")).await.unwrap();
+    let fault = |kind: FaultKind| Fault { operation: None, table: Some("other".into()), kind, times: 1 };
+    let writes = || BatchWriteItemInput {
+        request_items: BTreeMap::from([
+            ("items".into(), vec![WriteRequest::Put(item([("pk", s("a")), ("sk", n(1))]))]),
+            ("other".into(), vec![WriteRequest::Put(item([("pk", s("b")), ("sk", n(1))]))]),
+        ]),
+        ..Default::default()
+    };
+    // Only the requests of the fault's table come back unprocessed; the others are written.
+    backend.inject_fault(fault(FaultKind::Unprocessed));
+    let output = backend.batch_write_item(writes()).await.unwrap();
+    assert_eq!(output.unprocessed_items.keys().collect::<Vec<_>>(), ["other"]);
+    let scan = |table: &str| ScanInput { table_name: table.into(), ..Default::default() };
+    assert_eq!(
+        (backend.scan(scan("items")).await.unwrap().count, backend.scan(scan("other")).await.unwrap().count),
+        (1, 0)
+    );
+    backend.inject_fault(fault(FaultKind::Unprocessed));
+    let reads = BatchGetItemInput {
+        request_items: BTreeMap::from([
+            (
+                "items".into(),
+                KeysAndAttributes { keys: vec![item([("pk", s("a")), ("sk", n(1))])], ..Default::default() },
+            ),
+            (
+                "other".into(),
+                KeysAndAttributes { keys: vec![item([("pk", s("b")), ("sk", n(1))])], ..Default::default() },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let output = backend.batch_get_item(reads).await.unwrap();
+    assert_eq!(output.unprocessed_keys.keys().collect::<Vec<_>>(), ["other"]);
+    assert_eq!(output.responses["items"].len(), 1);
+
+    // Errors fire for the second table of a batch, a transaction and a PartiQL statement.
+    let throttle = || fault(FaultKind::Error { code: "ThrottlingException".into(), message: "slow down".into() });
+    backend.inject_fault(throttle());
+    assert_eq!(code(&backend.batch_write_item(writes()).await.unwrap_err()), "ThrottlingException");
+    backend.inject_fault(throttle());
+    let transaction = TransactWriteItemsInput {
+        transact_items: ["items", "other"]
+            .into_iter()
+            .map(|table| TransactWriteItem::Put {
+                target: TransactTarget { table_name: table.into(), ..Default::default() },
+                item: item([("pk", s("t")), ("sk", n(1))]),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(code(&backend.transact_write_items(transaction).await.unwrap_err()), "ThrottlingException");
+    backend.inject_fault(throttle());
+    let select = ExecuteStatementInput { statement: "SELECT * FROM other".into(), ..Default::default() };
+    assert_eq!(code(&backend.execute_statement(select.clone()).await.unwrap_err()), "ThrottlingException");
+    backend.inject_fault(throttle());
+    let unrelated = ExecuteStatementInput { statement: "SELECT * FROM items".into(), ..Default::default() };
+    backend.execute_statement(unrelated).await.unwrap();
+    assert_eq!(code(&backend.execute_statement(select).await.unwrap_err()), "ThrottlingException", "still pending");
 }
 
 #[tokio::test]

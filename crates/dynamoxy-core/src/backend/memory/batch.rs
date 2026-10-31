@@ -21,8 +21,13 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
 }
 
-/// `BatchGetItem`. With `unprocessed`, every key is returned unprocessed (fault injection).
-pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: bool) -> Result<BatchGetItemOutput> {
+/// `BatchGetItem`. With `unprocessed` (fault injection), the keys of that table
+/// (`Some(Some(table))`) or every key (`Some(None)`) are returned unprocessed.
+pub fn batch_get_item(
+    state: &State,
+    input: &BatchGetItemInput,
+    unprocessed: Option<Option<&str>>,
+) -> Result<BatchGetItemOutput> {
     if input.request_items.is_empty() {
         return Err(invalid(
             "1 validation error detected: Value '{}' at 'requestItems' failed to satisfy constraint: Member must have length greater than or equal to 1",
@@ -59,13 +64,13 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
         parsed.push((stored, projection.as_deref().map(Projector::new)));
     }
     let mut output = BatchGetItemOutput::default();
-    if unprocessed {
-        output.unprocessed_keys = input.request_items.clone();
-        return Ok(output);
-    }
     let mut meter = CapacityMeter::default();
     let mut returned = 0usize;
     for ((table_name, request), (stored_keys, projection)) in input.request_items.iter().zip(&parsed) {
+        if unprocessed.is_some_and(|only| only.is_none_or(|only| only == table_name)) {
+            output.unprocessed_keys.insert(table_name.clone(), request.clone());
+            continue;
+        }
         let table = state.table(table_name)?;
         for (key, stored) in request.keys.iter().zip(stored_keys) {
             if returned >= RESPONSE_SIZE_LIMIT {
@@ -94,12 +99,12 @@ pub fn batch_get_item(state: &State, input: &BatchGetItemInput, unprocessed: boo
     Ok(output)
 }
 
-/// `BatchWriteItem`. With `unprocessed`, nothing is written and every request is returned
-/// unprocessed (fault injection).
+/// `BatchWriteItem`. With `unprocessed` (fault injection), the requests of that table
+/// (`Some(Some(table))`) or every request (`Some(None)`) are returned unprocessed, and not written.
 pub fn batch_write_item(
     state: &mut State,
     input: BatchWriteItemInput,
-    unprocessed: bool,
+    unprocessed: Option<Option<&str>>,
 ) -> Result<BatchWriteItemOutput> {
     if input.request_items.is_empty() {
         return Err(invalid(
@@ -137,12 +142,14 @@ pub fn batch_write_item(
         }
     }
     let mut output = BatchWriteItemOutput::default();
-    if unprocessed {
-        output.unprocessed_items = input.request_items;
-        return Ok(output);
+    let skipped = |table: &str| unprocessed.is_some_and(|only| only.is_none_or(|only| only == table));
+    for (table_name, requests) in &input.request_items {
+        if skipped(table_name) {
+            output.unprocessed_items.insert(table_name.clone(), requests.clone());
+        }
     }
     let mut meter = CapacityMeter::default();
-    for write in prepared {
+    for write in prepared.into_iter().filter(|write| !skipped(&write.table)) {
         if input.return_item_collection_metrics
             && let Some(table) = state.tables.get(&write.table)
             && let Some(metrics) = write

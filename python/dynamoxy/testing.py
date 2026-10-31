@@ -80,11 +80,14 @@ def inject_fault(
     Args:
         target: An in-memory client or store.
         operation: DynamoDB operation (``"PutItem"``); every operation when omitted.
-        table: Physical table name; every table when omitted.
+        table: Physical table name; every table when omitted. A call matches when it uses the
+            table among others (a batch or transaction of several tables, a PartiQL statement
+            on it); ``unprocessed=True`` then returns only that table's requests unprocessed.
         error: A shortcut (``"throttling"``, ``"internal"``, ``"conflict"``, ...) or any
             DynamoDB error code.
         message: Error message.
-        unprocessed: Batch operations return every request unprocessed.
+        unprocessed: Batch operations return requests unprocessed: those of ``table`` when it is
+            given (the others are processed), else every request.
         latency: Seconds to wait before the call runs.
         lose_response: The call runs, then its response is lost, as when a connection drops: the
             client sees a ``TransportError`` (and retries) although the write was applied.
@@ -107,7 +110,8 @@ def purge_expired(target: Client | MemoryStore, at: datetime | float | None = No
     """Deletes expired items, as DynamoDB eventually does.
 
     Items whose TTL attribute is at or before ``at`` (default: now), in tables with TTL enabled.
-    Returns how many were deleted.
+    Like DynamoDB, it leaves items whose TTL is more than five years before ``at`` (``0``, or a
+    date decades ago): those are never considered for expiry. Returns how many were deleted.
     """
     moment = at.timestamp() if isinstance(at, datetime) else at
     return _store(target).purge_expired(moment)
