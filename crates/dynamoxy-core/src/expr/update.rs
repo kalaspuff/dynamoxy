@@ -389,7 +389,7 @@ impl UpdateExpression {
 
 /// What DynamoDB counts a condition for in the payload size of `TransactWriteItems`, from the
 /// request alone (measured in eu-north-1 on 2026-10-31 through dynamoxy's own probe, whose run is
-/// kept in docs/parity): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
+/// docs/parity/probe-aws-eu-north-1-2026-10-31.json): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
 /// a comparison 57 more than its operands; a path counts like an update's target, a value its
 /// size, `size(p)` its path. The other forms were not measured and count like a comparison, and
 /// `AND`, `OR` and `NOT` their parts.
