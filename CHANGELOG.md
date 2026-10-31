@@ -59,6 +59,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   the guard is missing or owned by the written item; otherwise the write raises
   `UniqueConstraintError` ("the stored value's guard item belongs to another item", the guard in
   `.item`) and writes nothing.
+- On a free-threaded CPython (3.13t, 3.14t), the extension built from source declared that it
+  runs safely without the GIL, which PyO3 0.28 and newer assume unless a module opts out, so
+  dynamoxy ran without the GIL although it was never tested that way. The extension now declares
+  that it needs the GIL: the interpreter turns the GIL on when it imports dynamoxy, with a
+  `RuntimeWarning`, until dynamoxy is tested without it.
 - A managed batch (`batch_put()`, `batch_delete()`, `batch_get()`, `BatchWriter.flush()`,
   `table.batch_write()`) whose chunk's request failed after its attempts (throttling with nothing
   processed, a 5xx, a lost connection) failed as a whole with that error and aborted the chunks in
