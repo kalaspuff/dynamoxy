@@ -27,3 +27,7 @@ description: Run and debug dynamoxy's end-to-end tests against MiniStack (the pi
    `docs/parity/README.md` shows how. Point `DYNAMOXY_TEST_ENDPOINT_URL` at it
    (`http://127.0.0.1:4566`) to run the e2e tests against it; tests take the `target` fixture
    (`"memory"`, `"ministack"`, `"localstack"`) to skip an emulator's gaps, with a comment.
+8. **Comparing backends**: `scripts/probe_backends.py run --target <memory|ministack|localstack|aws>`
+   writes dynamoxy's behaviour on a target as facts, and `compare` lists what differs from
+   another run (DynamoDB's, when a maintainer has run it). Add a scenario there for a new
+   question; `docs/parity/README.md` shows the commands.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -165,3 +166,18 @@ def test_benchmark_against_the_emulator(emulator_endpoint: str) -> None:
     options = ("--endpoint", emulator_endpoint, "--calls", "2", "--query-calls", "1", "--runs", "1")
     assert "| `GetItem`, one item | " in benchmark("emulator", *options)
     assert "Cold start, from the first import to the first item: dynamoxy " in benchmark("cold-start", *options)
+
+
+def test_probe_backends_runs_on_the_memory_backend(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Models declared in the script register their tables: load it once per process.
+    probe = sys.modules.get("scripts_probe_backends") or load("probe_backends")
+    sys.modules["scripts_probe_backends"] = probe
+    out = tmp_path / "probe-memory.json"
+    assert probe.main(["run", "--target", "memory", "--only", "versions", "index_reads", "--out", str(out)]) == 0
+    facts = json.loads(out.read_text())["facts"]
+    assert facts["versions"]["save_after_put"]["error"] == "VersionConflictError"
+    assert facts["index_reads"]["lsi_scan_filter_ALL_ATTRIBUTES"] == {"ok": 1}
+    assert "dynamoxy-probe-" not in out.read_text(), "the run's table prefix is left out"
+    assert probe.main(["compare", str(out), str(out)]) == 0
+    assert "no differences" in capsys.readouterr().out
+    assert '"dynamodb:ListTables"' in json.dumps(probe.iam_policy("123456789012"))

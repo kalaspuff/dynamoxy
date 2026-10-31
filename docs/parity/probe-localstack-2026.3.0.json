@@ -1,0 +1,417 @@
+{
+  "dynamoxy": "0.3.0",
+  "facts": {
+    "constraints": {
+      "condition": {
+        "code": "ConditionalCheckFailedException",
+        "error": "ConditionalCheckFailedError",
+        "message": "The conditional request failed"
+      },
+      "create_existing": {
+        "code": "TransactionCanceledException",
+        "error": "ItemAlreadyExistsError",
+        "message": "Account already exists (see .key)"
+      },
+      "unique": {
+        "code": "TransactionCanceledException",
+        "error": "UniqueConstraintError",
+        "message": "Account.email: the value is already used by another item (see .value)"
+      }
+    },
+    "expressions": {
+      "attribute_type_path_filter": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
+      },
+      "attribute_type_path_update": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
+      },
+      "dash_placeholder_put": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "ExpressionAttributeNames contains invalid key: Syntax error; key: \"#a-b\""
+      },
+      "dash_placeholder_unused": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "ExpressionAttributeNames contains invalid key: Syntax error; key: \"#a-b\""
+      },
+      "dash_placeholder_used": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "ExpressionAttributeNames contains invalid key: Syntax error; key: \"#a-b\""
+      },
+      "get_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Cannot do operations on a non-existent table"
+      },
+      "item_name_65535": {
+        "error": "WriteOutcomeUnknownError",
+        "message": "the outcome is unknown: the last attempt may have been applied (InternalFailure: The request processing has failed because of an unknown error, exception or failure.)"
+      },
+      "item_name_65536": {
+        "error": "WriteOutcomeUnknownError",
+        "message": "the outcome is unknown: the last attempt may have been applied (InternalFailure: The request processing has failed because of an unknown error, exception or failure.)"
+      },
+      "map_key_65536": {
+        "error": "WriteOutcomeUnknownError",
+        "message": "the outcome is unknown: the last attempt may have been applied (InternalFailure: The request processing has failed because of an unknown error, exception or failure.)"
+      },
+      "name_placeholder_255": {
+        "ok": true
+      },
+      "name_placeholder_256": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "ExpressionAttributeNames contains invalid key: The expression attribute map contains a key that is too long; size of key: 256"
+      },
+      "placeholder_name_65535": {
+        "ok": true
+      },
+      "placeholder_name_65536": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "ExpressionAttributeNames contains invalid value: Attribute name is too large, must be less than 65536 bytes for key #n"
+      },
+      "read_transaction_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Requested resource not found"
+      },
+      "reserved_word_get": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ProjectionExpression: Attribute name is a reserved keyword; reserved keyword: status"
+      },
+      "reserved_word_put": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ConditionExpression: Attribute name is a reserved keyword; reserved keyword: status"
+      },
+      "transact_get_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Cannot do operations on a non-existent table"
+      }
+    },
+    "index_reads": {
+      "gsi_query_projection": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Global secondary index gsi does not project [note, secret, m]"
+      },
+      "gsi_scan_filter_default": {
+        "ok": 1
+      },
+      "lsi_query_filter_ALL_ATTRIBUTES": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]"
+      },
+      "lsi_query_filter_COUNT": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]"
+      },
+      "lsi_query_filter_default": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]"
+      },
+      "lsi_query_filter_order": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [m, note, secret]"
+      },
+      "lsi_query_filter_with_held": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Secondary index lsi does not project one or more filter attributes: [secret]"
+      },
+      "lsi_query_projection": {
+        "ok": [
+          {
+            "pk": "a",
+            "secret": "s"
+          }
+        ]
+      },
+      "lsi_scan_filter_ALL_ATTRIBUTES": {
+        "ok": 1
+      },
+      "lsi_scan_filter_default": {
+        "ok": 1
+      },
+      "lsi_scan_filter_pk_secret": {
+        "ok": 1
+      }
+    },
+    "partiql": {
+      "batch_insert_existing": {
+        "ok": [
+          null,
+          "DuplicateItem"
+        ]
+      },
+      "insert_existing": {
+        "code": "DuplicateItem",
+        "error": "DuplicateItemError",
+        "message": "Duplicate primary key exists in table"
+      },
+      "select_page": {
+        "ok": {
+          "items": 2,
+          "last": null,
+          "next": true
+        }
+      },
+      "transaction_insert_existing": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [None, ValidationError]",
+        "reasons": [
+          [
+            "None",
+            null
+          ],
+          [
+            "ValidationError",
+            "Duplicate primary key exists in table"
+          ]
+        ]
+      }
+    },
+    "sizes": {
+      "local_index_put_204800": {
+        "ok": true
+      },
+      "local_index_put_204801": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size has exceeded the maximum allowed size"
+      },
+      "local_index_transaction_put": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size has exceeded the maximum allowed size"
+      },
+      "local_index_update": {
+        "ok": true
+      },
+      "payload_puts_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393125"
+      },
+      "payload_updates_10": {
+        "ok": true
+      },
+      "payload_updates_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393224"
+      },
+      "payload_updates_condition_and": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393719"
+      },
+      "payload_updates_condition_attribute_type": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393499"
+      },
+      "payload_updates_condition_begins_with": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393466"
+      },
+      "payload_updates_condition_between": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
+      "payload_updates_condition_compare": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393334"
+      },
+      "payload_updates_condition_compare_longer_value": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393356"
+      },
+      "payload_updates_condition_compare_paths": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393334"
+      },
+      "payload_updates_condition_compare_size": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393400"
+      },
+      "payload_updates_condition_contains": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393433"
+      },
+      "payload_updates_condition_exists_long": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393532"
+      },
+      "payload_updates_condition_exists_nested": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393477"
+      },
+      "payload_updates_condition_exists_pk": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393444"
+      },
+      "payload_updates_condition_in": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393422"
+      },
+      "payload_updates_condition_not": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
+      "payload_updates_condition_not_equal": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393345"
+      },
+      "payload_updates_condition_or": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393708"
+      },
+      "payload_updates_longer_key": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393257"
+      },
+      "payload_updates_plus_check": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393224"
+      },
+      "payload_updates_plus_delete": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393224"
+      },
+      "payload_updates_plus_put_with_condition": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393224"
+      },
+      "transact_get_10": {
+        "ok": 10
+      },
+      "transact_get_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Payload in response is too large.4393169"
+      },
+      "update_charge_over_400kb": {
+        "ok": true
+      }
+    },
+    "table_settings": {
+      "capacity_get": 1.0,
+      "capacity_put": 3.0,
+      "metrics_batch": [],
+      "metrics_put": null,
+      "metrics_transaction": [],
+      "ttl_after_created_again": "ENABLED"
+    },
+    "tables": {
+      "index_capacity_on_demand": [
+        1,
+        1
+      ],
+      "index_capacity_on_on_demand": {
+        "code": "InternalFailure",
+        "error": "InternalServerError",
+        "message": "The request processing has failed because of an unknown error, exception or failure."
+      },
+      "index_while_creating": {
+        "ok": true
+      },
+      "index_without_capacity_on_provisioned": {
+        "code": "InternalFailure",
+        "error": "InternalServerError",
+        "message": "The request processing has failed because of an unknown error, exception or failure."
+      },
+      "on_demand_again": {
+        "ok": true
+      },
+      "provisioned": {
+        "ok": true
+      },
+      "provisioned_without_index_capacity": {
+        "code": "InternalFailure",
+        "error": "InternalServerError",
+        "message": "The request processing has failed because of an unknown error, exception or failure."
+      },
+      "second_index_while_creating": {
+        "code": "LimitExceededException",
+        "error": "LimitExceededError",
+        "message": "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table"
+      },
+      "ttl_while_creating": {
+        "ok": true
+      }
+    },
+    "transactions": {
+      "one_item_twice": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request cannot include multiple operations on one item"
+      },
+      "planned_again_with_token": 10,
+      "reasons": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [ConditionalCheckFailed, None, ConditionalCheckFailed]",
+        "reasons": [
+          [
+            "ConditionalCheckFailed",
+            "The conditional request failed"
+          ],
+          [
+            "None",
+            null
+          ],
+          [
+            "ConditionalCheckFailed",
+            "The conditional request failed"
+          ]
+        ]
+      }
+    },
+    "versions": {
+      "save_after_delete_and_create": {
+        "code": "ConditionalCheckFailedException",
+        "error": "VersionConflictError",
+        "message": "Player changed since it was loaded: stored version <token>, expected version <token> (see .key)"
+      },
+      "save_after_put": {
+        "code": "ConditionalCheckFailedException",
+        "error": "VersionConflictError",
+        "message": "Player changed since it was loaded: stored version <token>, expected version <token> (see .key)"
+      }
+    }
+  },
+  "target": "localstack"
+}

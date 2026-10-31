@@ -27,6 +27,40 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | [ministack-1.5.33-round1.log](ministack-1.5.33-round1.log), [round 2](ministack-1.5.33-round2.log), [round 3](ministack-1.5.33-round3.log) | MiniStack 1.5.33 (the emulator of dynamoxy's e2e tests and CI) |
 | [localstack-2026.3.0-round1.log](localstack-2026.3.0-round1.log), [round 2](localstack-2026.3.0-round2.log), [round 3](localstack-2026.3.0-round3.log) | LocalStack 2026.3.0, whose DynamoDB is DynamoDB Local 3.3.2 |
 
+## Probing dynamoxy itself
+
+[`scripts/probe_backends.py`](../../scripts/probe_backends.py) asks the same questions through
+dynamoxy (models, tables, transactions, PartiQL, native calls) on any target, the in-memory
+backend included, and writes the facts to JSON: outcomes, exception classes, codes, messages,
+cancellation reasons, sizes and counts. `compare` lists what differs between two runs.
+
+```bash
+uv run python scripts/probe_backends.py run --target memory                # probe-memory.json
+uv run python scripts/probe_backends.py run --target ministack --endpoint http://127.0.0.1:4599
+uv run python scripts/probe_backends.py run --target localstack            # http://127.0.0.1:4566
+AWS_PROFILE=<test-account-profile> uv run python scripts/probe_backends.py run --target aws --region eu-north-1
+uv run python scripts/probe_backends.py compare probe-aws.json probe-memory.json
+uv run python scripts/probe_backends.py iam-policy --account <account-id>  # what a run on AWS needs
+```
+
+A run on AWS takes about 15 minutes and costs cents; its tables are named `dynamoxy-probe-*` and
+deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs are
+kept here: DynamoDB's in eu-north-1 on 2026-10-31 ([run 1](probe-aws-eu-north-1-2026-10-31.json),
+[run 2](probe-aws-eu-north-1-2026-10-31-run2.json) and [run 3](probe-aws-eu-north-1-2026-10-31-run3.json)),
+[the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
+[LocalStack](probe-localstack-2026.3.0.json).
+
+Runs 1 and 2 stopped the `sizes` and `tables` scenarios early (on-demand throttling of eleven 390 KB
+writes to a new table, an index backfill longer than the wait); run 3, with more retries and longer
+waits, completed them. Run 1's other scenarios and run 3's `sizes` and `tables` hold every fact
+the probe asks, and the in-memory backend answers every one of them as DynamoDB does (`compare`
+counts the facts both runs hold apart from those only one holds). Run 2 differs in one fact only:
+DynamoDB answered the accepted 3.9 MB transaction with an `InternalServerError` once, an unknown
+outcome to dynamoxy. The runs led to fixes in the in-memory backend: `DescribeTimeToLive` of a
+table being created, `ensure_tables` waiting before it, and how conditions, deletes and checks
+count toward a transaction's payload. Against the same facts, MiniStack differs from DynamoDB in
+57 and LocalStack in 53, each an emulator difference listed below.
+
 ## What DynamoDB answered
 
 "Refused" means a `ValidationException` with the message given, unless another error is named.
@@ -146,7 +180,7 @@ value its size, `size(p)` 22 more than its path, and on top of its operands `att
 | Request | DynamoDB | MiniStack | LocalStack |
 | --- | --- | --- | --- |
 | `UpdateTimeToLive` of a table still `CREATING` | `ResourceNotFoundException: Requested resource not found: Table: <name> not found` | accepted (tables are active at once) | accepted (active at once) |
-| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's own probe on AWS, `tables.ttl_while_creating`, kept with that probe) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | not probed | not probed |
+| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's own probe, `tables.ttl_while_creating`) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | accepted (tables are active at once) | accepted |
 | `UpdateTable` of a table still `CREATING` | `ResourceInUseException: Attempt to change a resource which is still in use: Table is being created: <name>` | accepted | accepted |
 | switch to `PROVISIONED` with capacity for the table only (one global index) | `One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1` | accepted, the index at 0/0 | `InternalFailure` |
 | add a global index without `ProvisionedThroughput` to a provisioned table | `One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2` | accepted | `InternalFailure` |

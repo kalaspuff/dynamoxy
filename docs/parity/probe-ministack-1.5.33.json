@@ -1,0 +1,388 @@
+{
+  "dynamoxy": "0.3.0",
+  "facts": {
+    "constraints": {
+      "condition": {
+        "code": "ConditionalCheckFailedException",
+        "error": "ConditionalCheckFailedError",
+        "message": "The conditional request failed"
+      },
+      "create_existing": {
+        "code": "TransactionCanceledException",
+        "error": "ItemAlreadyExistsError",
+        "message": "Account already exists (see .key)"
+      },
+      "unique": {
+        "code": "TransactionCanceledException",
+        "error": "UniqueConstraintError",
+        "message": "Account.email: the value is already used by another item (see .value)"
+      }
+    },
+    "expressions": {
+      "attribute_type_path_filter": {
+        "ok": 1
+      },
+      "attribute_type_path_update": {
+        "ok": true
+      },
+      "dash_placeholder_put": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "1 validation error detected: Invalid ConditionExpression: An expression attribute name used in the document path is not defined; attribute name: #a"
+      },
+      "dash_placeholder_unused": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Value provided in ExpressionAttributeNames unused in expressions: keys: {#a-b}"
+      },
+      "dash_placeholder_used": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ProjectionExpression: An expression attribute name used in the document path is not defined; attribute name: #a"
+      },
+      "get_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Requested resource not found"
+      },
+      "item_name_65535": {
+        "ok": true
+      },
+      "item_name_65536": {
+        "ok": true
+      },
+      "map_key_65536": {
+        "ok": true
+      },
+      "name_placeholder_255": {
+        "ok": true
+      },
+      "name_placeholder_256": {
+        "ok": true
+      },
+      "placeholder_name_65535": {
+        "ok": true
+      },
+      "placeholder_name_65536": {
+        "ok": true
+      },
+      "read_transaction_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Requested resource not found: Table: missing not found"
+      },
+      "reserved_word_get": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid ProjectionExpression: Attribute name is a reserved keyword; reserved keyword: status"
+      },
+      "reserved_word_put": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Invalid UpdateExpression: Attribute name is a reserved keyword; reserved keyword: status"
+      },
+      "transact_get_missing_table": {
+        "code": "ResourceNotFoundException",
+        "error": "ResourceNotFoundError",
+        "message": "Requested resource not found"
+      }
+    },
+    "index_reads": {
+      "gsi_query_projection": {
+        "ok": 1
+      },
+      "gsi_scan_filter_default": {
+        "ok": 1
+      },
+      "lsi_query_filter_ALL_ATTRIBUTES": {
+        "ok": 1
+      },
+      "lsi_query_filter_COUNT": {
+        "ok": 1
+      },
+      "lsi_query_filter_default": {
+        "ok": 1
+      },
+      "lsi_query_filter_order": {
+        "ok": 1
+      },
+      "lsi_query_filter_with_held": {
+        "ok": 1
+      },
+      "lsi_query_projection": {
+        "ok": [
+          {
+            "pk": "a"
+          }
+        ]
+      },
+      "lsi_scan_filter_ALL_ATTRIBUTES": {
+        "ok": 1
+      },
+      "lsi_scan_filter_default": {
+        "ok": 1
+      },
+      "lsi_scan_filter_pk_secret": {
+        "ok": 1
+      }
+    },
+    "partiql": {
+      "batch_insert_existing": {
+        "ok": [
+          null,
+          "DuplicateItem"
+        ]
+      },
+      "insert_existing": {
+        "code": "DuplicateItemException",
+        "error": "DuplicateItemError",
+        "message": "Duplicate primary key exists in table"
+      },
+      "select_page": {
+        "ok": {
+          "items": 4,
+          "last": null,
+          "next": false
+        }
+      },
+      "transaction_insert_existing": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [None, DuplicateItemException]",
+        "reasons": [
+          [
+            "None",
+            null
+          ],
+          [
+            "DuplicateItem",
+            "Duplicate primary key exists in table"
+          ]
+        ]
+      }
+    },
+    "sizes": {
+      "local_index_put_204800": {
+        "ok": true
+      },
+      "local_index_put_204801": {
+        "ok": true
+      },
+      "local_index_transaction_put": {
+        "ok": true
+      },
+      "local_index_update": {
+        "ok": true
+      },
+      "payload_puts_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_10": {
+        "ok": true
+      },
+      "payload_updates_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_and": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_attribute_type": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_begins_with": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_between": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_longer_value": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_paths": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_compare_size": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_contains": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_exists_long": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_exists_nested": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_exists_pk": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_in": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_not": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_not_equal": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_condition_or": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_longer_key": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_plus_check": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_plus_delete": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "payload_updates_plus_put_with_condition": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request exceeds the 4MB transaction size limit"
+      },
+      "transact_get_10": {
+        "ok": 10
+      },
+      "transact_get_11": {
+        "ok": 11
+      },
+      "update_charge_over_400kb": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size to update has exceeded the maximum allowed size"
+      }
+    },
+    "table_settings": {
+      "capacity_get": 1.0,
+      "capacity_put": 3.0,
+      "metrics_batch": [],
+      "metrics_put": [
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "metrics_transaction": [],
+      "ttl_after_created_again": "DISABLED"
+    },
+    "tables": {
+      "index_capacity_on_demand": [
+        0,
+        0
+      ],
+      "index_capacity_on_on_demand": {
+        "ok": true
+      },
+      "index_while_creating": {
+        "ok": true
+      },
+      "index_without_capacity_on_provisioned": {
+        "ok": true
+      },
+      "on_demand_again": {
+        "ok": true
+      },
+      "provisioned": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "The provisioned throughput for the table will not change. The requested value equals the current value."
+      },
+      "provisioned_without_index_capacity": {
+        "ok": true
+      },
+      "second_index_while_creating": {
+        "ok": true
+      },
+      "ttl_while_creating": {
+        "ok": true
+      }
+    },
+    "transactions": {
+      "one_item_twice": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction request cannot include multiple operations on one item"
+      },
+      "planned_again_with_token": 10,
+      "reasons": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [ConditionalCheckFailed, None, ConditionalCheckFailed]",
+        "reasons": [
+          [
+            "ConditionalCheckFailed",
+            "The conditional request failed"
+          ],
+          [
+            "None",
+            null
+          ],
+          [
+            "ConditionalCheckFailed",
+            "The conditional request failed"
+          ]
+        ]
+      }
+    },
+    "versions": {
+      "save_after_delete_and_create": {
+        "code": "ConditionalCheckFailedException",
+        "error": "VersionConflictError",
+        "message": "Player changed since it was loaded: stored version <token>, expected version <token> (see .key)"
+      },
+      "save_after_put": {
+        "code": "ConditionalCheckFailedException",
+        "error": "VersionConflictError",
+        "message": "Player changed since it was loaded: stored version <token>, expected version <token> (see .key)"
+      }
+    }
+  },
+  "target": "ministack"
+}

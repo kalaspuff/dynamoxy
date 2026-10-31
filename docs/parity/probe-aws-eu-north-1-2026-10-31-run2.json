@@ -1,0 +1,107 @@
+{
+  "dynamoxy": "0.3.0",
+  "facts": {
+    "sizes": {
+      "local_index_put_204800": {
+        "ok": true
+      },
+      "local_index_put_204801": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size has exceeded the maximum allowed size"
+      },
+      "local_index_transaction_put": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [ValidationError]",
+        "reasons": [
+          [
+            "ValidationError",
+            "Item size has exceeded the maximum allowed size"
+          ]
+        ]
+      },
+      "local_index_update": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size to update has exceeded the maximum allowed size"
+      },
+      "payload_puts_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393125"
+      },
+      "payload_updates_10": {
+        "error": "WriteOutcomeUnknownError",
+        "message": "the outcome is unknown: an attempt may have been applied (InternalServerError: Internal server error), and no later attempt answered whether it was (TransactionInProgressException: Transaction from previous request is still in progress)"
+      },
+      "payload_updates_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393455"
+      },
+      "payload_updates_condition_compare": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394137"
+      },
+      "payload_updates_condition_exists_long": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394258"
+      },
+      "payload_updates_condition_exists_pk": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394170"
+      },
+      "payload_updates_longer_key": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
+      "payload_updates_plus_check": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393535"
+      },
+      "payload_updates_plus_delete": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393466"
+      },
+      "payload_updates_plus_put_with_condition": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393535"
+      },
+      "scenario_failed": {
+        "code": "ThrottlingException",
+        "error": "ThrottlingError",
+        "message": "Throughput exceeds the current capacity of your table or index. DynamoDB is automatically scaling your table or index so please try again shortly. If exceptions persist, check if you have a hot key: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html"
+      }
+    },
+    "tables": {
+      "index_while_creating": {
+        "code": "ResourceInUseException",
+        "error": "ResourceInUseError",
+        "message": "Attempt to change a resource which is still in use: Table is being created: creating"
+      },
+      "scenario_failed": {
+        "error": "TransportError",
+        "message": "table creating did not become ACTIVE within 300 seconds"
+      },
+      "second_index_while_creating": {
+        "code": "LimitExceededException",
+        "error": "LimitExceededError",
+        "message": "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table"
+      },
+      "ttl_while_creating": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Cannot describe time to live while table is in CREATING state: Current table state is CREATING"
+      }
+    }
+  },
+  "target": "aws"
+}
