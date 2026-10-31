@@ -55,6 +55,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   caught them). The model metaclass now declares pydantic's `dataclass_transform` itself, which
   checkers do not inherit from a base metaclass. mypy also types the items of
   `client.collection(A, B)` as `A | B` now, not as their common base class.
+- `ensure_tables()` accepted an existing index whose projection holds less than the models
+  declare (`KEYS_ONLY` or `INCLUDE` where they expect `ALL`, or an `INCLUDE` without an attribute
+  they include), so every model read through it later failed with an `ItemDecodeError` naming a
+  missing attribute. It now raises `TypeError` naming the index and both projections, before it
+  changes that table; an index that projects more than the models declare is still accepted.
 - A write that removed or changed a unique value deleted the value's guard item even when another
   item owned it, so when two items held one value (items stored before the field became
   `unique=True`, or written by other tools), deleting or changing one of them silently removed
