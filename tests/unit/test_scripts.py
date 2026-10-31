@@ -6,6 +6,7 @@ import datetime
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -181,3 +182,63 @@ def test_probe_backends_runs_on_the_memory_backend(tmp_path: Path, capsys: pytes
     assert probe.main(["compare", str(out), str(out)]) == 0
     assert "no differences" in capsys.readouterr().out
     assert '"dynamodb:ListTables"' in json.dumps(probe.iam_policy("123456789012"))
+
+
+def _cliff_commit(message: str, group: str, pr_number: int | None) -> dict[str, object]:
+    remote = {
+        "username": None,
+        "pr_author": None,
+        "pr_title": None,
+        "pr_number": pr_number,
+        "pr_numbers": [pr_number] if pr_number else [],
+        "pr_labels": [],
+        "is_first_time": False,
+    }
+    no_remote = {**remote, "pr_number": None, "pr_numbers": []}
+    person = {"name": "a", "email": "a@example.com", "timestamp": 0}
+    return {
+        "id": message,
+        "message": message,
+        "group": group,
+        "scope": None,
+        "breaking": False,
+        "links": [],
+        "conventional": True,
+        "merge_commit": False,
+        "author": person,
+        "committer": person,
+        "remote": remote,
+        "github": remote,
+        **dict.fromkeys(("gitlab", "gitea", "bitbucket", "azure_devops"), no_remote),
+    }
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="needs uvx to run git-cliff")
+def test_changelog_template_lists_each_pull_request_once(tmp_path: Path) -> None:
+    # With a GitHub token (as in the "Prepare release" workflow) git-cliff knows each commit's pull
+    # request, and the subjects of squash merges end with its number already ("(#42) (#42)").
+    context = [
+        {
+            "version": "v0.3.0",
+            "timestamp": 0,
+            "commits": [
+                _cliff_commit("fix the thing (#5)", "<!-- 1 -->Bug fixes", 5),
+                _cliff_commit("add the other thing", "<!-- 0 -->Features", 7),
+                _cliff_commit("pushed directly", "<!-- 0 -->Features", None),
+            ],
+            "submodule_commits": {},
+            **{key: {"contributors": []} for key in ("github", "gitlab", "gitea", "bitbucket", "azure_devops")},
+        }
+    ]
+    path = tmp_path / "context.json"
+    path.write_text(json.dumps(context))
+    result = subprocess.run(
+        ["uvx", load("release").GIT_CLIFF, "--config", "cliff.toml", "--from-context", str(path), "--strip", "all"],
+        cwd=SCRIPTS.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip().partition("\n")[2].strip() == (
+        "### Features\n\n- Add the other thing (#7)\n- Pushed directly\n\n### Bug fixes\n\n- Fix the thing (#5)"
+    )

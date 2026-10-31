@@ -656,24 +656,24 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Features
 
-- **memory:** PartiQL SELECT with ORDER BY, by DynamoDB's rules (#42) (#42)
-- **repository:** Model writes recognise their own earlier attempt by a write id (#44) (#44)
+- **memory:** PartiQL SELECT with ORDER BY, by DynamoDB's rules (#42)
+- **repository:** Model writes recognise their own earlier attempt by a write id (#44)
 
 ### Bug fixes
 
-- **query:** Parallel scans that stop early no longer hang (#21) (#21)
-- **query:** Limit() reads only what it needs and cursors of cut pages skip nothing (#22) (#22)
-- **repository:** Table queries of unique models and where() on templated sort keys (#23) (#23)
-- **errors:** Error messages leave out keys and stored values (#40) (#40)
-- **models:** [**breaking**] Stored values decode exactly, or raise ItemDecodeError (#41) (#41)
-- **client:** [**breaking**] Retried writes never apply twice or fail on their own earlier attempt (#43) (#43)
+- **query:** Parallel scans that stop early no longer hang (#21)
+- **query:** Limit() reads only what it needs and cursors of cut pages skip nothing (#22)
+- **repository:** Table queries of unique models and where() on templated sort keys (#23)
+- **errors:** Error messages leave out keys and stored values (#40)
+- **models:** [**breaking**] Stored values decode exactly, or raise ItemDecodeError (#41)
+- **client:** [**breaking**] Retried writes never apply twice or fail on their own earlier attempt (#43)
 
 ### Documentation
 
-- Highlights, design and performance sections in the README (#37) (#37)
-- A benchmark script reproduces the README's performance numbers (#38) (#38)
-- A shorter README that is easier to read (#46) (#46)
-- Show the dynamoxy logo in the README heading (#47) (#47)
+- Highlights, design and performance sections in the README (#37)
+- A benchmark script reproduces the README's performance numbers (#38)
+- A shorter README that is easier to read (#46)
+- Show the dynamoxy logo in the README heading (#47)
 
 ## [0.2.0] - 2026-10-15
 
@@ -753,29 +753,29 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ### Features
 
-- **models:** Before_update and after_update lifecycle hooks (#11) (#11)
-- **models:** [**breaking**] Model instances save, update and delete themselves through their repository (#12) (#12)
-- **query:** Consistent=True for queries and scans (#18) (#18)
+- **models:** Before_update and after_update lifecycle hooks (#11)
+- **models:** [**breaking**] Model instances save, update and delete themselves through their repository (#12)
+- **query:** Consistent=True for queries and scans (#18)
 
 ### Bug fixes
 
-- Compare binary values when the in-memory backend matches transaction idempotency tokens (#3) (#3)
-- **repository:** Render templated attributes from the new value after arithmetic updates (#9) (#9)
-- **models:** Copy() makes new instances, and copies keep their own persistence state (#10) (#10)
-- **query:** Hydrate() reads full items as consistently as its query (#17) (#17)
+- Compare binary values when the in-memory backend matches transaction idempotency tokens (#3)
+- **repository:** Render templated attributes from the new value after arithmetic updates (#9)
+- **models:** Copy() makes new instances, and copies keep their own persistence state (#10)
+- **query:** Hydrate() reads full items as consistently as its query (#17)
 
 ### Performance
 
-- Faster in-memory backend, expression parser and numbers (#4) (#4)
-- Replace pyo3-async-runtimes with an own asyncio bridge (#5) (#5)
-- Skip unused work in the call pipeline (#6) (#6)
-- Precomputed model plans, faster repositories and queries (#7) (#7)
+- Faster in-memory backend, expression parser and numbers (#4)
+- Replace pyo3-async-runtimes with an own asyncio bridge (#5)
+- Skip unused work in the call pipeline (#6)
+- Precomputed model plans, faster repositories and queries (#7)
 
 ### Documentation
 
-- Document how credentials and region are resolved (#14) (#14)
-- A skill for pull requests, stacks and publish kits (#15) (#15)
-- Document table_prefix for environments sharing an AWS account (#16) (#16)
+- Document how credentials and region are resolved (#14)
+- A skill for pull requests, stacks and publish kits (#15)
+- Document table_prefix for environments sharing an AWS account (#16)
 
 ## [0.1.0] - 2026-10-13
 
