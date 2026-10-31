@@ -698,8 +698,14 @@ async def delete_tables(client: dynamoxy.Client, prefix: str) -> list[str]:
             continue
         table = client.table(name.removeprefix(client.table_prefix))
         try:
-            await table.wait_until_active(timeout=900)
+            status = (await table.describe()).status
+            if status == "DELETING":
+                continue  # an interrupted run's deletion, still going
+            if status != "ACTIVE":
+                await table.wait_until_active(timeout=900)
             await table.delete_table(missing_ok=True)
+        except dynamoxy.ResourceNotFoundError:
+            continue  # deleted meanwhile
         except dynamoxy.DynamoxyError as error:
             print(f"could not delete {name} ({error}): run cleanup later", file=sys.stderr)
         else:
