@@ -825,7 +825,8 @@ class Client:
         Args:
             models: Model classes.
             billing: Billing mode (default on-demand).
-            wait: Wait until each table is active.
+            wait: Wait until each table is active. Tables with a TTL attribute are waited for
+                anyway, since DynamoDB enables Time to Live on active tables only.
             exist_ok: Skip tables that exist instead of raising ``ResourceInUseError``, also tables
                 that another writer creates at the same time (waited for with ``wait``).
             stream: Enable a DynamoDB stream with this view type (``"NEW_AND_OLD_IMAGES"``, ...).
