@@ -350,7 +350,9 @@ class EventDispatcher:
         """
         loop = asyncio.get_running_loop()
         current = asyncio.current_task()
-        return [task for task in self._tasks if task is not current and task.get_loop() is loop and not task.done()]
+        # A copy first: hooks of other event loops add and discard tasks from their threads.
+        tasks = list(self._tasks)
+        return [task for task in tasks if task is not current and task.get_loop() is loop and not task.done()]
 
     async def drain(self) -> None:
         """Waits for async hooks that are still running on this event loop (see :meth:`pending`).
