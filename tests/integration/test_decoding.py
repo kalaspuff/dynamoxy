@@ -101,6 +101,7 @@ async def test_keys_stored_in_another_form_address_their_item(client: dynamoxy.C
 
     device.name = "b"
     await devices.save(device)
+    assert device.pk == key["pk"]
     await devices.refresh(device)
     await devices.update(device, Device.name.set("c"))
     async with client.transaction() as tx:
@@ -108,6 +109,7 @@ async def test_keys_stored_in_another_form_address_their_item(client: dynamoxy.C
     async with client.batch_writer() as batch:
         device.name = "e"
         await batch.put(device)
+    assert (device.pk, device.primary_key()) == (key["pk"], key)
     stored = await devices.table.scan(consistent=True).all()
     assert [(item["pk"], item["day"], item["since"], item["name"]) for item in stored] == [
         (key["pk"], key["day"], "20250101", "e")

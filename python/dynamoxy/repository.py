@@ -655,7 +655,16 @@ class Repository[M]:
         if mode != "create":
             stored = self._stored(instance)
             if stored is not None:
-                item.update(self._check_unchanged(stored, item))  # what changes no value stays as stored
+                kept = self._check_unchanged(stored, item)  # what changes no value stays as stored
+                item.update(kept)
+                if schema._derived:
+                    # Derived key fields of the instance hold the key as stored too.
+                    fields = schema.fields
+                    changes.update(
+                        (name, value)
+                        for name, value in schema.decode_values(kept).items()
+                        if fields[name].template is not None
+                    )
                 item = self._with_undeclared(stored, item)
         if standalone and schema.write_ids:  # replaces the id of the write that stored the loaded item
             item[WRITE_ID_ATTRIBUTE] = new_write_id()
