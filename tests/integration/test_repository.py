@@ -1167,3 +1167,82 @@ async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client
     assert (updated.name, updated.score, updated.rank) == ("Ada", 6, "SCORE#00000006")
     stored = await players.get_or_raise("p1")
     assert (stored.score, stored.rank) == (6, "SCORE#00000006")
+
+
+class Climber(Model, table="climbers"):
+    """A model without a version whose index key follows a counter."""
+
+    climber_id: Attr[str] = partition_key()
+    name: Attr[str] = field(default="")
+    score: Attr[int] = field(default=0)
+    rank: Attr[str] = field(template="SCORE#{score:08d}")
+
+
+async def test_updates_of_instances_that_were_not_loaded_render_derived_keys_from_the_stored_item(
+    client: dynamoxy.Client,
+) -> None:
+    # The instance's own values were taken for the stored ones: a score of 10 instead of 15.
+    await client.create_tables(Player, Climber)
+    await client.model(Player).create(Player(player_id="p1", name="Ada", score=5))
+    updated = await client.model(Player).update(Player(player_id="p1", name="Ada"), Player.score.add(10))
+    assert (updated.score, updated.rank) == (15, "SCORE#00000015")
+    await client.model(Climber).create(Climber(climber_id="c1", score=5))
+    climber = await client.model(Climber).update(Climber(climber_id="c1"), Climber.score.increment(1))
+    assert (climber.score, climber.rank) == (6, "SCORE#00000006")
+
+
+@pytest.mark.parametrize("model", [Player, Climber])
+async def test_updates_render_derived_keys_from_an_item_changed_meanwhile(
+    client: dynamoxy.Client, model: type[Player | Climber]
+) -> None:
+    # The update read the item, and another writer changed the score before it was written: the
+    # rank was rendered from the score as read (25 instead of 26), also for versioned models.
+    await client.create_tables(model)
+    repository: dynamoxy.Repository[Any] = client.model(model)
+    key = model.key("p1")
+    created = (
+        Player(player_id="p1", name="Ada", score=5)
+        if model is Player
+        else Climber(climber_id="p1", name="Ada", score=5)
+    )
+    await repository.create(created)
+    reads = 0
+
+    async def write_after_the_read(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        nonlocal reads
+        response = await call_next(request)
+        if request.operation == "GetItem":
+            reads += 1
+            if reads == 1:
+                await repository.update(key, F("score").set(F("score") + 1))
+        return response
+
+    client.use(write_after_the_read)
+    updated = await repository.update(key, F("score").set(F("score") + 20))
+    assert (updated.score, updated.rank) == (26, "SCORE#00000026")
+    assert reads == 3, "the first read, the other writer's, and the read of the update planned again"
+    stored = await repository.table.get(key)
+    assert stored is not None
+    assert (stored["score"], stored["rank"]) == (26, "SCORE#00000026")
+
+
+async def test_updates_of_loaded_instances_render_derived_keys_from_an_item_changed_meanwhile(
+    client: dynamoxy.Client,
+) -> None:
+    # Without a version, nothing told the update of a loaded instance that the score it renders
+    # the rank from changed since the instance was loaded.
+    await client.create_tables(Climber)
+    climbers = client.model(Climber)
+    climber = await climbers.create(Climber(climber_id="c1", score=5))
+    await climbers.update(Climber.key("c1"), Climber.score.increment(1))  # another writer
+    updated = await climbers.update(climber, Climber.score.increment(10))
+    assert (updated.score, updated.rank) == (16, "SCORE#00000016")
+    stale = await climbers.get_or_raise("c1")
+    await climbers.update(Climber.key("c1"), Climber.score.increment(1))
+    with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
+        async with client.transaction() as tx:  # transactions are not planned again
+            tx.update(stale, Climber.score.increment(1))
+    [error] = caught.value.errors
+    assert isinstance(error, dynamoxy.ConditionalCheckFailedError)
+    assert "another writer changed the fields derived attributes are rendered from" in str(error)
+    assert (await climbers.get_or_raise("c1")).score == 17

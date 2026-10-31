@@ -435,6 +435,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   validators and `@field_validator`s, under the model's config. Validators that take a
   `ValidationInfo` (they may read other fields) and model validators still run on instances
   only.
+- Updates rendered derived (templated) attributes from the wrong item. An instance that was not
+  loaded, used as an update target, had its own values taken for the stored ones:
+  `players.update(Player(player_id="p1", name="Ada"), Player.score.add(10))` of a stored score of
+  5 stored a score of 15 and a rank of `SCORE#00000010`. Updates by key read the item, and updates
+  of loaded instances without a version used the item they were loaded with, but neither required
+  it unchanged, so another writer's change in between left the attribute behind (score 26, rank
+  `SCORE#00000025`), also for versioned models updated by key. Such updates now read the item
+  first and require that the fields the attribute is rendered from are unchanged; when another
+  writer changed them, `update()` reads the item again and renders it from that.
 
 ### Security
 

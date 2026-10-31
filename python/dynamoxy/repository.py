@@ -152,6 +152,7 @@ class _WritePlan:
         absent: bool = False,
         write_id: str | None = None,
         loaded: bool = False,
+        rendered_from: dict[str, Any] | None = None,
     ) -> None:
         self.repository = repository
         self.plan = plan
@@ -173,6 +174,10 @@ class _WritePlan:
         self.write_id = write_id
         # Whether the instance was loaded (a save of one without a version expects no version).
         self.loaded = loaded
+        # The stored values (attribute -> value, MISSING: no attribute) that the update rendered
+        # derived attributes from, and requires still: a failure that returns an item with
+        # others means that another writer changed them since.
+        self.rendered_from = rendered_from
 
     def outdated(self, item: dict[str, Any] | None) -> bool:
         """Whether a failed condition of the item, which returned ``item``, means the plan is outdated.
@@ -180,7 +185,17 @@ class _WritePlan:
         The stored item is then no longer the one the plan was made from, and a plan made from
         the item as stored now is the write that was asked for.
         """
-        return self.stale or (self.absent and item is not None)
+        if self.stale or (self.absent and item is not None):
+            return True
+        rendered_from = self.rendered_from
+        return (
+            rendered_from is not None
+            and item is not None
+            and any(
+                stored_identity(item.get(attribute)) != stored_identity(None if value is MISSING else value)
+                for attribute, value in rendered_from.items()
+            )
+        )
 
     async def execute(self) -> dict[str, Any] | None:
         """Runs the plan alone.
@@ -1062,6 +1077,7 @@ class Repository[M]:
             actions_list.append(schema._path(field.attribute).set_if_not_exists(field.codec.encode(now)))
             automatic[field.name] = MISSING
         completion: dict[str, Any] = {}  # what an upsert writes when it creates the item
+        rendered_from: dict[str, Any] | None = None
         if upsert:
             provided = self._field_values_of(target) if instance is None else {}
             # What default factories that take data (pydantic) get: the key and the set values.
@@ -1090,7 +1106,9 @@ class Repository[M]:
             else []
         )
         needs_read = bool(unique_touched) and stored_old is None
-        if derived_specs and stored_old is None and instance is None:
+        # Derived attributes are rendered from the stored item: an instance that was not loaded
+        # holds values that are not necessarily the stored ones.
+        if derived_specs and stored_old is None:
             needs_read = needs_read or any(
                 name not in assigned
                 for spec in derived_specs
@@ -1130,6 +1148,17 @@ class Repository[M]:
                 actions_list.append(
                     UpdateAction("SET", path, Value(rendered)) if rendered is not None else path.remove()
                 )
+            if stored_old is not None and expected is None:
+                # Rendered from the item as read (or loaded): the write requires that the fields it
+                # took from it are unchanged, or another writer's change would leave the derived
+                # attributes behind. A version that is checked already guarantees it.
+                rendered_from = {}
+                for spec in derived_specs:
+                    for name in spec.template.fields:  # type: ignore[union-attr]
+                        if name not in assigned:
+                            attribute = schema.fields[name].attribute
+                            rendered_from[attribute] = stored_old.get(attribute, MISSING)
+                parts.extend(_unchanged_conditions(rendered_from))
         if upsert:
             # Derived attributes the actions do not affect: rendered from what a created item holds,
             # and only written when missing (existing items keep theirs).
@@ -1199,6 +1228,7 @@ class Repository[M]:
             stale=stale,
             absent=absent,
             write_id=write_id,
+            rendered_from=rendered_from or None,
         )
 
     def _field_values_of(self, target: Any) -> dict[str, Any]:
@@ -1389,11 +1419,12 @@ class Repository[M]:
             if (
                 type(error) is not ConditionalCheckFailedError
                 or not write.outdated(error.item)
-                or (upsert and not write.absent)
+                or (upsert and write.stale)
             ):
                 raise
-            # Another writer changed the unique values since the instance was loaded, or created
-            # the item since the upsert read it: plan the update again from the item as stored now.
+            # Another writer changed the unique values since the instance was loaded, created the
+            # item since the upsert read it, or changed fields derived attributes are rendered from:
+            # plan the update again from the item as stored now.
             write = await self._plan_update(target, actions, condition, upsert, standalone=True, fresh=True)
             attributes = await write.execute()
         if attributes is None:  # executed as a transaction (unique attributes): read the result
@@ -1573,6 +1604,8 @@ class Repository[M]:
             )
         elif write.absent and item is not None:
             message += " (another writer stored the item after it was read: retry)"
+        elif write.outdated(item):
+            message += " (another writer changed the fields derived attributes are rendered from: retry)"
         failed = ConditionalCheckFailedError(message)
         failed.item = item
         for name in ("code", "operation", "request_id", "status_code", "attempts", "throttles", "requests", "duration"):
@@ -1779,6 +1812,18 @@ def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
     if kind == "N":
         return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
     return isinstance(value, bytes)
+
+
+def _unchanged_conditions(values: Mapping[str, Any]) -> list[Condition]:
+    """Conditions that attributes still have the stored ``values`` (``MISSING``: no attribute)."""
+    return [
+        F(attribute).not_exists()
+        if value is MISSING
+        else F(attribute).is_type("NULL")
+        if value is None
+        else F(attribute) == value
+        for attribute, value in values.items()
+    ]
 
 
 def _same_value(spec: FieldSpec, old: Any, new: Any) -> bool:
