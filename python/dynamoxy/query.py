@@ -176,8 +176,9 @@ class _Reader[T]:
         Raises:
             ValueError: The filter reads attributes that the index being read does not hold
                 (``KEYS_ONLY`` / ``INCLUDE`` projections): DynamoDB refuses such a query filter, and
-                such a scan filter of a global index never matches. A scan of a local index reads
-                the items from the table, and its filter sees them.
+                such a scan filter of a global index never matches. A scan of a local index that
+                returns the items it reads from the table filters them; when it counts, hydrates or
+                projects only what the index holds, it raises before the request instead.
         """
         combined = self._filter
         for condition in conditions:
@@ -219,16 +220,21 @@ class _Reader[T]:
                 "project what the index holds, or add the attribute to the index with Projection.include(...)"
             )
 
-    def _check_filter_of_held_projection(self) -> None:
-        """Refuses a scan filter that would never match: a projection of what the index holds.
+    def _check_scan_filter(self, params: dict[str, Any]) -> None:
+        """Refuses a scan filter of a local index that would never match.
 
-        Such a scan of a local index reads no items from the table, so its filter sees the
-        entries, where other attributes are missing.
+        The scan's filter sees the items DynamoDB reads from the table only when the request
+        returns them (``Select=ALL_ATTRIBUTES``, or a projection of an attribute the index does
+        not hold); otherwise (``COUNT``, ``.hydrate()``, a projection of what it holds) it sees
+        the index entries, where the other attributes are missing.
         """
         projected = self._projected
-        if projected is None or self._filter is None:
-            return
-        if {str(path.elements[0]) for path in self._projection} <= projected:
+        if projected is None or self._filter is None or self._global_index or self._operation != "Scan":
+            return  # queries and scans of global indexes are checked in filter()
+        fetched = params.get("select") == "ALL_ATTRIBUTES" or (
+            "projection_expression" in params and not {str(path.elements[0]) for path in self._projection} <= projected
+        )
+        if not fetched:
             self._check_projected(self._filter)
 
     def limit(self, count: int) -> Self:
@@ -355,8 +361,6 @@ class _Reader[T]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
         if self._projection and not self._hydrate:
             self._check_projection()
-            if self._filter is not None and not self._global_index and self._operation == "Scan":
-                self._check_filter_of_held_projection()
         if self._partial and not self._hydrate and not self._projection:
             owner = self._model.__name__ if self._model is not None else "the models"
             raise ValueError(
@@ -375,6 +379,7 @@ class _Reader[T]:
             else None
         )
         params = self._params(builder, start, limit, names)
+        self._check_scan_filter(params)
         segment = segment or self._segment
         if segment is not None:
             params["segment"], params["total_segments"] = segment
@@ -589,6 +594,7 @@ class _Reader[T]:
             if self._segment is not None:
                 params["segment"], params["total_segments"] = self._segment
             params["select"] = "COUNT"
+            self._check_scan_filter(params)
             params.update(builder.arguments())
             output = await self._client.call(
                 self._method, self._operation, table=self._table, model=self._model, **params
