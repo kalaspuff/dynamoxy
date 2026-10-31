@@ -706,6 +706,11 @@ class ModelSchema:
             for spec in fields
             if spec.template is None and spec.auto not in automatic
         )
+        # name -> how `_checked_key` checks the key values callers give: like `validate` does
+        # (constraints and validators), or with the codec alone for derived and automatic fields,
+        # whose values writes compute.
+        self._key_checks: dict[str, Callable[[Any], Any]] = {spec.name: spec.codec.validate for spec in fields}
+        self._key_checks.update((name, check) for name, check, _ in self._validated)
         # (name, attribute, encode, spec) in field order.
         self._encoders: tuple[tuple[str, str, Callable[[Any], Any], FieldSpec], ...] = tuple(
             (spec.name, spec.attribute, spec.codec.encode, spec) for spec in fields
@@ -983,6 +988,22 @@ class ModelSchema:
                 key[spec.attribute] = encoded
         return key
 
+    def _checked_key(self, spec: FieldSpec, value: Any) -> Any:
+        """A key value from the caller (or a value a key template uses), checked as writes check it.
+
+        Constraints and validators run too, so a validator that normalizes values (``str.lower``)
+        finds the item that a write stored with the normalized value.
+
+        Raises:
+            ValueError: The value is ``None`` or invalid (the message names the field).
+        """
+        if value is None:
+            raise ValueError(f"{self.model.__name__}.{spec.name}: must not be None")
+        try:
+            return self._key_checks[spec.name](value)
+        except ValueError as error:
+            raise ValueError(f"{self.model.__name__}.{spec.name}: {error}") from None
+
     def _key_value(self, spec: FieldSpec, kwargs: dict[str, Any], positional: list[Any], used: set[str]) -> Any:
         if spec.name in kwargs:
             used.add(spec.name)
@@ -991,7 +1012,7 @@ class ModelSchema:
             used.add(spec.attribute)
             value = kwargs[spec.attribute]
         elif spec.template is not None and all(name in kwargs for name in spec.template.fields):
-            components = {name: self.fields[name].validate(kwargs[name]) for name in spec.template.fields}
+            components = {name: self._checked_key(self.fields[name], kwargs[name]) for name in spec.template.fields}
             used.update(spec.template.fields)
             value = spec.template.render(components, self.codecs)
         elif positional:
@@ -1001,17 +1022,15 @@ class ModelSchema:
             if spec.template is not None and spec.template.fields:
                 needs += f" (or {', '.join(f'{name}=...' for name in spec.template.fields)})"
             raise ValueError(f"{self.model.__name__}: the key needs {needs}")
-        try:
-            value = spec.codec.validate(value)
-        except ValueError as error:
-            raise ValueError(f"{self.model.__name__}.{spec.name}: {error}") from None
-        return spec.codec.encode(value)
+        return spec.codec.encode(self._checked_key(spec, value))
 
     def key_from(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
         """The stored primary key from user arguments.
 
         Positional arguments are the partition and sort key values; keyword arguments name key
-        fields (``pk="USER#1"``) or the fields their templates use (``user_id="1"``).
+        fields (``pk="USER#1"``) or the fields their templates use (``user_id="1"``). Values are
+        checked like the fields' values on writes (constraints and validators included), so a
+        validator that normalizes (``str.lower``) gives the key that writes stored.
 
         Raises:
             ValueError: Arguments are missing, unexpected or invalid.
@@ -1020,14 +1039,11 @@ class ModelSchema:
             raise TypeError(f"{self.model.__name__} is not stored in a table")
         if not kwargs and len(args) == len(self._key_specs):
             # Only positional values (the common case): each key field takes the next one.
-            key: dict[str, Any] = {}
-            for spec, value in zip(self._key_specs, args, strict=True):
-                try:
-                    value = spec.codec.validate(value)
-                except ValueError as error:
-                    raise ValueError(f"{self.model.__name__}.{spec.name}: {error}") from None
-                key[spec.attribute] = spec.codec.encode(value)
-            return key
+            checked = self._checked_key
+            return {
+                spec.attribute: spec.codec.encode(checked(spec, value))
+                for spec, value in zip(self._key_specs, args, strict=True)
+            }
         positional = list(args)
         remaining = dict(kwargs)
         used: set[str] = set()
@@ -1041,6 +1057,8 @@ class ModelSchema:
 
     def index_key(self, index: IndexSpec, kwargs: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
         """The stored partition key value of an index query from keyword arguments.
+
+        The value is checked like the field's values on writes, as in :meth:`key_from`.
 
         Returns:
             The partition value and the arguments that were not used.

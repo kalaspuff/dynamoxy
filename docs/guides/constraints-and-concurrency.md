@@ -46,7 +46,9 @@ and moves the guards with it, as `put()` promises.
   follow the same protocol, or uniqueness is not guaranteed.
 
 **Case-insensitive uniqueness.** Normalize the value before it is stored, with a validator:
-`email: Attr[str] = field(unique=True, validators=(str.lower,))`.
+`email: Attr[str] = field(unique=True, validators=(str.lower,))`. Lookups by the value run the
+validator too: with `by_email = GlobalIndex(partition_key=email)`,
+`query(index=User.by_email, email="Ada@Example.com")` finds `ada@example.com`.
 
 ## Optimistic locking
 

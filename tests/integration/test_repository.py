@@ -53,6 +53,28 @@ class Measurement(Model, table="measurements"):
     value: Attr[float] = sort_key()
 
 
+def _one_word(value: str) -> str:
+    if " " in value.strip():
+        raise ValueError("must be one word")
+    return value.strip().lower()
+
+
+class Member(Model, table="members"):
+    """Key and index key fields whose validators normalize values, and refuse some."""
+
+    handle: Attr[str] = partition_key(min_length=2, validators=(str.lower,))
+    email: Attr[str] = field(unique=True, validators=(str.lower,))
+    team: Attr[str] = field(default="core", validators=(_one_word,))
+
+    by_email = GlobalIndex(partition_key=email)
+    by_team = GlobalIndex(partition_key=team, sort_key=handle)
+
+
+class Post(Model, table="posts"):
+    author: Attr[str] = partition_key(validators=(str.lower,))
+    slug: Attr[str] = sort_key(validators=(_one_word,))
+
+
 def make_user(user_id: str = "u1", **changes: Any) -> User:
     values: dict[str, Any] = {"user_id": user_id, "email": f"{user_id}@example.com", "name": user_id.upper()}
     values.update(changes)
@@ -889,6 +911,59 @@ async def test_keys_given_as_field_values(client: dynamoxy.Client) -> None:
     deleted = await devices.delete({"device_id": device_id})
     assert deleted is not None
     assert deleted.label == "y"
+
+
+async def test_reads_validate_key_values_like_writes(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member, Post)
+    members, posts = client.model(Member), client.model(Post)
+    ada = await members.create(Member(handle="Ada", email="Ada@Example.com", team=" Core "))
+    assert (ada.handle, ada.email, ada.team) == ("ada", "ada@example.com", "core"), "the validators normalized"
+    assert await members.get("ADA") == ada
+    assert await Member.get(client, handle="Ada") == ada
+    assert await members.get_or_raise("aDa") == ada
+    assert await members.exists("Ada")
+    assert await members.batch_get(["Ada", Member.key("ADA")]) == [ada, ada]
+    assert await members.query(handle="Ada").all() == [ada]
+    assert await members.query(index=Member.by_email, email="ADA@example.COM").all() == [ada]
+    assert await members.query(index=Member.by_team, team="CORE ", handle="Ada").all() == [ada], "index sort key"
+    assert await client.transact_get(dynamoxy.Get(Member, "ADA")) == [ada]
+    intro = await posts.create(Post(author="Ada", slug=" Intro "))
+    assert await posts.get("ADA", "INTRO") == intro
+    assert await posts.query(author="ada", slug="intro ").all() == [intro], "table sort key"
+    with dynamoxy.collect() as collected:
+        with pytest.raises(ValueError, match=r"Member\.handle: must have at least 2 characters/elements, has 1"):
+            await members.get("A")
+        with pytest.raises(ValueError, match=r"Member\.team: must be one word"):
+            members.query(index=Member.by_team, team="two words")
+        with pytest.raises(ValueError, match=r"Post\.slug: must be one word"):
+            await posts.get("ada", "two words")
+    assert collected.calls == 0, "refused before any request"
+
+
+async def test_stored_keys_reach_items_stored_before_a_validator(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member)
+    members = client.model(Member)
+    legacy = {"handle": "Bob", "email": "bob@example.com", "team": "core"}  # before `handle` had validators
+    await client.table("members").put(legacy)
+    assert await members.get("Bob") is None, "get() looks up 'bob'"
+    assert [member.handle for member in await members.batch_get([{"handle": "Bob"}])] == ["Bob"]
+    assert await client.table("members").get({"handle": "Bob"}) == legacy
+
+
+async def test_writes_by_key_validate_key_values(client: dynamoxy.Client) -> None:
+    await client.create_tables(Member)
+    members = client.model(Member)
+    await members.create(Member(handle="ada", email="ada@example.com"))
+    await members.create(Member(handle="bob", email="bob@example.com"))
+    updated = await members.update(Member.key("Ada"), Member.team.set("Lab"))
+    assert updated.team == "lab"
+    async with client.transaction() as tx:
+        tx.check(Member, "ADA", Member.team == "lab")
+        tx.update(Member.key("Bob"), Member.team.set("lab"))
+    deleted = await members.delete("BOB")
+    assert deleted is not None
+    assert deleted.team == "lab"
+    assert [member.handle for member in await members.scan().all()] == ["ada"]
 
 
 async def test_float_keys_in_batch_reads(client: dynamoxy.Client) -> None:

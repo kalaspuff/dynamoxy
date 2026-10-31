@@ -167,7 +167,46 @@ def test_keys_from_values_and_instances() -> None:
         User.key("u1", extra=1)
     with pytest.raises(ValueError, match="expected int"):
         Event.key("s", "three")
+    with pytest.raises(ValueError, match=r"Order\.customer_id: expected str, got int"):
+        Order.key(customer_id=1, order_id="o1")
     assert make_user().primary_key() == {"user_id": "u1"}
+
+
+def test_keys_from_values_refuse_none() -> None:
+    # Templated keys accept None as their stored value (`pk` is derived), which a key never is.
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(None, "ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.pk: must not be None"):
+        Order.key(pk=None, sk="ORDER#o1")
+    with pytest.raises(ValueError, match=r"Order\.customer_id: must not be None"):
+        Order.key(customer_id=None, order_id="o1")
+    with pytest.raises(ValueError, match=r"User\.user_id: must not be None"):
+        User.key(None)
+
+
+def _one_word(value: str) -> str:
+    if " " in value.strip():
+        raise ValueError("must be one word")
+    return value.strip().lower()
+
+
+class Handle(Model, table="handles"):
+    """Key fields whose validators normalize values, and refuse some."""
+
+    handle: Attr[str] = partition_key(min_length=2, validators=(str.lower,))
+    slug: Attr[str] = sort_key(attribute_name="sk", validators=(_one_word,))
+
+
+def test_keys_from_values_are_validated_like_stored_values() -> None:
+    stored = Handle(handle="Ada", slug=" Intro ").primary_key()
+    assert stored == {"handle": "ada", "sk": "intro"}
+    assert Handle.key("ADA", "intro ") == stored, "positional values"
+    assert Handle.key(handle="Ada", slug=" INTRO") == stored, "field names"
+    assert Handle.key(handle="aDA", sk="Intro") == stored, "attribute names"
+    with pytest.raises(ValueError, match=r"Handle\.handle: must have at least 2 characters/elements, has 1"):
+        Handle.key("a", "intro")
+    with pytest.raises(ValueError, match=r"Handle\.slug: must be one word"):
+        Handle.key(handle="ada", slug="two words")
 
 
 def test_schema_describes_the_model() -> None:
