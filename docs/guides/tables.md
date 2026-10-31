@@ -61,9 +61,10 @@ an index added to a provisioned table the table's capacity too, unless its defin
 `billing=` gives another.
 
 DynamoDB changes a table one step at a time: it refuses to change a table it is still creating
-(`ResourceInUseError`, and `ResourceNotFoundError` for Time to Live) and to add or delete an index
-while another is being created (`LimitExceededError`), also during the minutes of its backfill
-when the table reads `ACTIVE` again. `create_tables()` and `ensure_tables()` wait for each step
+(`ResourceInUseError`, and `ResourceNotFoundError` for Time to Live) and to add an index while
+another is being created (`LimitExceededError`, "Only 1 online index can be created or deleted
+simultaneously per table"), also during the minutes of its backfill when the table reads `ACTIVE`
+again. The in-memory backend refuses a deletion then too, as the message says (not measured). `create_tables()` and `ensure_tables()` wait for each step
 before the next; with `wait=False` on your own calls, call `table.wait_until_active()` before the
 next change. The in-memory backend keeps a new table or index `CREATING` until something
 describes it (as waiting does), so tests catch a missing wait.

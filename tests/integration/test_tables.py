@@ -429,6 +429,10 @@ async def test_indexes_added_to_a_provisioned_table_get_its_capacity(client: dyn
     assert description.indexes["by_owner"].status == "ACTIVE"
     [created] = sent[0]["global_secondary_index_updates"]
     assert created["create"]["provisioned_throughput"] == (3, 2), "DynamoDB refuses an index without capacity there"
+    own = dynamoxy.IndexDefinition("by_kind", "global", ("kind", "S"), throughput=dynamoxy.Throughput(4, 1))
+    await table.add_index(own)
+    [created] = sent[1]["global_secondary_index_updates"]
+    assert created["create"]["provisioned_throughput"] == (4, 1), "its own capacity"
 
 
 async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, backend: str) -> None:

@@ -467,8 +467,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - The in-memory backend accepted table changes DynamoDB refuses (measured against DynamoDB):
   switching a table with global indexes to provisioned billing without capacity for them, adding
   an index without capacity to a provisioned table, giving an index capacity on an on-demand
-  table, and changing a table, or adding or deleting an index, while DynamoDB is still creating
-  the table or another index. It now refuses them with DynamoDB's errors, drops the indexes'
+  table, and changing a table, or adding an index, while DynamoDB is still creating the table or
+  another index (and, following DynamoDB's message, deleting an index then). It now refuses them with DynamoDB's errors, drops the indexes'
   capacity on a switch back to on-demand, and keeps a new table or index `CREATING` until a
   `DescribeTable` sees it, so tests catch a missing wait. `table.add_index()` without `billing=`
   gives an index added to a provisioned table the table's capacity (DynamoDB refused it).

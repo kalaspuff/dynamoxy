@@ -7,9 +7,9 @@
 //!
 //! A created table, and a global index added to one, stays `CREATING` until a `DescribeTable`
 //! sees it, the way a caller that waits for it would: until then DynamoDB refuses to change it
-//! (`UpdateTable`, `UpdateTimeToLive`) or to add or delete another index, with its messages
-//! (measured in eu-north-1 on 2026-10-31, docs/parity). Reads and writes of its items are not
-//! refused.
+//! (`UpdateTable`, `UpdateTimeToLive`) or to add another index, with its messages (measured in
+//! eu-north-1 on 2026-10-31, docs/parity), and the in-memory backend a deletion of an index too
+//! (as DynamoDB's message says, not measured). Reads and writes of its items are not refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -297,7 +297,8 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
     let index_being_created = table.indexes.iter().any(|index| index.status == IndexStatus::Creating);
     if index_operations > 1 || (index_operations == 1 && index_being_created) {
         // Measured for an index added while another is being created, also once the table is
-        // ACTIVE again during the other's backfill (docs/parity).
+        // ACTIVE again during the other's backfill (docs/parity). A deletion then is refused too,
+        // as the message says, but was not measured.
         return Err(ServiceError::new(
             "LimitExceededException",
             "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table",

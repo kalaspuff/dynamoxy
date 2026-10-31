@@ -722,7 +722,9 @@ class Table:
         """
         if index.kind != "global":
             raise ValueError("only global secondary indexes can be added to an existing table")
-        if billing is None and index.throughput is None:
+        if billing is None:
+            # The table's billing: on a provisioned table, the index gets its own capacity or
+            # the table's (IndexDefinition.native prefers its own).
             current = await self.describe()
             if current.billing_mode == "PROVISIONED":
                 billing = Billing.provisioned(current.read_capacity or 1, current.write_capacity or 1)
