@@ -436,8 +436,6 @@ async def test_only_create_table_conflicts_count_as_tables_created_meanwhile(cal
     # Event has a TTL attribute: after CreateTable, UpdateTimeToLive enables it.
     async with testing.memory_client() as client:
         testing.inject_fault(client, operation="UpdateTimeToLive", error="ResourceInUseException")
+        create = client.create_tables(Event, exist_ok=True) if call == "create_tables" else client.ensure_tables(Event)
         with pytest.raises(dynamoxy.ResourceInUseError, match="UpdateTimeToLive"):
-            if call == "create_tables":
-                await client.create_tables(Event, exist_ok=True)
-            else:
-                await client.ensure_tables(Event)
+            await create
