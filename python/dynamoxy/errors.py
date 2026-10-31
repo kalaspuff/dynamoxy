@@ -360,27 +360,36 @@ def _round_trips(value: object) -> bool:
     return True
 
 
-def _picklable(value: object) -> object:
+def _picklable(value: object, active: frozenset[int] = frozenset()) -> object:
     # Leaves out only what does not pickle: the fields of a dataclass and the items of a tuple, list
-    # or dict (a key's value, an item's attribute), else the value itself.
+    # or dict (a key's value, an item's attribute), else the value itself. Whatever it rebuilds is
+    # checked as a whole (a dict key may not pickle), and a container met again inside itself is
+    # left out, so the result always pickles.
     if _round_trips(value):
         return value
+    if id(value) in active:
+        return None
+    inner = active | {id(value)}
+    rebuilt: object
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         fields = {
-            field.name: _picklable(getattr(value, field.name)) for field in dataclasses.fields(value) if field.init
+            field.name: _picklable(getattr(value, field.name), inner)
+            for field in dataclasses.fields(value)
+            if field.init
         }
         try:
             rebuilt = dataclasses.replace(value, **fields)
         except Exception:  # noqa: BLE001 - a field the dataclass does not accept as None
             return None
-        return rebuilt if _round_trips(rebuilt) else None  # the class itself may not pickle
-    if isinstance(value, tuple) and type(value) is tuple:
-        return tuple(_picklable(item) for item in value)
-    if isinstance(value, list) and type(value) is list:
-        return [_picklable(item) for item in value]
-    if isinstance(value, dict) and type(value) is dict:
-        return {key: _picklable(item) for key, item in value.items()}
-    return None
+    elif type(value) is tuple:
+        rebuilt = tuple(_picklable(item, inner) for item in value)
+    elif type(value) is list:
+        rebuilt = [_picklable(item, inner) for item in value]
+    elif type(value) is dict:
+        rebuilt = {key: _picklable(item, inner) for key, item in value.items()}
+    else:
+        return None
+    return rebuilt if _round_trips(rebuilt) else None  # the class or a dict key may not pickle
 
 
 def _reduce_error(error: BaseException) -> tuple[Any, ...]:

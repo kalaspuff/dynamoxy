@@ -207,3 +207,16 @@ def test_only_the_parts_that_do_not_pickle_are_left_out() -> None:
     canceled._explained_reasons = [reason]  # pyrefly: ignore[missing-attribute]
     restored = round_trip(canceled).cancellation_reasons[0]
     assert (restored.code, restored.item) == ("ConditionalCheckFailed", {"pk": "p1", "f": None})
+
+
+def test_values_left_out_always_pickle() -> None:
+    # A dict key that does not pickle leaves out the dict; a list that holds itself does not recurse
+    # forever.
+    local = make_local_model()
+    unique = dynamoxy.UniqueConstraintError("taken", model=User, field="email", value={local: 1, "a": 2})
+    assert round_trip(unique).value is None
+    cycle: list[Any] = [lambda: 1, 2]
+    cycle.append(cycle)
+    error = dynamoxy.ItemNotFoundError("missing")
+    error.history = cycle  # pyrefly: ignore[missing-attribute]
+    assert round_trip(error).history == [None, 2, None]
