@@ -176,13 +176,15 @@ class _Reader[T]:
         Raises:
             ValueError: The filter reads attributes that the index being read does not hold
                 (``KEYS_ONLY`` / ``INCLUDE`` projections): DynamoDB refuses such a query filter, and
-                such a scan filter never matches.
+                such a scan filter of a global index never matches. A scan of a local index reads
+                the items from the table, and its filter sees them.
         """
         combined = self._filter
         for condition in conditions:
             checked = as_condition(condition)
             assert checked is not None
-            self._check_projected(checked)
+            if self._operation == "Query" or self._global_index:
+                self._check_projected(checked)
             combined = checked if combined is None else combined & checked
         return self._replace(filter=combined)
 
@@ -216,6 +218,15 @@ class _Reader[T]:
                 "projection of a global index that names them: add .hydrate() to read them from the full items, "
                 "project what the index holds, or add the attribute to the index with Projection.include(...)"
             )
+
+    def _check_filter_of_held_projection(self) -> None:
+        """A scan of a local index that projects only what the index holds reads no items from the
+        table, so its filter sees the entries: one on other attributes would never match."""
+        projected = self._projected
+        if projected is None or self._filter is None:
+            return
+        if {str(path.elements[0]) for path in self._projection} <= projected:
+            self._check_projected(self._filter)
 
     def limit(self, count: int) -> Self:
         """Returns at most ``count`` items in total (iteration, ``all()``, ``count()``, ``page()``)."""
@@ -341,6 +352,8 @@ class _Reader[T]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
         if self._projection and not self._hydrate:
             self._check_projection()
+            if self._filter is not None and not self._global_index and self._operation == "Scan":
+                self._check_filter_of_held_projection()
         if self._partial and not self._hydrate and not self._projection:
             owner = self._model.__name__ if self._model is not None else "the models"
             raise ValueError(

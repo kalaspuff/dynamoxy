@@ -458,10 +458,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   reads the items from the table, and a projection of a global index naming them
   ([ADR 0021](docs/adr/0021-index-reads-follow-dynamodbs-refusals.md), measured against DynamoDB).
   The in-memory backend now refuses them with DynamoDB's messages, and its scan filters see the
-  index entries, so they never match such attributes. Model reads raise `ValueError` before any
-  request for a filter of a `KEYS_ONLY`/`INCLUDE` local index on an attribute it does not hold
-  (filter the hydrated items in Python instead), and for `.project(...)` of such a global index
-  naming one, unless the query adds `.hydrate()`, which now reads the index for the keys only.
+  index entries (where such attributes never match) unless the scan reads the items from the
+  table. Model queries raise `ValueError` before any request for a filter of a
+  `KEYS_ONLY`/`INCLUDE` local index on an attribute it does not hold (filter the hydrated items in
+  Python instead), and model reads for `.project(...)` of such a global index naming one, unless
+  the query adds `.hydrate()`, which now reads the index for the keys only.
   Queries of an index that does not hold the type attribute (created by other tools or by
   dynamoxy 0.2) fail in DynamoDB: create the index again with it.
 

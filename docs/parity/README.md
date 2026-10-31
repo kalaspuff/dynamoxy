@@ -23,7 +23,7 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 
 | Log | Target |
 | --- | --- |
-| [aws-eu-north-1-2026-10-31-round1.log](aws-eu-north-1-2026-10-31-round1.log) | DynamoDB, eu-north-1, 2026-10-31 (AWS CLI 2.37.6) |
+| [aws-eu-north-1-2026-10-31-round1.log](aws-eu-north-1-2026-10-31-round1.log), [round 2](aws-eu-north-1-2026-10-31-round2.log), [round 3](aws-eu-north-1-2026-10-31-round3.log) | DynamoDB, eu-north-1, 2026-10-31 (AWS CLI 2.37.6) |
 | [ministack-1.5.33-round1.log](ministack-1.5.33-round1.log), [round 2](ministack-1.5.33-round2.log), [round 3](ministack-1.5.33-round3.log) | MiniStack 1.5.33 (the emulator of dynamoxy's e2e tests and CI) |
 | [localstack-2026.3.0-round1.log](localstack-2026.3.0-round1.log), [round 2](localstack-2026.3.0-round2.log), [round 3](localstack-2026.3.0-round3.log) | LocalStack 2026.3.0, whose DynamoDB is DynamoDB Local 3.3.2 |
 
@@ -41,11 +41,13 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | `Query` or `Scan` of a global index, `ProjectionExpression` naming `secret` | refused: `Global secondary index gsi does not project [secret]` | returns what the index holds | same as DynamoDB |
 | `Query` or `Scan` of a local index, `ProjectionExpression` naming `secret` | returns `secret`, read from the table | returns what the index holds | same as DynamoDB |
 | `Scan` of a local or global index, `FilterExpression` on `secret` | matches nothing (filters the entries) | returns the item | returns the item |
-| the same, the scan fetching the items (`ALL_ATTRIBUTES`, or a projection of `secret`) | not measured yet (round 2 asks); PartiQL `SELECT`s filter the entries (dynoxide-rs) | returns the item | returns the item |
+| `Scan` of a local index that fetches the items (`ALL_ATTRIBUTES`, or a projection of `secret`), `FilterExpression` on `secret` | matches: the filter sees the fetched item | returns the item | returns the item |
+| `Query` filter on several attributes the index does not hold (`secret = :s AND note = :o`, a nested `m.x`, `size(secret)`, a held `pk` next to `gk`) | each named by its top-level name, in the order of the expression: `[secret, note]`, `[m]`, `[secret]`, `[gk, secret]` | returns the item | sorted: `[note, secret]` |
+| `ProjectionExpression` of a global index naming `note, m.x, pk, secret` | `Global secondary index gsi does not project [note, m, secret]` (in order, held ones left out) | returns `pk` | `[note, secret, m]` |
+| a `Scan` of a global index with both | the projection is refused first | returns an empty item | same as DynamoDB |
 
-The in-memory backend answers like DynamoDB (and, until round 2 says otherwise, filters the entries
-in scans that fetch the items too), and model reads refuse these filters and projections before
-any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
+The in-memory backend answers like DynamoDB, and model reads refuse these filters and projections
+before any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 
 ### Expression limits (#97)
 
@@ -57,6 +59,8 @@ any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 | attribute name of 65,535 bytes, in an item or through a placeholder | accepted | accepted | `InternalFailure` in an item |
 | attribute name of 65,536 bytes in a `PutItem` item | `1 validation error detected: Attribute name is too large, must be less than 65536 bytes` | accepted | `InternalFailure` |
 | the same through a placeholder of a `GetItem` | `Attribute name is too large, must be less than 65536 bytes for key #n` | accepted | prefixed `ExpressionAttributeNames contains invalid value: ` |
+| the same as a map key in a `PutItem` item, or through a placeholder of an `UpdateItem` `SET` | `1 validation error detected: Attribute name is too large, must be less than 65536 bytes` (`... for key #n`) | accepted | `InternalFailure` for the map key |
+| a 256-byte or `#a-b` placeholder, or `attribute_type(a, b)`, in a `PutItem` condition | the same messages as in reads, inside `1 validation error detected: ` | `#a` undefined; `attribute_type` evaluated | |
 | `attribute_type(a, b)`, a path as the type, in a filter | `Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}` | evaluated (matches) | refused, the types in another order |
 | the same in an `UpdateItem` condition | prefixed `1 validation error detected: ` (`Invalid ConditionExpression: ...`) | evaluated | refused without the prefix |
 | `ExecuteTransaction` of `SELECT`s, one of a missing table | `TransactionCanceledException`, reasons `[None, ResourceNotFound]` (`Requested resource not found` on the missing one, no message on the others) | `ResourceNotFoundException` | `ResourceNotFoundException` |
@@ -71,10 +75,22 @@ any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 | 300 KB without the index key, or held by a `KEYS_ONLY` local index | accepted | accepted | accepted |
 | `UpdateItem` growing that item from 150 KB to 210 KB | `Item size to update has exceeded the maximum allowed size` | accepted | accepted |
 | `TransactWriteItems` `Put` of the 210 KB item | `TransactionCanceledException`, reason `ValidationError`: `Item size has exceeded the maximum allowed size` | accepted | top-level `ValidationException` |
+| `PutItem` of an item an `ALL` local index holds, at the byte | 204,800 bytes taken, 204,801 refused: the entry counts as the item, without overhead | accepted | same as DynamoDB |
+| the same for a `KEYS_ONLY` local index (18 bytes of keys) | 409,580 bytes taken, 409,588 refused: the entry counts as the keys it holds | accepted | 409,589 taken, 409,600 refused |
 | `TransactGetItems` of ten 390 KB items (3.9 MB) | accepted | accepted | accepted |
 | `TransactGetItems` of eleven (4.3 MB) | `Payload in response is too large.` | accepted | the same message with the size appended (`too large.4393159`) |
+| `TransactGetItems` of eleven 300 KB binary items (4.4 MB as base64), or of 4,000,900 bytes of items | accepted: the limit counts the items, and is 4 MiB | accepted | accepted |
 | `TransactWriteItems` of ten `Update`s writing 390 KB each | accepted | accepted | accepted |
 | the same with eleven | `Transaction payload size cannot exceed 4MB. Payload Size: 4393445` | `Transaction request exceeds the 4MB transaction size limit` | `... Payload Size: 4393214` |
+
+How DynamoDB counts that payload size (round 2, one change at a time to eleven 390 KB updates
+that read 4,393,455): a `Put` counts its item's size (eleven puts of the same items: 4,393,125). An
+`Update` counts its key, the update's charge as dynoxide-rs measured it for `UpdateItem` (3 bytes,
+19 for each value it sets plus the target's name and the value's size, 1 for each attribute it
+removes), and 8 bytes more: a second `SET note = :w` of `"x"` added 24 bytes per update, three more
+bytes of key 3. The table's name and placeholder names count nothing, and an
+`attribute_not_exists(absent)` condition added 73 bytes per update. Eleven updates of 363,700
+bytes (over 4,000,000, under 4 MiB) were taken.
 
 ### Table updates (#87)
 
@@ -87,6 +103,18 @@ any request ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 | switch back to `PAY_PER_REQUEST` | the indexes' capacity reads 0/0 | 0/0 | keeps 1/1 |
 | give an index `ProvisionedThroughput` on an on-demand table | `One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput` | accepted | `InternalFailure` |
 | add a second global index while the first is `CREATING`, the table `UPDATING` or already `ACTIVE` again during the backfill (25 s to 506 s) | `LimitExceededException: Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table` | accepted (indexes are active at once) | same as DynamoDB |
+
+### Round 3: PartiQL, Time to Live, item collection metrics
+
+| Request | DynamoDB | MiniStack | LocalStack |
+| --- | --- | --- | --- |
+| `ExecuteStatement` `INSERT` of an item that exists | `DuplicateItemException: Duplicate primary key exists in table` | same | code `DuplicateItem` |
+| the same in `ExecuteTransaction` | cancellation reason `DuplicateItem` | `DuplicateItemException` | `ValidationError` |
+| the same in `BatchExecuteStatement` | error code `DuplicateItem` | same | same |
+| `ExecuteStatement` `SELECT` with `Limit=2` | `NextToken` and `LastEvaluatedKey` | ignores `Limit` | no `LastEvaluatedKey` |
+| `DescribeTimeToLive` of a table deleted and created again | `DISABLED` | same | keeps `ENABLED` |
+| `ReturnItemCollectionMetrics=SIZE` of `PutItem`, `BatchWriteItem`, `TransactWriteItems` (a small collection) | each returns `SizeEstimateRangeGB` `[0.0, 1.0]` | `PutItem` only | none |
+| `PutItem` of 300 KB of binary | accepted | accepted | accepted |
 
 ## The emulators
 
