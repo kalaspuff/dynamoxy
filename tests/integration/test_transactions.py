@@ -55,13 +55,13 @@ async def test_a_transaction_planned_again_with_its_token_is_the_same_request(
     await client.create_tables(Wallet)
     wallets = client.model(Wallet)
     await wallets.create(Wallet(wallet_id="w1"))
-    token = "transfer-0001"
+    token = uuid.uuid4().hex  # tokens are account-wide for 10 minutes: unique on a shared emulator
     for _ in range(2):
         async with client.transaction(token=token) as tx:
             tx.update(Wallet.key("w1"), Wallet.balance.add(10))
     stored = await wallets.get_or_raise("w1")
     assert stored.balance == 10, "applied once"
-    async with client.transaction(token="transfer-0002") as tx:
+    async with client.transaction(token=uuid.uuid4().hex) as tx:
         tx.update(Wallet.key("w1"), Wallet.balance.add(10))
     assert (await wallets.get_or_raise("w1")).version != stored.version, "another token, another version"
     # Models with timestamps differ between plans anyway (see the transactions guide).
