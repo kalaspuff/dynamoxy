@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import pickle
+import traceback
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
 import dynamoxy
+import dynamoxy.errors
 from dynamoxy import _core, testing
 from tests.models import User
 
@@ -24,7 +26,9 @@ def round_trip(error: BaseException) -> Any:
 
 @pytest.mark.parametrize("error_type", NATIVE, ids=lambda error_type: error_type.__name__)
 def test_native_errors_name_their_module(error_type: type[Exception]) -> None:
-    assert error_type.__module__ == "dynamoxy._core"
+    assert error_type.__module__ == "dynamoxy.errors"
+    assert getattr(dynamoxy.errors, error_type.__name__) is error_type
+    assert traceback.format_exception_only(error_type("boom")) == [f"dynamoxy.errors.{error_type.__name__}: boom\n"]
     copy = round_trip(error_type("boom"))
     assert (type(copy), str(copy)) == (error_type, "boom")
 
