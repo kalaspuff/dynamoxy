@@ -8,9 +8,10 @@ expression language, conditional writes and `ReturnValues`, global and local ind
 projections, 1 MB pages and `Limit`, batches, transactions with cancellation reasons and
 idempotency tokens, TTL, PartiQL (a subset, with `ORDER BY`), streams settings, backups,
 consumed capacity and DynamoDB's error codes and messages. Tests need no network, credentials,
-Docker or emulator. A table or global index it creates stays `CREATING` until something describes
-it (as `wait_until_active()` and the default `wait=True` do): changes before that fail like they
-do while DynamoDB is still creating it.
+Docker or emulator. A table or global index it creates reads `CREATING` in the first
+`DescribeTable` after it and `ACTIVE` from the next on, as when polling DynamoDB until it is
+active (`wait_until_active()`, the default `wait=True`; on the in-memory backend without
+sleeping): changes before that fail as they do while DynamoDB is still creating it.
 
 ```python
 import pytest

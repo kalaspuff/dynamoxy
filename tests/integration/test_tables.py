@@ -436,26 +436,22 @@ async def test_indexes_added_to_a_provisioned_table_get_its_capacity(client: dyn
 
 
 async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, backend: str) -> None:
-    # DynamoDB refuses to change a table it is still creating (measured, docs/parity); the
-    # in-memory backend keeps a table CREATING until a DescribeTable sees it. MiniStack and
-    # LocalStack make tables active at once.
+    # DynamoDB refuses to change a table it is still creating (measured, docs/parity); in the
+    # in-memory backend a table or index being created is CREATING in the first DescribeTable after
+    # it (add_index() makes one) and ACTIVE in the next. MiniStack and LocalStack make tables
+    # active at once.
     table = client.table("creating")
     await table.create(partition_key=("pk", "S"), wait=False)
     if backend == "memory":
         with pytest.raises(dynamoxy.ResourceNotFoundError, match=r"Table: .*creating not found"):
             await table.enable_time_to_live("expires")
         with pytest.raises(dynamoxy.ResourceInUseError, match="Table is being created"):
-            # With billing=, add_index() does not describe the table (which would wait for it here).
-            await table.add_index(
-                dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")), billing=dynamoxy.Billing()
-            )
+            await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")))
     await table.wait_until_active()
     await table.enable_time_to_live("expires")
     await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")), wait=False)
     if backend == "memory":  # MiniStack creates the index at once
         with pytest.raises(dynamoxy.LimitExceededError, match="Only 1 online index"):
-            await table.add_index(
-                dynamoxy.IndexDefinition("by_name", "global", ("name", "S")), billing=dynamoxy.Billing()
-            )
+            await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))
     await table.wait_until_active()
     await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))

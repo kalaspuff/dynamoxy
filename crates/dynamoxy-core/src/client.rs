@@ -998,6 +998,12 @@ impl Client {
                     retryable: true,
                 });
             }
+            if self.inner.memory.is_some() && round < 3 {
+                // The in-memory backend activates a table on the next poll (backend::memory::admin):
+                // no sleep, unless a fault keeps it from answering.
+                tokio::task::yield_now().await;
+                continue;
+            }
             let polling =
                 crate::config::RetryConfig { base_delay: 0.05, max_delay: 2.0, ..self.inner.config.retry.clone() };
             let delay = backoff_at_least(&polling, round, Duration::from_millis(20));

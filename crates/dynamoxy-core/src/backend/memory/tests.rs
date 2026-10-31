@@ -73,8 +73,22 @@ fn table_input(name: &str) -> CreateTableInput {
 async fn backend_with_table() -> MemoryBackend {
     let backend = MemoryBackend::default();
     backend.create_table(table_input("items")).await.unwrap();
-    backend.describe_table("items").await.unwrap(); // waits for it, which ends CREATING
+    wait_until_active(&backend, "items").await;
     backend
+}
+
+/// Polls `DescribeTable` until the table and its global indexes are active, like a waiter: a
+/// table or index being created is `CREATING` in the first describe after it.
+async fn wait_until_active(backend: &MemoryBackend, table: &str) -> TableDescription {
+    for _ in 0..10 {
+        let description = backend.describe_table(table).await.unwrap();
+        let indexes_ready =
+            description.global_secondary_indexes.iter().all(|index| index.index_status == Some(IndexStatus::Active));
+        if description.table_status == TableStatus::Active && indexes_ready {
+            return description;
+        }
+    }
+    panic!("{table} did not become ACTIVE");
 }
 
 async fn put(backend: &MemoryBackend, item: Item) {
@@ -94,6 +108,7 @@ async fn tables_are_created_described_listed_and_deleted() {
     let backend = MemoryBackend::default();
     let created = backend.create_table(table_input("items")).await.unwrap();
     assert_eq!(created.table_status, TableStatus::Creating, "CreateTable reports CREATING, like DynamoDB");
+    assert_eq!(backend.describe_table("items").await.unwrap().table_status, TableStatus::Creating, "a first poll");
     let described = backend.describe_table("items").await.unwrap();
     assert_eq!(described.table_status, TableStatus::Active);
     assert_eq!(described.global_secondary_indexes[0].index_status, Some(IndexStatus::Active));
@@ -962,7 +977,7 @@ async fn update_table_adds_and_backfills_global_indexes() {
         .await
         .unwrap();
     assert_eq!(found.count, 1, "existing items are backfilled; items with a wrongly typed key are skipped");
-    backend.describe_table("items").await.unwrap(); // waits for the index
+    wait_until_active(&backend, "items").await; // waits for the index
     backend
         .update_table(UpdateTableInput {
             table_name: "items".into(),
@@ -1010,6 +1025,10 @@ async fn tables_and_indexes_being_created_refuse_changes_like_dynamodb() {
         )
     );
     put(&backend, item([("pk", s("a")), ("sk", n(1))])).await; // items can be written meanwhile
+    // A describe that sees it CREATING does not end it (a caller that looked once and did not
+    // wait); the next poll sees it ACTIVE.
+    assert_eq!(backend.describe_table("items").await.unwrap().table_status, TableStatus::Creating);
+    assert_eq!(backend.update_time_to_live(ttl.clone()).await.unwrap_err().kind(), Some(ErrorKind::ResourceNotFound));
     assert_eq!(backend.describe_table("items").await.unwrap().table_status, TableStatus::Active);
     backend.update_time_to_live(ttl).await.unwrap();
 
@@ -1030,6 +1049,10 @@ async fn tables_and_indexes_being_created_refuse_changes_like_dynamodb() {
             "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table".into()
         )
     );
+    let described = backend.describe_table("items").await.unwrap();
+    assert_eq!(described.table_status, TableStatus::Active, "the table is ACTIVE again during the backfill");
+    assert_eq!(status(&described, "by_email"), Some(IndexStatus::Creating));
+    assert!(backend.update_table(index("by_name", "name")).await.is_err(), "still one index at a time");
     assert_eq!(status(&backend.describe_table("items").await.unwrap(), "by_email"), Some(IndexStatus::Active));
     backend.update_table(index("by_name", "name")).await.unwrap();
 }
@@ -1059,7 +1082,7 @@ async fn global_indexes_have_capacity_on_provisioned_tables_only() {
         .update_table(UpdateTableInput { global_secondary_index_updates: vec![index_capacity.clone()], ..provisioned })
         .await
         .unwrap();
-    backend.describe_table("items").await.unwrap();
+    wait_until_active(&backend, "items").await;
     let error = backend
         .update_table(UpdateTableInput {
             table_name: "items".into(),

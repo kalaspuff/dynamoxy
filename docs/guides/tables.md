@@ -66,8 +66,9 @@ another is being created (`LimitExceededError`, "Only 1 online index can be crea
 simultaneously per table"), also during the minutes of its backfill when the table reads `ACTIVE`
 again. The in-memory backend refuses a deletion then too, as the message says (not measured). `create_tables()` and `ensure_tables()` wait for each step
 before the next; with `wait=False` on your own calls, call `table.wait_until_active()` before the
-next change. The in-memory backend keeps a new table or index `CREATING` until something
-describes it (as waiting does), so tests catch a missing wait.
+next change. On the in-memory backend a new table or index reads `CREATING` in the first
+`DescribeTable` and `ACTIVE` from the next on (as when polling until it is active), so tests
+catch a missing wait.
 
 ## Time to Live
 

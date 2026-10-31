@@ -5,11 +5,13 @@
 //! `UPDATING` and `DeleteTable` `DELETING`, while `DescribeTable` afterwards reports `ACTIVE`
 //! (or `ResourceNotFoundException`), so code that waits for a table works unchanged.
 //!
-//! A created table, and a global index added to one, stays `CREATING` until a `DescribeTable`
-//! sees it, the way a caller that waits for it would: until then DynamoDB refuses to change it
-//! (`UpdateTable`, `UpdateTimeToLive`) or to add another index, with its messages (measured in
-//! eu-north-1 on 2026-10-31, docs/parity), and the in-memory backend a deletion of an index too
-//! (as DynamoDB's message says, not measured). Reads and writes of its items are not refused.
+//! A created table, and a global index added to one, is `CREATING` in the first `DescribeTable`
+//! after it and `ACTIVE` from the second on, the way a caller that polls until it is active sees
+//! it (the client's waiter polls the in-memory backend without sleeping). Until then DynamoDB
+//! refuses to change the table (`UpdateTable`, `UpdateTimeToLive`) or to add another index, with
+//! its messages (measured in eu-north-1 on 2026-10-31, docs/parity), and the in-memory backend a
+//! deletion of an index too (as DynamoDB's message says, not measured). Reads and writes of its
+//! items are not refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -219,7 +221,8 @@ pub fn create_table(state: &mut State, input: CreateTableInput) -> Result<TableD
         ttl_attribute: None,
         tags: input.tags,
         pitr_days: None,
-        creating: true,
+        describes_until_active: CREATING_DESCRIBES,
+        index_describes_until_active: 0,
     };
     let description = table.describe(TableStatus::Creating);
     state.tables.insert(input.table_name, table);
@@ -236,14 +239,23 @@ fn not_found(table_name: &str) -> Error {
     ServiceError::resource_not_found(format!("Requested resource not found: Table: {table_name} not found")).into()
 }
 
-/// `DescribeTable`: the table is active from now on, and so are the indexes being created.
+/// `DescribeTable` calls that see a table or global index being created: the first sees it
+/// `CREATING`, the next one `ACTIVE`.
+const CREATING_DESCRIBES: u8 = 2;
+
+/// `DescribeTable`: each call counts towards a table or index being created becoming active.
 pub fn describe_table(state: &mut State, table_name: &str) -> Result<TableDescription> {
     let table = state.tables.get_mut(table_name).ok_or_else(|| not_found(table_name))?;
-    table.creating = false;
-    for index in &mut table.indexes {
-        index.status = IndexStatus::Active;
+    table.describes_until_active = table.describes_until_active.saturating_sub(1);
+    if table.index_describes_until_active > 0 {
+        table.index_describes_until_active -= 1;
+        if table.index_describes_until_active == 0 {
+            for index in &mut table.indexes {
+                index.status = IndexStatus::Active;
+            }
+        }
     }
-    Ok(table.describe(TableStatus::Active))
+    Ok(table.describe(if table.describes_until_active > 0 { TableStatus::Creating } else { TableStatus::Active }))
 }
 
 /// DynamoDB's refusal to change a table it is still creating (measured, docs/parity).
@@ -271,7 +283,7 @@ pub fn delete_table(state: &mut State, table_name: &str) -> Result<TableDescript
 /// `UpdateTable`.
 pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableDescription> {
     let table = state.tables.get_mut(&input.table_name).ok_or_else(|| not_found(&input.table_name))?;
-    if table.creating {
+    if table.describes_until_active > 0 {
         return Err(being_created(table));
     }
     let nothing = input.billing_mode.is_none()
@@ -443,6 +455,7 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                     }
                 }
                 table.indexes.push(index);
+                table.index_describes_until_active = CREATING_DESCRIBES;
                 table.attribute_definitions = definitions;
                 table.retain_used_definitions();
             }
@@ -499,7 +512,7 @@ pub fn list_tables(state: &State, input: &ListTablesInput) -> Result<ListTablesO
 /// `UpdateTimeToLive`.
 pub fn update_time_to_live(state: &mut State, input: &UpdateTimeToLiveInput) -> Result<TimeToLiveDescription> {
     let table = state.tables.get_mut(&input.table_name).ok_or_else(|| not_found(&input.table_name))?;
-    if table.creating {
+    if table.describes_until_active > 0 {
         // DynamoDB answers as if the table did not exist yet (measured, docs/parity).
         return Err(not_found(&input.table_name));
     }
@@ -719,7 +732,8 @@ fn restore(
     table.stream_specification = None;
     table.stream_label = None;
     table.deletion_protection = false;
-    table.creating = true;
+    table.describes_until_active = CREATING_DESCRIBES;
+    table.index_describes_until_active = 0;
     if let Some(mode) = overrides.billing_mode {
         table.billing_mode = mode;
     }
