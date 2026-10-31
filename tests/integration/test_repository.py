@@ -177,6 +177,13 @@ async def test_stale_instances_never_match_a_version_again(users: dynamoxy.Repos
     assert len(versions) == 3, "every write has a token of its own"
 
 
+async def test_numeric_versions_are_not_read(users: dynamoxy.Repository[User]) -> None:
+    # Counters stored before versions were tokens (ADR 0022) are not migrated.
+    await users.table.put({"user_id": "u1", "email": "u1@example.com", "name": "U1", "version": 3})
+    with pytest.raises(dynamoxy.ItemDecodeError, match=r"version: cannot decode a stored int as str"):
+        await users.get("u1")
+
+
 def test_version_fields_hold_text() -> None:
     class Counted(dynamoxy.Model, table="counted"):
         counted_id: Attr[str] = partition_key()
