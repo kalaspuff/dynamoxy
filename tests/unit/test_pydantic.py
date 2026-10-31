@@ -267,3 +267,24 @@ def test_fields_with_a_codec_of_their_own_may_be_optional() -> None:
     item = filled.to_item()
     assert item == {"reminder_id": "r1", "due": "2026-10-13T08:48:47.000000Z", "data": '{"a":[1]}', "state": "on"}
     assert Reminder.from_item(item) == filled
+
+
+class Sighted(dynamoxy.PydanticModel, abstract=True):
+    seen_at: datetime | None = None
+
+
+class Bird(Sighted, table="pydantic-birds", datetime_format="iso_z"):
+    bird_id: Annotated[str, dynamoxy.PartitionKey()]
+
+
+def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    builder = ExpressionBuilder()
+    builder.condition(dynamoxy.attr(Bird.seen_at) == moment)
+    builder.update([dynamoxy.attr(Bird.seen_at).set(moment)])
+    builder.condition(dynamoxy.attr(Sighted.seen_at) == moment)
+    assert builder.values == {
+        ":v0": "2026-01-01T00:00:00.000000Z",
+        ":v1": "2026-01-01T00:00:00.000000Z",
+        ":v2": "2026-01-01T00:00:00.000000+00:00",  # the base class keeps its format
+    }

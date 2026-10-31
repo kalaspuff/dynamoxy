@@ -10,7 +10,7 @@ import pytest
 
 import dynamoxy
 from dynamoxy import Attr, Model, partition_key
-from tests.models import Customer, Event, Order, Player, User
+from tests.models import Article, Customer, Event, Order, Player, User
 
 ANNOUNCED: list[str] = []
 
@@ -117,6 +117,19 @@ async def test_delete_and_dict_level_operations(client_with_tables: dynamoxy.Cli
         tx.delete_item("events", {"stream": "s", "seq": 4})
     assert await events.get("s", 1) is None
     assert (await events.get_or_raise("s", 2)).kind == "c"
+
+
+async def test_updates_by_key_of_inherited_fields(client: dynamoxy.Client) -> None:
+    # Article.seen_at is declared by the abstract Timestamped; the update is one of an Article.
+    await client.create_tables(Article)
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    key = Article.key("a1", moment)
+    await client.model(Article).create(Article(article_id="a1", published_at=moment))
+    async with client.transaction() as tx:
+        tx.update(key, Article.seen_at.set(moment))
+    raw = await client.table("articles").get(key)
+    assert raw is not None
+    assert raw["seen_at"] == "2026-01-01T00:00:00.000000Z", "in Article's datetime_format"
 
 
 async def test_tokens_make_retries_idempotent(client_with_tables: dynamoxy.Client) -> None:

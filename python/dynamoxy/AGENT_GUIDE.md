@@ -194,9 +194,12 @@ class Reading(Base, table="readings"):
 ```
 
 A field overrides it with `created_at(format=...)` or `codec=dynamoxy.codecs.DateTimeCodec(...)`.
-Nested `Document`s declare their own (`class Address(Document, datetime_format="iso_z")`);
-`PydanticModel` takes the same keyword and `CreatedAt("iso_z")`. Both ISO styles are always
-read, but keys, templates and conditions compare stored text: keep one format per attribute.
+A subclass that sets another format stores the fields it inherits in it too: build its conditions
+and updates from its own attributes (`Reading.created_at`), as those of the base class encode
+values in the base's format. Nested `Document`s declare their own
+(`class Address(Document, datetime_format="iso_z")`); `PydanticModel` takes the same keyword and
+`CreatedAt("iso_z")`. Both ISO styles are always read, but keys, templates and conditions compare
+stored text: keep one format per attribute.
 
 Rules that are easy to miss:
 

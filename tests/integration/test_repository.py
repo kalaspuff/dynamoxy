@@ -14,7 +14,7 @@ import dynamoxy
 from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, sort_key, updated_at, version
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
-from tests.models import Customer, Event, Order, OrderStatus, Player, Status, User
+from tests.models import Article, Customer, Event, Order, OrderStatus, Player, Status, User
 
 
 class Ticket(Model, table="tickets"):
@@ -683,6 +683,29 @@ async def test_timestamps_with_a_z_suffix(client: dynamoxy.Client) -> None:
     assert legacy.created_at == at(1) + timedelta(milliseconds=500)
     # ...but keys compare stored text: this key is "...00.000000Z", the stored one "...00+00:00".
     assert await readings.get("s2", at(1)) is None
+
+
+async def test_inherited_fields_use_the_datetime_format_of_the_subclass(client: dynamoxy.Client) -> None:
+    # Timestamped declares the fields in the default format; Article stores them with a Z suffix.
+    await client.create_tables(Article)
+    articles = client.model(Article)
+    await articles.create(Article(article_id="a1", published_at=at(1, 1), seen_at=at(1, 1)))
+    raw = await client.table("articles").get(Article.key("a1", at(1, 1)))
+    assert raw is not None
+    assert (raw["published_at"], raw["seen_at"]) == ("2026-01-01T01:00:00.000000Z", "2026-01-01T01:00:00.000000Z")
+    # Key conditions, filters and write conditions on the inherited fields compare that text (an
+    # upper bound in the base class's format, "...01:00:00.000000+00:00", sorts before the item)...
+    window = articles.query(article_id="a1").where(Article.published_at.between(at(1), at(1, 1)))
+    assert [article.published_at for article in await window.all()] == [at(1, 1)]
+    assert await articles.scan().filter(Article.seen_at == at(1, 1)).count() == 1
+    # ...and updates store it.
+    updated = await articles.update(
+        Article.key("a1", at(1, 1)), Article.seen_at.set(at(1, 2)), condition=Article.seen_at == at(1, 1)
+    )
+    assert updated.seen_at == at(1, 2)
+    raw = await client.table("articles").get(Article.key("a1", at(1, 1)))
+    assert raw is not None
+    assert raw["seen_at"] == "2026-01-01T02:00:00.000000Z"
 
 
 async def test_validation_fails_before_any_io(client_factory: ClientFactory) -> None:

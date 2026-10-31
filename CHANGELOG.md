@@ -159,6 +159,19 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
   they are, and conditions compare with the value as given. Pydantic models still check key
   values against the field's type only.
+- Fields that a subclass inherits encoded expression values in the `datetime_format` of the
+  class that declared them, while the subclass stored them in its own. With an abstract
+  `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,
+  `filter(Article.seen_at == at)` compared `...+00:00` with the stored `...Z` and found nothing,
+  conditions on writes failed, and `update(Article.seen_at.set(at))` stored `...+00:00` among
+  `...Z` values (text among numbers with an epoch format). Transactions took the declaring class
+  as the model of updates by key (`TypeError: Timestamped is not stored in a table`), and
+  assigning or comparing such a field raised `TypeError` when the base class's key template
+  names a field of the subclass. A subclass now has attributes of its own for the fields it
+  inherits; those of the base class keep its format. So `add()`, `increment()` and `decrement()`
+  of an instance refuse the attribute of a sibling class, as they did for pydantic models: with
+  `Page` and `Post` both inheriting `views`, `post.increment(Page.views)` raises `TypeError`,
+  which now names the attribute to use (`Post.views`).
 
 ### Security
 
