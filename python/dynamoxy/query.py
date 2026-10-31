@@ -231,8 +231,11 @@ class _Reader[T]:
         projected = self._projected
         if projected is None or self._filter is None or self._global_index or self._operation != "Scan":
             return  # queries and scans of global indexes are checked in filter()
+        # With .hydrate(), the projection sent names the keys alone (see _params): nothing is fetched.
         fetched = params.get("select") == "ALL_ATTRIBUTES" or (
-            "projection_expression" in params and not {str(path.elements[0]) for path in self._projection} <= projected
+            "projection_expression" in params
+            and not self._hydrate
+            and not {str(path.elements[0]) for path in self._projection} <= projected
         )
         if not fetched:
             self._check_projected(self._filter)
