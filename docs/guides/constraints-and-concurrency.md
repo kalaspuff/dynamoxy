@@ -29,8 +29,9 @@ cannot prevent for items stored before the field became unique (or written by ot
 write that would remove or change the value of the item that does not own the guard is refused
 with `UniqueConstraintError`: its message says that the guard belongs to another item, and
 `.item["_owner"]` holds that item's key. Nothing is written, and the other item keeps its guard.
-If the owner holds the same value, change the value of one of the items (the owner's writes
-succeed, and once its value is gone the other item's writes do too). If the owner is gone or
+If the owner holds the same value, change or delete the owner first: its writes succeed, and
+once its value is gone the other item's writes do too (until then they are refused the same way,
+since each of them would remove the owner's guard). If the owner is gone or
 holds another value (deleted by another tool, or expired by TTL, which leaves its guards), the
 guard is stale: delete the guard item (`.item`), and the write succeeds.
 

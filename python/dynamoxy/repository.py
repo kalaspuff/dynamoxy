@@ -1635,8 +1635,9 @@ class Repository[M]:
             owned = UniqueConstraintError(
                 f"{self.model_class.__name__}.{spec.name}: the stored value's guard item belongs to another item "
                 f"(see .value, and the owner's key in .item['_owner']), so this {write.mode} does not delete it; "
-                "the stored data breaks the unique constraint: if the owner holds the same value, change the value "
-                "of one of the items, and if it is gone or holds another value, delete the guard item (.item)",
+                "the stored data breaks the unique constraint: if the owner holds the same value, change or delete "
+                "the owner first (this item's writes are refused until its guard is gone), and if it is gone or "
+                "holds another value, delete the guard item (.item)",
                 model=self.model_class,
                 field=spec.name,
                 value=spec.codec.decode(value),
