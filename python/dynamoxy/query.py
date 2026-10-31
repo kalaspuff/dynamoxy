@@ -588,7 +588,8 @@ class _Reader[T]:
         """Whether at least one item matches (model reads read the keys only: nothing is decoded)."""
         names = self._key_names
         if isinstance(names, tuple) and names:
-            return await self.limit(1)._with_projection(*names).first() is not None
+            # The keys of the entries: no hydration (project() keeps a hydrate() before it).
+            return await self.limit(1)._replace(hydrate=False)._with_projection(*names).first() is not None
         return await self.first() is not None
 
 

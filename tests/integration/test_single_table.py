@@ -262,6 +262,16 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client, backen
         await open_payments.project("sk", "amount").all()
     assert [row["amount"] for row in await open_payments.project("amount").hydrate().all()] == [5]
     assert [row["amount"] for row in await open_payments.hydrate().project("amount").all()] == [5]
+    operations: list[str] = []
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        operations.append(request.operation)
+        return await call_next(request)
+
+    remove = client.use(record)
+    assert await open_payments.hydrate().exists()
+    remove()
+    assert operations == ["Query"], "exists() reads the keys of the entries only"
     # A table whose index does not hold the entity type (created by other tools, or before
     # dynamoxy projected it): DynamoDB refuses queries that filter on it (ADR 0021), and its
     # scans' filters see entries without one.
