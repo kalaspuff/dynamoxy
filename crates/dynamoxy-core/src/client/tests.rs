@@ -5,6 +5,7 @@ use super::*;
 use crate::backend::memory::{Fault, FaultKind};
 use crate::config::RetryConfig;
 use crate::events::EventKind;
+use crate::expr::Names;
 use crate::types::{
     AttributeDefinition, BatchExecuteStatementInput, BillingMode, CreateTableInput, DeleteItemInput,
     ExecuteStatementInput, GetItemInput, KeySchema, ParameterizedStatement, PutItemInput, ReturnValues,
@@ -474,6 +475,50 @@ async fn managed_batches_chunk_and_resend_unprocessed_items() {
     let call = client.batch_get(request, ReturnConsumedCapacity::None).await;
     assert_eq!(call.result.unwrap().items["items"].len(), 60, "keys that do not exist are not returned");
     assert_eq!(call.stats.requests, 2, "150 keys need two requests");
+}
+
+#[test]
+fn batch_get_chunks_keep_key_order_and_each_tables_settings() {
+    let keys = |prefix: &str, count: usize| -> Vec<Item> {
+        (0..count).map(|index| item([("pk", AttributeValue::s(format!("{prefix}{index}")))])).collect()
+    };
+    let names = Names::from([("#n".to_owned(), "name".to_owned())]);
+    let first = KeysAndAttributes {
+        keys: keys("a", 130),
+        consistent_read: true,
+        projection_expression: Some("#n".into()),
+        expression_attribute_names: names.clone(),
+    };
+    let second = KeysAndAttributes { keys: keys("b", 140), ..Default::default() };
+    let empty = KeysAndAttributes { consistent_read: true, ..Default::default() };
+    let request = BTreeMap::from([
+        ("first".to_owned(), first.clone()),
+        ("second".to_owned(), second.clone()),
+        ("third".to_owned(), empty),
+    ]);
+    let chunks = chunk_keys(request, 100);
+    let sizes: Vec<Vec<(&str, usize)>> = chunks
+        .iter()
+        .map(|chunk| chunk.iter().map(|(table, request)| (table.as_str(), request.keys.len())).collect())
+        .collect();
+    assert_eq!(sizes, [vec![("first", 100)], vec![("first", 30), ("second", 70)], vec![("second", 70)]]);
+    for chunk in &chunks {
+        if let Some(request) = chunk.get("first") {
+            assert!(request.consistent_read);
+            assert_eq!(request.projection_expression.as_deref(), Some("#n"));
+            assert_eq!(request.expression_attribute_names, names);
+        }
+        if let Some(request) = chunk.get("second") {
+            assert!(!request.consistent_read);
+            assert_eq!(request.projection_expression, None);
+            assert!(request.expression_attribute_names.is_empty());
+        }
+    }
+    let rejoined = |table: &str| -> Vec<Item> {
+        chunks.iter().filter_map(|chunk| chunk.get(table)).flat_map(|request| request.keys.clone()).collect()
+    };
+    assert_eq!(rejoined("first"), first.keys, "keys keep their order");
+    assert_eq!(rejoined("second"), second.keys);
 }
 
 #[tokio::test(start_paused = true)]
