@@ -163,3 +163,47 @@ def test_copies_keep_every_attribute() -> None:
         assert copied.model is local
     assert shallow.key is error.key
     assert deep.key is not error.key
+
+
+class OrderMissingError(dynamoxy.ItemNotFoundError):
+    """An application's error with a second required argument."""
+
+    def __init__(self, message: str, order_id: str) -> None:
+        super().__init__(message, model=User, key={"user_id": order_id})
+        self.order_id = order_id
+
+
+def test_subclasses_with_more_arguments_unpickle() -> None:
+    # Unpickling and copying do not call the constructor: they restore the attributes.
+    error = OrderMissingError("order o1 does not exist", "o1")
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        copy = pickle.loads(pickle.dumps(error, protocol))
+        assert (type(copy), copy.args, vars(copy)) == (OrderMissingError, error.args, vars(error))
+    for copied in (copy_module.copy(error), deepcopy(error)):
+        assert (type(copied), copied.args, vars(copied)) == (OrderMissingError, error.args, vars(error))
+
+
+class StrictError(Exception):
+    """A foreign error that pickles, but does not unpickle (its constructor takes two arguments)."""
+
+    def __init__(self, message: str, detail: str) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+def test_only_the_parts_that_do_not_pickle_are_left_out() -> None:
+    local = make_local_model()
+    error = dynamoxy.ItemNotFoundError("missing", model=User, key={"user_id": "u1", "tenant": local})
+    error.history = [("get", lambda: 1), ("query", 2)]  # pyrefly: ignore[missing-attribute]
+    foreign = StrictError("boom", "detail")
+    error.foreign = foreign  # pyrefly: ignore[missing-attribute]
+    pickle.dumps(foreign)  # it pickles; unpickling it fails
+    copy = round_trip(error)
+    assert (copy.model, copy.key) == (User, {"user_id": "u1", "tenant": None})
+    assert copy.history == [("get", None), ("query", 2)]
+    assert copy.foreign is None
+    reason = dynamoxy.CancellationReason(index=0, code="ConditionalCheckFailed", item={"pk": "p1", "f": lambda: 1})
+    canceled = dynamoxy.TransactionCanceledError("canceled")
+    canceled._explained_reasons = [reason]  # pyrefly: ignore[missing-attribute]
+    restored = round_trip(canceled).cancellation_reasons[0]
+    assert (restored.code, restored.item) == ("ConditionalCheckFailed", {"pk": "p1", "f": None})

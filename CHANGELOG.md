@@ -20,6 +20,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `ProcessPoolExecutor` worker, multiprocessing or a task queue as a `PicklingError`. Pickles of
   dynamoxy's errors now leave such values out (`None`), as they already did for
   `FieldError.value`; copies keep them.
+- An application's subclass of a dynamoxy error that takes more arguments than the message could
+  not be unpickled (`TypeError: missing 1 required positional argument`), so it never reached the
+  caller of a worker process or task queue. Unpickling and copying no longer call an error's
+  constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
+  is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
+  of a dataclass) instead of as a whole attribute.
 
 ## [0.4.0] - 2026-10-31
 
