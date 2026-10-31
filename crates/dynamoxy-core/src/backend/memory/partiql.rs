@@ -763,6 +763,21 @@ pub(crate) enum Effect {
     Once,
 }
 
+/// The tables that statements name (those this parser parses), for faults injected for a table.
+pub(crate) fn statement_tables<'a>(
+    statements: impl IntoIterator<Item = (&'a String, &'a Vec<AttributeValue>)>,
+) -> Vec<String> {
+    let mut tables: Vec<String> = Vec::new();
+    for (statement, parameters) in statements {
+        if let Ok(parsed) = parse(statement, parameters)
+            && !tables.iter().any(|table| table == parsed.table())
+        {
+            tables.push(parsed.table().to_owned());
+        }
+    }
+    tables
+}
+
 /// The [`Effect`] of a statement.
 pub(crate) fn effect(statement: &str, parameters: &[AttributeValue]) -> Effect {
     match parse(statement, parameters) {
@@ -1299,7 +1314,7 @@ pub fn execute_transaction(state: &mut State, input: &ExecuteTransactionInput) -
             return Ok(ExecuteTransactionOutput::default());
         }
         if reads == 0 {
-            state.tokens.insert(token.clone(), TokenRecord { fingerprint, at: current });
+            state.tokens.insert(token.clone(), TokenRecord { fingerprint, at: current, sizes: Vec::new() });
         }
     }
     let mut output = ExecuteTransactionOutput::default();

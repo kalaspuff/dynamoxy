@@ -145,8 +145,17 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
             )
             .into());
         }
-        // A replay of a transaction that succeeded: nothing is written again.
-        return Ok(TransactWriteItemsOutput::default());
+        // A replay of a transaction that succeeded: nothing is written again, and DynamoDB bills
+        // it as a transactional read of the items the first call wrote (2 units per 4 KB, of the
+        // larger of each item's old and new image), in the replay's own capacity mode.
+        let mut meter = CapacityMeter::default();
+        for (table, size) in &record.sizes {
+            meter.read(table, None, 2.0 * read_units(*size, true));
+        }
+        return Ok(TransactWriteItemsOutput {
+            consumed_capacity: meter.reports(input.return_consumed_capacity),
+            ..TransactWriteItemsOutput::default()
+        });
     }
 
     // Request-level validation: expressions, keys, duplicate items, size.
@@ -239,6 +248,7 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
     }
     let mut meter = CapacityMeter::default();
     let mut output = TransactWriteItemsOutput::default();
+    let mut sizes = Vec::with_capacity(prepared.len());
     for write in prepared {
         if input.return_item_collection_metrics
             && write.writes
@@ -252,13 +262,16 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
             output.item_collection_metrics.entry(write.table.clone()).or_default().push(metrics);
         }
         if write.writes {
+            let old = state.tables.get(&write.table).and_then(|table| table.items.get(&write.key)).map_or(0, item_size);
+            sizes.push((write.table.clone(), old.max(write.new.as_ref().map_or(0, item_size))));
             apply(state, write, &mut meter, 2.0);
         } else {
+            sizes.push((write.table.clone(), write.read_size));
             meter.read(&write.table, None, 2.0 * read_units(write.read_size, true));
         }
     }
     if let Some(token) = token {
-        state.tokens.insert(token, TokenRecord { fingerprint: request_fingerprint, at: current });
+        state.tokens.insert(token, TokenRecord { fingerprint: request_fingerprint, at: current, sizes });
     }
     output.consumed_capacity = meter.reports(input.return_consumed_capacity);
     Ok(output)

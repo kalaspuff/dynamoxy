@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import warnings
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, assert_type
 
 import pytest
@@ -559,11 +559,14 @@ async def test_shared_stores_and_purging_expired_items() -> None:
     store = dynamoxy.MemoryStore()
     writer, reader = testing.memory_client(store=store), testing.memory_client(store=store)
     await writer.create_tables(Event)
-    await writer.model(Event).put(Event(stream="s", seq=1, kind="k", expires_at=dynamoxy_epoch(1)))
+    now = datetime.now(UTC)
+    await writer.model(Event).put(Event(stream="s", seq=1, kind="k", expires_at=now - timedelta(days=1)))
     await writer.model(Event).put(Event(stream="s", seq=2, kind="k"))
-    assert await reader.model(Event).count() == 2
+    # More than five years in the past: DynamoDB never considers it for expiry.
+    await writer.model(Event).put(Event(stream="s", seq=3, kind="k", expires_at=dynamoxy_epoch(1)))
+    assert await reader.model(Event).count() == 3
     assert testing.purge_expired(store) == 1
-    assert [event.seq for event in await reader.model(Event).scan().all()] == [2]
+    assert sorted(event.seq for event in await reader.model(Event).scan().all()) == [2, 3]
     with pytest.raises(TypeError, match="in-memory client"):
         testing.purge_expired(dynamoxy.Client())
     await writer.close()

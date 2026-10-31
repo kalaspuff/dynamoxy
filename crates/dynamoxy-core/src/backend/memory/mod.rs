@@ -69,7 +69,13 @@ pub(crate) struct Backup {
 pub(crate) struct TokenRecord {
     fingerprint: u64,
     at: f64,
+    /// The table and item size each operation's capacity was computed from, which a replay
+    /// with the token is billed for as a transactional read (`TransactWriteItems`).
+    sizes: Vec<(String, usize)>,
 }
+
+/// How far in the past a TTL may be for DynamoDB to delete the item: five years (of 365 days).
+pub(crate) const TTL_MAX_AGE: f64 = 5.0 * 365.0 * 86_400.0;
 
 /// How long a client request token is remembered (10 minutes).
 pub(crate) const TOKEN_LIFETIME: f64 = 600.0;
@@ -139,17 +145,18 @@ pub enum FaultKind {
 }
 
 /// What a triggered fault leaves to do once the operation runs.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Triggered {
-    /// Batch operations return every request unprocessed (nothing is written).
-    unprocessed: bool,
+    /// Batch operations return requests unprocessed (nothing of them is written): those of this
+    /// table (`Some(Some(table))`), or every one (`Some(None)`).
+    unprocessed: Option<Option<String>>,
     /// The operation runs, and its response is lost.
     lose_response: bool,
 }
 
 impl Triggered {
     /// The operation's result, or a lost response.
-    fn deliver<T>(self, operation: &'static str, result: Result<T>) -> Result<T> {
+    fn deliver<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
         if self.lose_response {
             return Err(Error::Transport {
                 operation,
@@ -233,9 +240,12 @@ impl MemoryBackend {
     /// before `at` (default: now), in tables with TTL enabled. Returns how many were deleted.
     ///
     /// DynamoDB deletes expired items in the background, typically within a few days; tests call
-    /// this to make that happen deterministically.
+    /// this to make that happen deterministically. Like DynamoDB, it leaves items whose TTL is
+    /// more than five years before `at` (`0`, or milliseconds read as seconds the other way
+    /// round): "the TTL can't be more than five years in the past" to be considered for expiry.
     pub fn purge_expired(&self, at: Option<f64>) -> usize {
         let at = at.unwrap_or_else(now);
+        let oldest = at - TTL_MAX_AGE;
         let mut state = self.state.lock();
         let mut deleted = 0;
         for table in state.tables.values_mut() {
@@ -244,7 +254,9 @@ impl MemoryBackend {
                 .items
                 .iter()
                 .filter(|(_, item)| match item.get(&attribute) {
-                    Some(AttributeValue::N(number)) => number.as_str().parse::<f64>().is_ok_and(|expiry| expiry <= at),
+                    Some(AttributeValue::N(number)) => {
+                        number.as_str().parse::<f64>().is_ok_and(|expiry| oldest <= expiry && expiry <= at)
+                    }
                     _ => false,
                 })
                 .map(|(key, _)| key.clone())
@@ -267,39 +279,41 @@ impl MemoryBackend {
     }
 
     /// Applies a matching fault: fails or sleeps now, or returns what to do once the operation ran.
-    async fn fault(&self, operation: &'static str, table: Option<&str>) -> Result<Triggered> {
+    /// A fault for a table matches a call that reads or writes that table, among others.
+    async fn fault(&self, operation: &'static str, tables: &[&str]) -> Result<Triggered> {
         let triggered = {
             let mut state = self.state.lock();
             let position = state.faults.iter().position(|fault| {
                 fault.times > 0
                     && fault.operation.as_deref().is_none_or(|name| name == operation)
-                    && fault.table.as_deref().is_none_or(|name| Some(name) == table)
+                    && fault.table.as_deref().is_none_or(|name| tables.contains(&name))
             });
             position.map(|position| {
                 let fault = &mut state.faults[position];
                 fault.times -= 1;
-                let kind = fault.kind.clone();
+                let triggered = (fault.kind.clone(), fault.table.clone());
                 if fault.times == 0 {
                     state.faults.remove(position);
                 }
-                kind
+                triggered
             })
         };
-        match triggered {
-            None => Ok(Triggered::default()),
-            Some(FaultKind::Error { code, message }) => {
+        let Some((kind, table)) = triggered else { return Ok(Triggered::default()) };
+        match kind {
+            FaultKind::Error { code, message } => {
                 let mut error = ServiceError::new(code, message).with_operation(operation);
                 if error.kind.is_retryable() {
                     error.status = Some(if error.kind == crate::error::ErrorKind::Internal { 500 } else { 400 });
                 }
                 Err(error.into())
             }
-            Some(FaultKind::Unprocessed) => Ok(Triggered { unprocessed: true, ..Triggered::default() }),
-            Some(FaultKind::Latency(delay)) => {
+            // Only the requests of the fault's table, when it has one.
+            FaultKind::Unprocessed => Ok(Triggered { unprocessed: Some(table), ..Triggered::default() }),
+            FaultKind::Latency(delay) => {
                 tokio::time::sleep(delay).await;
                 Ok(Triggered::default())
             }
-            Some(FaultKind::LoseResponse) => Ok(Triggered { lose_response: true, ..Triggered::default() }),
+            FaultKind::LoseResponse => Ok(Triggered { lose_response: true, ..Triggered::default() }),
         }
     }
 }
@@ -315,54 +329,61 @@ impl Backend for MemoryBackend {
     }
 
     async fn get_item(&self, input: GetItemInput) -> Result<GetItemOutput> {
-        let fault = self.fault("GetItem", Some(&input.table_name)).await?;
+        let fault = self.fault("GetItem", &[&input.table_name]).await?;
         fault.deliver("GetItem", named("GetItem", items::get_item(&self.state.lock(), &input)))
     }
 
     async fn put_item(&self, input: PutItemInput) -> Result<WriteItemOutput> {
-        let fault = self.fault("PutItem", Some(&input.table_name)).await?;
+        let fault = self.fault("PutItem", &[&input.table_name]).await?;
         fault.deliver("PutItem", named("PutItem", items::put_item(&mut self.state.lock(), input)))
     }
 
     async fn update_item(&self, input: UpdateItemInput) -> Result<WriteItemOutput> {
-        let fault = self.fault("UpdateItem", Some(&input.table_name)).await?;
+        let fault = self.fault("UpdateItem", &[&input.table_name]).await?;
         fault.deliver("UpdateItem", named("UpdateItem", items::update_item(&mut self.state.lock(), input)))
     }
 
     async fn delete_item(&self, input: DeleteItemInput) -> Result<WriteItemOutput> {
-        let fault = self.fault("DeleteItem", Some(&input.table_name)).await?;
+        let fault = self.fault("DeleteItem", &[&input.table_name]).await?;
         fault.deliver("DeleteItem", named("DeleteItem", items::delete_item(&mut self.state.lock(), input)))
     }
 
     async fn query(&self, input: QueryInput) -> Result<QueryOutput> {
-        let fault = self.fault("Query", Some(&input.table_name)).await?;
+        let fault = self.fault("Query", &[&input.table_name]).await?;
         fault.deliver("Query", named("Query", query::query(&self.state.lock(), &input)))
     }
 
     async fn scan(&self, input: ScanInput) -> Result<QueryOutput> {
-        let fault = self.fault("Scan", Some(&input.table_name)).await?;
+        let fault = self.fault("Scan", &[&input.table_name]).await?;
         fault.deliver("Scan", named("Scan", query::scan(&self.state.lock(), &input)))
     }
 
     async fn batch_get_item(&self, input: BatchGetItemInput) -> Result<BatchGetItemOutput> {
-        let fault = self.fault("BatchGetItem", input.request_items.keys().next().map(String::as_str)).await?;
+        let tables: Vec<&str> = input.request_items.keys().map(String::as_str).collect();
+        let fault = self.fault("BatchGetItem", &tables).await?;
+        let unprocessed = fault.unprocessed.as_ref().map(Option::as_deref);
         fault.deliver(
             "BatchGetItem",
-            named("BatchGetItem", batch::batch_get_item(&self.state.lock(), &input, fault.unprocessed)),
+            named("BatchGetItem", batch::batch_get_item(&self.state.lock(), &input, unprocessed)),
         )
     }
 
     async fn batch_write_item(&self, input: BatchWriteItemInput) -> Result<BatchWriteItemOutput> {
-        let fault = self.fault("BatchWriteItem", input.request_items.keys().next().map(String::as_str)).await?;
+        let tables: Vec<&str> = input.request_items.keys().map(String::as_str).collect();
+        let fault = self.fault("BatchWriteItem", &tables).await?;
+        let unprocessed = fault.unprocessed.clone();
         fault.deliver(
             "BatchWriteItem",
-            named("BatchWriteItem", batch::batch_write_item(&mut self.state.lock(), input, fault.unprocessed)),
+            named(
+                "BatchWriteItem",
+                batch::batch_write_item(&mut self.state.lock(), input, unprocessed.as_ref().map(Option::as_deref)),
+            ),
         )
     }
 
     async fn transact_get_items(&self, input: TransactGetItemsInput) -> Result<TransactGetItemsOutput> {
-        let fault =
-            self.fault("TransactGetItems", input.transact_items.first().map(|get| get.table_name.as_str())).await?;
+        let tables: Vec<&str> = input.transact_items.iter().map(|get| get.table_name.as_str()).collect();
+        let fault = self.fault("TransactGetItems", &tables).await?;
         fault.deliver(
             "TransactGetItems",
             named("TransactGetItems", transact::transact_get_items(&self.state.lock(), &input)),
@@ -370,8 +391,8 @@ impl Backend for MemoryBackend {
     }
 
     async fn transact_write_items(&self, input: TransactWriteItemsInput) -> Result<TransactWriteItemsOutput> {
-        let table = input.transact_items.first().map(|item| item.target().table_name.clone());
-        let fault = self.fault("TransactWriteItems", table.as_deref()).await?;
+        let tables: Vec<&str> = input.transact_items.iter().map(|item| item.target().table_name.as_str()).collect();
+        let fault = self.fault("TransactWriteItems", &tables).await?;
         fault.deliver(
             "TransactWriteItems",
             named("TransactWriteItems", transact::transact_write_items(&mut self.state.lock(), input)),
@@ -379,7 +400,8 @@ impl Backend for MemoryBackend {
     }
 
     async fn execute_statement(&self, input: ExecuteStatementInput) -> Result<ExecuteStatementOutput> {
-        let fault = self.fault("ExecuteStatement", None).await?;
+        let tables = partiql::statement_tables([(&input.statement, &input.parameters)]);
+        let fault = self.fault("ExecuteStatement", &tables.iter().map(String::as_str).collect::<Vec<_>>()).await?;
         fault.deliver(
             "ExecuteStatement",
             named("ExecuteStatement", partiql::execute_statement(&mut self.state.lock(), &input)),
@@ -387,7 +409,10 @@ impl Backend for MemoryBackend {
     }
 
     async fn batch_execute_statement(&self, input: BatchExecuteStatementInput) -> Result<BatchExecuteStatementOutput> {
-        let fault = self.fault("BatchExecuteStatement", None).await?;
+        let tables = partiql::statement_tables(
+            input.statements.iter().map(|statement| (&statement.statement, &statement.parameters)),
+        );
+        let fault = self.fault("BatchExecuteStatement", &tables.iter().map(String::as_str).collect::<Vec<_>>()).await?;
         fault.deliver(
             "BatchExecuteStatement",
             named("BatchExecuteStatement", partiql::batch_execute_statement(&mut self.state.lock(), &input)),
@@ -395,7 +420,10 @@ impl Backend for MemoryBackend {
     }
 
     async fn execute_transaction(&self, input: ExecuteTransactionInput) -> Result<ExecuteTransactionOutput> {
-        let fault = self.fault("ExecuteTransaction", None).await?;
+        let tables = partiql::statement_tables(
+            input.transact_statements.iter().map(|statement| (&statement.statement, &statement.parameters)),
+        );
+        let fault = self.fault("ExecuteTransaction", &tables.iter().map(String::as_str).collect::<Vec<_>>()).await?;
         fault.deliver(
             "ExecuteTransaction",
             named("ExecuteTransaction", partiql::execute_transaction(&mut self.state.lock(), &input)),
@@ -403,32 +431,32 @@ impl Backend for MemoryBackend {
     }
 
     async fn create_table(&self, input: CreateTableInput) -> Result<TableDescription> {
-        let fault = self.fault("CreateTable", Some(&input.table_name)).await?;
+        let fault = self.fault("CreateTable", &[&input.table_name]).await?;
         fault.deliver("CreateTable", named("CreateTable", admin::create_table(&mut self.state.lock(), input)))
     }
 
     async fn delete_table(&self, table_name: &str) -> Result<TableDescription> {
-        let fault = self.fault("DeleteTable", Some(table_name)).await?;
+        let fault = self.fault("DeleteTable", &[table_name]).await?;
         fault.deliver("DeleteTable", named("DeleteTable", admin::delete_table(&mut self.state.lock(), table_name)))
     }
 
     async fn describe_table(&self, table_name: &str) -> Result<TableDescription> {
-        let fault = self.fault("DescribeTable", Some(table_name)).await?;
+        let fault = self.fault("DescribeTable", &[table_name]).await?;
         fault.deliver("DescribeTable", named("DescribeTable", admin::describe_table(&self.state.lock(), table_name)))
     }
 
     async fn update_table(&self, input: UpdateTableInput) -> Result<TableDescription> {
-        let fault = self.fault("UpdateTable", Some(&input.table_name)).await?;
+        let fault = self.fault("UpdateTable", &[&input.table_name]).await?;
         fault.deliver("UpdateTable", named("UpdateTable", admin::update_table(&mut self.state.lock(), input)))
     }
 
     async fn list_tables(&self, input: ListTablesInput) -> Result<ListTablesOutput> {
-        let fault = self.fault("ListTables", None).await?;
+        let fault = self.fault("ListTables", &[]).await?;
         fault.deliver("ListTables", named("ListTables", admin::list_tables(&self.state.lock(), &input)))
     }
 
     async fn update_time_to_live(&self, input: UpdateTimeToLiveInput) -> Result<TimeToLiveDescription> {
-        let fault = self.fault("UpdateTimeToLive", Some(&input.table_name)).await?;
+        let fault = self.fault("UpdateTimeToLive", &[&input.table_name]).await?;
         fault.deliver(
             "UpdateTimeToLive",
             named("UpdateTimeToLive", admin::update_time_to_live(&mut self.state.lock(), &input)),
@@ -436,7 +464,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn describe_time_to_live(&self, table_name: &str) -> Result<TimeToLiveDescription> {
-        let fault = self.fault("DescribeTimeToLive", Some(table_name)).await?;
+        let fault = self.fault("DescribeTimeToLive", &[table_name]).await?;
         fault.deliver(
             "DescribeTimeToLive",
             named("DescribeTimeToLive", admin::describe_time_to_live(&self.state.lock(), table_name)),
@@ -444,7 +472,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn tag_resource(&self, resource_arn: &str, tags: BTreeMap<String, String>) -> Result<()> {
-        let fault = self.fault("TagResource", None).await?;
+        let fault = self.fault("TagResource", &[]).await?;
         fault.deliver(
             "TagResource",
             named("TagResource", admin::tag_resource(&mut self.state.lock(), resource_arn, tags)),
@@ -452,7 +480,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn untag_resource(&self, resource_arn: &str, tag_keys: Vec<String>) -> Result<()> {
-        let fault = self.fault("UntagResource", None).await?;
+        let fault = self.fault("UntagResource", &[]).await?;
         fault.deliver(
             "UntagResource",
             named("UntagResource", admin::untag_resource(&mut self.state.lock(), resource_arn, &tag_keys)),
@@ -460,7 +488,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn list_tags_of_resource(&self, resource_arn: &str, _next_token: Option<String>) -> Result<ListTagsOutput> {
-        let fault = self.fault("ListTagsOfResource", None).await?;
+        let fault = self.fault("ListTagsOfResource", &[]).await?;
         fault.deliver(
             "ListTagsOfResource",
             named("ListTagsOfResource", admin::list_tags(&mut self.state.lock(), resource_arn)),
@@ -468,7 +496,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn describe_continuous_backups(&self, table_name: &str) -> Result<ContinuousBackupsDescription> {
-        let fault = self.fault("DescribeContinuousBackups", Some(table_name)).await?;
+        let fault = self.fault("DescribeContinuousBackups", &[table_name]).await?;
         fault.deliver(
             "DescribeContinuousBackups",
             named("DescribeContinuousBackups", admin::describe_continuous_backups(&self.state.lock(), table_name)),
@@ -481,7 +509,7 @@ impl Backend for MemoryBackend {
         enabled: bool,
         recovery_period_in_days: Option<i64>,
     ) -> Result<ContinuousBackupsDescription> {
-        let fault = self.fault("UpdateContinuousBackups", Some(table_name)).await?;
+        let fault = self.fault("UpdateContinuousBackups", &[table_name]).await?;
         fault.deliver(
             "UpdateContinuousBackups",
             named(
@@ -492,7 +520,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn create_backup(&self, table_name: &str, backup_name: &str) -> Result<BackupDetails> {
-        let fault = self.fault("CreateBackup", Some(table_name)).await?;
+        let fault = self.fault("CreateBackup", &[table_name]).await?;
         fault.deliver(
             "CreateBackup",
             named("CreateBackup", admin::create_backup(&mut self.state.lock(), table_name, backup_name)),
@@ -500,22 +528,23 @@ impl Backend for MemoryBackend {
     }
 
     async fn describe_backup(&self, backup_arn: &str) -> Result<BackupDescription> {
-        let fault = self.fault("DescribeBackup", None).await?;
+        let fault = self.fault("DescribeBackup", &[]).await?;
         fault.deliver("DescribeBackup", named("DescribeBackup", admin::describe_backup(&self.state.lock(), backup_arn)))
     }
 
     async fn delete_backup(&self, backup_arn: &str) -> Result<BackupDescription> {
-        let fault = self.fault("DeleteBackup", None).await?;
+        let fault = self.fault("DeleteBackup", &[]).await?;
         fault.deliver("DeleteBackup", named("DeleteBackup", admin::delete_backup(&mut self.state.lock(), backup_arn)))
     }
 
     async fn list_backups(&self, input: ListBackupsInput) -> Result<ListBackupsOutput> {
-        let fault = self.fault("ListBackups", input.table_name.as_deref()).await?;
+        let tables: Vec<&str> = input.table_name.iter().map(String::as_str).collect();
+        let fault = self.fault("ListBackups", &tables).await?;
         fault.deliver("ListBackups", named("ListBackups", admin::list_backups(&self.state.lock(), &input)))
     }
 
     async fn restore_table_from_backup(&self, input: RestoreTableFromBackupInput) -> Result<TableDescription> {
-        let fault = self.fault("RestoreTableFromBackup", Some(&input.target_table_name)).await?;
+        let fault = self.fault("RestoreTableFromBackup", &[&input.target_table_name]).await?;
         fault.deliver(
             "RestoreTableFromBackup",
             named("RestoreTableFromBackup", admin::restore_table_from_backup(&mut self.state.lock(), input)),
@@ -523,7 +552,7 @@ impl Backend for MemoryBackend {
     }
 
     async fn restore_table_to_point_in_time(&self, input: RestoreTableToPointInTimeInput) -> Result<TableDescription> {
-        let fault = self.fault("RestoreTableToPointInTime", Some(&input.target_table_name)).await?;
+        let fault = self.fault("RestoreTableToPointInTime", &[&input.target_table_name]).await?;
         fault.deliver(
             "RestoreTableToPointInTime",
             named("RestoreTableToPointInTime", admin::restore_table_to_point_in_time(&mut self.state.lock(), input)),
