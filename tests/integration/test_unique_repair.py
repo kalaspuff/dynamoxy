@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import dynamoxy
@@ -174,3 +176,54 @@ async def test_service_errors_of_fixes_are_raised_as_they_are() -> None:
         await users.repair_unique()  # repairs what is left
         assert len(await guards(users)) == 2
         assert (await users.verify_unique()).ok
+
+
+class Contact(Model, table="contacts"):
+    """Two unique values per item: their fixes share the item."""
+
+    contact_id: Attr[str] = partition_key()
+    email: Attr[str] = field(unique=True)
+    phone: Attr[str] = field(unique=True)
+
+
+class LegacyContact(Model, table="contacts"):
+    contact_id: Attr[str] = partition_key()
+    email: Attr[str]
+    phone: Attr[str]
+
+
+async def test_fixes_that_share_an_item_never_run_at_once(client: dynamoxy.Client) -> None:
+    # DynamoDB cancels one of two concurrent transactions on one item (TransactionConflict).
+    await client.create_tables(LegacyContact)
+    for index in range(5):
+        await client.model(LegacyContact).create(
+            LegacyContact(contact_id=f"c{index}", email=f"c{index}@example.com", phone=f"+46{index}")
+        )
+    in_flight: list[set[str]] = []
+    overlaps: list[str] = []
+    concurrent = 0
+
+    async def record(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        nonlocal concurrent
+        if request.operation != "TransactWriteItems":
+            return await call_next(request)
+        operations = request.params["transact_items"]
+        keys = {
+            operation["key"]["contact_id"] if "key" in operation else operation["item"]["contact_id"]
+            for operation in operations
+        }
+        overlaps.extend(key for busy in in_flight for key in keys & busy)
+        in_flight.append(keys)
+        concurrent = max(concurrent, len(in_flight))
+        try:
+            await asyncio.sleep(0)  # lets the other fixes start
+            return await call_next(request)
+        finally:
+            in_flight.remove(keys)
+
+    client.use(record)
+    repair = await client.model(Contact).repair_unique()
+    assert len(repair.created) == 10
+    assert concurrent > 1, "fixes of different items still run at once"
+    assert overlaps == []
+    assert (await client.model(Contact).verify_unique()).ok

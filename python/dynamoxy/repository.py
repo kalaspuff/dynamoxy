@@ -39,6 +39,7 @@ subclasses included.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import os
@@ -1727,7 +1728,8 @@ class Repository[M]:
         orphaned guard is deleted (or given to the one item that holds its value) only while its
         owner and the owner's value are unchanged. Fixes whose conditions fail are ``skipped``:
         verify again. Repairs are idempotent. Values that several items hold cannot be repaired:
-        change the data so that one item holds each.
+        change the data so that one item holds each. Up to 16 fixes run at once, never two that
+        touch one item (DynamoDB would cancel one with ``TransactionConflict``).
 
         Args:
             report: A report of :meth:`verify_unique` (scans again when ``None``).
@@ -1760,15 +1762,24 @@ class Repository[M]:
         if not dry_run:
             limit = asyncio.Semaphore(16)
             errors: list[Exception] = []
+            # DynamoDB cancels one of two concurrent transactions that touch one item
+            # (TransactionConflict): fixes that share an item (one with several unique values, a
+            # holder or owner of several guards) run one after another, taking the locks of their
+            # items in one order.
+            locks: dict[str, asyncio.Lock] = {}
 
             async def run(index: int, fix: MissingGuard | OrphanedGuard) -> None:
-                async with limit:
-                    if errors:  # after a failure, no new fix starts
-                        return
-                    try:
-                        applied[index] = await self._apply_unique_fix(fix)
-                    except Exception as error:  # noqa: BLE001 - raised below, as it is (not as a group)
-                        errors.append(error)
+                names = sorted({repr(stored_identity(key)) for key in self._unique_fix_keys(fix)})
+                async with contextlib.AsyncExitStack() as held:
+                    for name in names:
+                        await held.enter_async_context(locks.setdefault(name, asyncio.Lock()))
+                    async with limit:
+                        if errors:  # after a failure, no new fix starts
+                            return
+                        try:
+                            applied[index] = await self._apply_unique_fix(fix)
+                        except Exception as error:  # noqa: BLE001 - raised below, as it is (not as a group)
+                            errors.append(error)
 
             async with asyncio.TaskGroup() as group:
                 for index, fix in enumerate(fixes):
@@ -1804,6 +1815,12 @@ class Repository[M]:
             "condition_expression": builder.condition(condition),
             **builder.arguments(),
         }
+
+    def _unique_fix_keys(self, fix: MissingGuard | OrphanedGuard) -> list[dict[str, Any]]:
+        """The keys of the items the transaction of a fix touches."""
+        if isinstance(fix, MissingGuard):
+            return [guard_key(self.schema, self.schema.fields[fix.field], fix.stored), fix.key]
+        return [key for key in (fix.key, fix.holder, fix.owner) if key is not None]
 
     async def _apply_unique_fix(self, fix: MissingGuard | OrphanedGuard) -> bool:
         """Applies one fix of :meth:`repair_unique`; ``False`` when the data changed since the scan."""

@@ -60,7 +60,9 @@ repaired: `repair_unique()` raises `ValueError` before writing anything, unless
 `skip_duplicates=True` (or `dry_run=True`, which lists the fixes and writes nothing). Reports
 hold values and keys, so do not log them. The scan reads the whole table (strong consistency,
 projected to the keys, the type and unique attributes and the guards' owners) and holds it in
-memory; each fix costs one transaction of two or three operations.
+memory; each fix costs one transaction of two or three operations. Up to 16 fixes run at once,
+but fixes that touch one item (an item with several unique values, the owner of several guards)
+run one after another, since DynamoDB cancels concurrent transactions on one item.
 
 **Adding `unique=True` to a field with stored items.** The items stored before have no guards,
 so the constraint holds only for values written after the change:
