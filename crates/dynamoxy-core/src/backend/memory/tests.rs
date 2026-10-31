@@ -865,6 +865,93 @@ async fn update_table_adds_and_backfills_global_indexes() {
     assert!(description.attribute_definitions.iter().all(|definition| definition.name != "email"));
 }
 
+#[tokio::test]
+async fn refused_table_updates_change_nothing() {
+    // DynamoDB validates the whole request before it applies any of it.
+    let backend = backend_with_table().await;
+    let stream = || StreamSpecification { enabled: true, view_type: Some(StreamViewType::NewImage) };
+    backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            stream_specification: Some(stream()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let before = backend.describe_table("items").await.unwrap();
+    let refused = [
+        // Provisioned billing, then a stream that is already enabled.
+        UpdateTableInput {
+            table_name: "items".into(),
+            billing_mode: Some(BillingMode::Provisioned),
+            provisioned_throughput: Some(ProvisionedThroughput { read_capacity_units: 5, write_capacity_units: 5 }),
+            stream_specification: Some(stream()),
+            ..Default::default()
+        },
+        // A new index, then the same stream error.
+        UpdateTableInput {
+            table_name: "items".into(),
+            attribute_definitions: vec![definition("email", ScalarType::S)],
+            global_secondary_index_updates: vec![GlobalSecondaryIndexUpdate::Create(GlobalSecondaryIndex {
+                index_name: "by_email".into(),
+                key_schema: keys("email", None),
+                projection: Projection::all(),
+                provisioned_throughput: None,
+                on_demand_throughput: None,
+            })],
+            stream_specification: Some(stream()),
+            deletion_protection_enabled: Some(true),
+            ..Default::default()
+        },
+        // Provisioned billing without throughput.
+        UpdateTableInput {
+            table_name: "items".into(),
+            billing_mode: Some(BillingMode::Provisioned),
+            ..Default::default()
+        },
+        // Throughput for an index that does not exist.
+        UpdateTableInput {
+            table_name: "items".into(),
+            global_secondary_index_updates: vec![GlobalSecondaryIndexUpdate::Update {
+                index_name: "missing".into(),
+                provisioned_throughput: Some(ProvisionedThroughput { read_capacity_units: 1, write_capacity_units: 1 }),
+                on_demand_throughput: None,
+            }],
+            deletion_protection_enabled: Some(true),
+            ..Default::default()
+        },
+    ];
+    for input in refused {
+        backend.update_table(input).await.unwrap_err();
+        assert_eq!(backend.describe_table("items").await.unwrap(), before);
+    }
+    // The table was left as it was, so later updates work.
+    let description = backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            deletion_protection_enabled: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(description.deletion_protection_enabled);
+    assert_eq!(description.billing_mode, BillingMode::PayPerRequest);
+}
+
+#[tokio::test]
+async fn refused_tag_requests_add_no_tags() {
+    let backend = backend_with_table().await;
+    let arn = backend.describe_table("items").await.unwrap().table_arn.unwrap();
+    let tags = |range: std::ops::Range<usize>| range.map(|index| (format!("k{index}"), "v".to_owned())).collect();
+    backend.tag_resource(&arn, tags(0..45)).await.unwrap();
+    let error = backend.tag_resource(&arn, tags(40..51)).await.unwrap_err(); // 6 new keys
+    assert_eq!(code(&error), "LimitExceededException");
+    assert_eq!(backend.list_tags_of_resource(&arn, None).await.unwrap().tags.len(), 45);
+    // Tags that replace the values of existing keys count once.
+    backend.tag_resource(&arn, tags(40..50)).await.unwrap();
+    assert_eq!(backend.list_tags_of_resource(&arn, None).await.unwrap().tags.len(), 50);
+}
+
 /// Statements are parsed on the threads of the runtime (2 MiB stacks), for every backend
 /// (`partiql::effect`): nesting is bounded, so that a deep recursion cannot kill the process.
 #[tokio::test]
