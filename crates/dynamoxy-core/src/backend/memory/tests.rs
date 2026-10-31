@@ -2567,6 +2567,19 @@ async fn placeholders_names_and_operands_are_refused_like_dynamodb() {
     );
     let error = backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_536))]))).await.unwrap_err();
     assert_eq!(message(&error), "Attribute name is too large, must be less than 65536 bytes for key #n");
+    let map = AttributeValue::M(item([(&"n".repeat(65_536), s("v"))]));
+    let error = backend
+        .put_item(PutItemInput {
+            table_name: "items".into(),
+            item: item([("pk", s("names")), ("sk", n(1)), ("m", map)]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "1 validation error detected: Attribute name is too large, must be less than 65536 bytes"
+    );
     backend.get_item(get("#n", names(&[("#n", &"n".repeat(65_535))]))).await.unwrap();
 
     // attribute_type with a path as the type.
