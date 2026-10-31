@@ -833,8 +833,9 @@ Retries cover throttling, server errors, transaction conflicts and timeouts, wit
 backoff and full jitter. Conditional and validation failures are never retried. A write whose
 attempt timed out, lost its connection or got a 5xx may have been applied: it is sent again
 only when it applies once even when sent twice (transactions, puts, deletes, `SET` updates).
-A failure to connect (refused, DNS, TLS, no file descriptors, connect timeout) sent nothing:
-every write is sent again after it, increments too, and it never leaves the outcome unknown.
+A failure to connect (refused, DNS, TLS, no file descriptors, and a connect timeout when
+`connect_timeout` is shorter than `timeout`) sent nothing: every write is sent again after it,
+increments too, and it never leaves the outcome unknown.
 Model writes store a random write id (`_wid`) and recognise their own earlier attempt by it, so
 a timed-out `create()`, `save()` or `increment()` that was applied succeeds, applied once.
 Otherwise (another writer wrote in between, deletes, the dict-level API, models declared with

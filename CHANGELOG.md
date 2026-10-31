@@ -26,8 +26,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   constructor; they restore its attributes. A value that does not pickle, or does not unpickle,
   is now left out at the finest level that works (one value of a `.key` or `.item` dict, one field
   of a dataclass) instead of as a whole attribute.
-- A write whose request never left the process (connection refused, DNS or TLS failure, connect
-  timeout, no file descriptors for the socket) counted as "may have been applied": it raised
+- A write whose request never left the process (connection refused, DNS or TLS failure, a
+  connect timeout shorter than `timeout`, no file descriptors for the socket) counted as "may have been applied": it raised
   `WriteOutcomeUnknownError`, and increments, `add()` and `append()` were not retried, although
   sending them again is safe. Failures to connect now count as sent nothing: every write is
   retried after them, and when all attempts fail to connect the call raises a retryable
