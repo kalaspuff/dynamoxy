@@ -158,8 +158,8 @@ results, error codes and messages, size limits, transaction payload sizes and ta
 | [MiniStack](https://pypi.org/project/ministack/) | Most results; accepts much of what DynamoDB refuses (filters on attributes an index does not hold, size limits, changes to a table being created) | dynamoxy's end-to-end tests and CI |
 | [LocalStack](https://www.localstack.cloud/) | Closer than MiniStack (DynamoDB Local inside); its free edition lacks backups and point-in-time recovery | dynamoxy's end-to-end tests, locally |
 
-So a test that passes on the in-memory backend fails where DynamoDB would, and an emulator that
-accepts a request is not proof that DynamoDB will. Every answer, with the probe that asked it, is
+So a request DynamoDB would refuse fails in your tests on the in-memory backend too, while an
+emulator that accepts a request is no proof that DynamoDB will. Every answer, with the probe that asked it, is
 in [docs/parity](https://github.com/kalaspuff/dynamoxy/blob/main/docs/parity/README.md).
 
 ## How it works
