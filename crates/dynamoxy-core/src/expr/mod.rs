@@ -69,6 +69,28 @@ pub struct ParsedExpressions {
 /// dynoxide-rs, `src/empty_names.rs`).
 pub const EMPTY_NAME: &str = "Empty attribute name";
 
+/// DynamoDB's refusal of an attribute name of 64 KB or more (measured in eu-north-1 on
+/// 2026-10-31, docs/parity: 65,535 bytes pass).
+pub const NAME_TOO_LARGE: &str = "Attribute name is too large, must be less than 65536 bytes";
+
+/// The longest attribute name DynamoDB takes, in bytes.
+pub const MAX_NAME_SIZE: usize = 65_535;
+
+/// The refusal of a placeholder key (`#name`, `:value`): longer than 255 bytes, or not `#`/`:`
+/// followed by ASCII letters, digits and `_` (measured, docs/parity; the length is checked first).
+fn placeholder_key_error(map: &str, key: &str, sigil: char) -> Option<Error> {
+    if key.len() > 255 {
+        return Some(Error::validation_exception(format!(
+            "{map} contains invalid key: The expression attribute map contains a key that is too long; size of key: {}",
+            key.len()
+        )));
+    }
+    let valid = key
+        .strip_prefix(sigil)
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+    (!valid).then(|| Error::validation_exception(format!("{map} contains invalid key: Syntax error; key: \"{key}\"")))
+}
+
 /// Parses every expression of a request and checks the placeholder maps the way DynamoDB does:
 /// keys start with `#`/`:`, values are valid, every placeholder is defined and every one is used.
 pub fn parse_request(input: ExpressionInput<'_>, names: &Names, values: &Values) -> Result<ParsedExpressions> {
@@ -93,22 +115,22 @@ pub fn parse_request(input: ExpressionInput<'_>, names: &Names, values: &Values)
         ));
     }
     for (key, name) in names {
-        if !key.starts_with('#') || key.len() < 2 {
-            return Err(Error::validation_exception(format!(
-                "ExpressionAttributeNames contains invalid key: Syntax error; key: \"{key}\""
-            )));
+        if let Some(error) = placeholder_key_error("ExpressionAttributeNames", key, '#') {
+            return Err(error);
         }
         if name.is_empty() {
             return Err(Error::validation_exception(format!(
                 "ExpressionAttributeNames contains invalid value: {EMPTY_NAME} for key {key}"
             )));
         }
+        if name.len() > MAX_NAME_SIZE {
+            // Without the "contains invalid value" of the empty name (measured, docs/parity).
+            return Err(Error::validation_exception(format!("{NAME_TOO_LARGE} for key {key}")));
+        }
     }
     for (key, value) in values {
-        if !key.starts_with(':') || key.len() < 2 {
-            return Err(Error::validation_exception(format!(
-                "ExpressionAttributeValues contains invalid key: Syntax error; key: \"{key}\""
-            )));
+        if let Some(error) = placeholder_key_error("ExpressionAttributeValues", key, ':') {
+            return Err(error);
         }
         if let Err(message) = value.validate() {
             return Err(Error::validation_exception(format!(

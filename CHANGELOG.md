@@ -483,6 +483,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `DescribeTable` after it and `ACTIVE` from the next on (the waiter polls it without sleeping),
   so tests catch a missing wait. `table.add_index()` without `billing=`
   gives an index added to a provisioned table the table's capacity (DynamoDB refused it).
+- The in-memory backend accepted expressions DynamoDB refuses (measured against DynamoDB):
+  placeholders (`#name`, `:value`) longer than 255 bytes or with characters other than ASCII
+  letters, digits and `_` (`#a-b` was reported as undefined or unused), attribute names of 64 KB
+  or more in items and through placeholders, and `attribute_type(a, b)` with a path as the type.
+  It now refuses them with DynamoDB's messages, cancels a read-only `ExecuteTransaction` of a
+  missing table with reason `ResourceNotFound` (it raised `ResourceNotFoundException`), and puts
+  the expression errors of `PutItem`, `UpdateItem` and `DeleteItem` and the attribute names they
+  refuse in DynamoDB's `1 validation error detected: ` envelope.
 
 ### Security
 

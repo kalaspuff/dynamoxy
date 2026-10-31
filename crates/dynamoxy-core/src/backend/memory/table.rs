@@ -469,6 +469,9 @@ impl Table {
         if item.keys().any(String::is_empty) {
             return Err(invalid(crate::expr::EMPTY_NAME));
         }
+        if item.keys().any(|name| name.len() > crate::expr::MAX_NAME_SIZE) {
+            return Err(invalid(crate::expr::NAME_TOO_LARGE));
+        }
         let key = self.key.item_key(item)?;
         if let Some(partition) = item.get(&self.key.partition.name)
             && value_size(partition) > MAX_PARTITION_KEY_SIZE

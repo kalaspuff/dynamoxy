@@ -163,6 +163,34 @@ pub fn apply(state: &mut State, prepared: Prepared, meter: &mut CapacityMeter, m
     old
 }
 
+/// DynamoDB's request-validation envelope of single-item writes (`PutItem`, `UpdateItem`,
+/// `DeleteItem`): their expression and placeholder errors read "1 validation error detected: ..."
+/// (captured by dynoxide-rs in us-east-1 and eu-west-2, and measured, docs/parity), where reads and
+/// transactions send them bare.
+fn enveloped(error: Error) -> Error {
+    const ENVELOPE: &str = "1 validation error detected: ";
+    match error {
+        Error::Service(mut service)
+            if service.code == "ValidationException" && !service.message.starts_with(ENVELOPE) =>
+        {
+            service.message = format!("{ENVELOPE}{}", service.message);
+            Error::Service(service)
+        }
+        other => other,
+    }
+}
+
+/// [`enveloped`] for the attribute names of an item DynamoDB refuses (empty, 64 KB or more), and
+/// not for the item's other errors ("Item size has exceeded the maximum allowed size" is bare).
+fn enveloped_names(error: Error) -> Error {
+    let message = error.as_service().map(|service| service.message.as_str());
+    if message.is_some_and(|message| message == crate::expr::EMPTY_NAME || message == crate::expr::NAME_TOO_LARGE) {
+        enveloped(error)
+    } else {
+        error
+    }
+}
+
 /// `PutItem` and `DeleteItem` only return the old item.
 fn check_return_values(return_values: ReturnValues) -> Result<()> {
     if !matches!(return_values, ReturnValues::None | ReturnValues::AllOld) {
@@ -197,12 +225,14 @@ pub fn put_item(state: &mut State, input: PutItemInput) -> Result<WriteItemOutpu
         ExpressionInput { condition: input.condition_expression.as_deref(), ..Default::default() },
         &input.expression_attribute_names,
         &input.expression_attribute_values,
-    )?;
+    )
+    .map_err(enveloped)?;
     let table = state.table(&input.table_name)?;
     let mut meter = CapacityMeter::default();
     let prepared =
         prepare_put(table, input.item, parsed.condition.as_ref(), input.return_values_on_condition_check_failure)
-            .map_err(Failure::into_error)?;
+            .map_err(Failure::into_error)
+            .map_err(enveloped_names)?;
     let metrics = if input.return_item_collection_metrics {
         prepared.new.as_ref().and_then(|item| table.item_collection_metrics(item))
     } else {
@@ -224,7 +254,8 @@ pub fn delete_item(state: &mut State, input: DeleteItemInput) -> Result<WriteIte
         ExpressionInput { condition: input.condition_expression.as_deref(), ..Default::default() },
         &input.expression_attribute_names,
         &input.expression_attribute_values,
-    )?;
+    )
+    .map_err(enveloped)?;
     let table = state.table(&input.table_name)?;
     let mut meter = CapacityMeter::default();
     let prepared =
@@ -254,9 +285,13 @@ pub fn update_item(state: &mut State, input: UpdateItemInput) -> Result<WriteIte
         },
         &input.expression_attribute_names,
         &input.expression_attribute_values,
-    )?;
+    )
+    .map_err(enveloped)?;
     let table = state.table(&input.table_name)?;
     if let Some(update) = &parsed.update {
+        // Overlapping and conflicting paths are request validation, in the envelope; an update of
+        // a key attribute is refused bare (dynoxide-rs, src/actions/helpers.rs).
+        crate::expr::validate_update(update, &[]).map_err(enveloped)?;
         validate_update_for(table, update)?;
     }
     let mut meter = CapacityMeter::default();

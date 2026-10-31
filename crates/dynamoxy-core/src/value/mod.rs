@@ -243,6 +243,9 @@ impl AttributeValue {
                 if name.is_empty() {
                     return Err(crate::expr::EMPTY_NAME.into());
                 }
+                if name.len() > crate::expr::MAX_NAME_SIZE {
+                    return Err(crate::expr::NAME_TOO_LARGE.into());
+                }
                 value.validate_at_depth(depth + 1)
             }),
             _ => Ok(()),
