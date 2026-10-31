@@ -400,6 +400,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   detail, a `DELETE` of a missing item costs a write, batch reads and read transactions report
   their reads, and transactions double the table's write units but not the indexes'. The
   expression checks of the test suite (`_core._check_expressions`) validate update paths too.
+- PartiQL `SELECT`s of an index in the in-memory DynamoDB returned rows where DynamoDB refuses
+  them, as captured against DynamoDB by dynoxide-rs: a projection of a global index that names
+  attributes it does not hold ("Global secondary index i does not project [a]"), and a `WHERE`
+  clause keyed on the index's partition key that filters on them, of either kind ("Secondary
+  index i does not project one or more filter attributes: [a]"). Both are now refused. An
+  unkeyed `WHERE` clause still scans the index and matches nothing on such attributes.
 
 ### Security
 

@@ -1379,6 +1379,51 @@ async fn partiql_selects_of_a_local_index_fetch_what_it_does_not_hold() {
     assert!(filtered.items.is_empty(), "the entries do not hold secret: {:?}", filtered.items);
 }
 
+#[tokio::test]
+async fn partiql_selects_of_an_index_refuse_attributes_it_does_not_hold() {
+    // DynamoDB refuses a projection of a global index naming attributes it does not hold, and a
+    // WHERE clause keyed on an index's partition key that filters on them, on either kind of
+    // index (captured by dynoxide-rs in eu-west-2, 2026-08-15). An unkeyed WHERE clause is a scan,
+    // whose filter on them matches nothing, and a local index fetches its projection.
+    let backend = backend_with_table().await;
+    seed_query_data(&backend).await;
+    let select =
+        |text: &str| backend.execute_statement(ExecuteStatementInput { statement: text.into(), ..Default::default() });
+    for (statement, expected) in [
+        (
+            "SELECT secret, sk, rank FROM items.\"by_status\" WHERE status = 'odd'",
+            "Global secondary index by_status does not project [secret, rank]",
+        ),
+        (
+            "SELECT name FROM items.\"by_status\" WHERE status = 'odd' AND secret = 's' AND rank > 1",
+            "Secondary index by_status does not project one or more filter attributes: [secret, rank]",
+        ),
+        (
+            "SELECT * FROM items.\"by_status\" WHERE status IN ['odd', 'even'] AND NOT (secret = 's' OR secret.a = 't')",
+            "Secondary index by_status does not project one or more filter attributes: [secret]",
+        ),
+        (
+            "SELECT * FROM items.\"by_rank\" WHERE pk = 'p' AND begins_with(name, 'item')",
+            "Secondary index by_rank does not project one or more filter attributes: [name]",
+        ),
+    ] {
+        let error = select(statement).await.unwrap_err();
+        assert_eq!(code(&error), "ValidationException", "{statement}");
+        assert_eq!(message(&error), format!("One or more parameter values were invalid: {expected}"), "{statement}");
+    }
+    for (statement, rows) in [
+        // Scans: the filter reads the entries, which do not hold the attribute.
+        ("SELECT * FROM items.\"by_status\" WHERE secret = 'not projected'", 0),
+        ("SELECT * FROM items.\"by_rank\" WHERE pk = 'p' OR name = 'item 1'", 10),
+        ("SELECT * FROM items.\"by_status\" WHERE status = 'odd' AND (sk = 1 OR name = 'item 3')", 2),
+        // What the index holds, and a local index's projection, which it fetches.
+        ("SELECT name, sk FROM items.\"by_status\" WHERE status = 'odd' AND name <> 'item 1'", 4),
+        ("SELECT secret FROM items.\"by_rank\" WHERE pk = 'p' AND rank > 95", 4),
+    ] {
+        assert_eq!(select(statement).await.unwrap().items.len(), rows, "{statement}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn faults_inject_errors_unprocessed_batches_and_latency() {
     let backend = backend_with_table().await;

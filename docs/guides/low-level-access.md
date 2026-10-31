@@ -47,6 +47,11 @@ then runs one query per partition key value, so the `WHERE` clause must name the
 (`pk = ?`, `pk IN [?, ?]`), and with several the partition key must be ordered too:
 `... WHERE pk IN [?, ?] ORDER BY pk, sk DESC`. The in-memory backend applies the same rules
 (MiniStack does not support `ORDER BY`).
+A `SELECT` of an index (`FROM "prod-users"."by_email"`) is refused (`ValidationError`, "does not
+project") when its `WHERE` clause is keyed on the index's partition key and filters on attributes
+the index does not hold, and, for a global index, when its projection names them; a local index
+fetches the attributes of its projection from the table. An unkeyed `WHERE` clause scans the
+index and matches nothing on attributes it does not hold. The in-memory backend does the same.
 `execute_transaction()` is all-or-nothing, and like every transaction it names each item at most
 once (`ValidationError` otherwise); `batch_execute()` reports an error per statement.
 

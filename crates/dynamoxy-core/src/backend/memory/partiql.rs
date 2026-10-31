@@ -29,8 +29,8 @@ use super::table::{CapacityMeter, Index, KeyInfo, PageRead, StoredKey, Table, re
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
-    Comparator, Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand, evaluate,
-    is_idempotent, project, validate_update,
+    Comparator, Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand, condition_paths,
+    evaluate, is_idempotent, project, validate_update,
 };
 use crate::types::{
     BatchExecuteStatementInput, BatchExecuteStatementOutput, BatchStatementError, BatchStatementResponse,
@@ -1151,6 +1151,76 @@ fn decode_next_token(token: &str) -> Option<Item> {
     Some(key)
 }
 
+/// Refuses a read of an index that names attributes the index does not hold, like DynamoDB
+/// (captured by dynoxide-rs in eu-west-2, 2026-08-15): a projection of a global index (a local one
+/// fetches them from the table), and a WHERE clause keyed on the index's partition key, of either
+/// kind. An unkeyed WHERE clause is a scan, whose filter on them matches nothing.
+fn check_index_attributes(
+    index: &Index,
+    table_key: &KeyInfo,
+    projection: Option<&[Path]>,
+    condition: Option<&Condition>,
+) -> Result<()> {
+    if index.global {
+        let missing: Vec<&str> = projection
+            .unwrap_or_default()
+            .iter()
+            .map(Path::root)
+            .filter(|name| !index.holds(name, table_key))
+            .collect();
+        if !missing.is_empty() {
+            return Err(invalid(format!(
+                "One or more parameter values were invalid: Global secondary index {} does not project [{}]",
+                index.name,
+                missing.join(", ")
+            )));
+        }
+    }
+    let Some(condition) = condition.filter(|condition| keys_partition(condition, &index.key.partition.name)) else {
+        return Ok(());
+    };
+    let mut missing: Vec<&str> = Vec::new();
+    for name in condition_paths(condition).into_iter().map(Path::root) {
+        if !index.holds(name, table_key) && !missing.contains(&name) {
+            missing.push(name);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // "Secondary index", without Global or Local, on both kinds.
+    Err(invalid(format!(
+        "One or more parameter values were invalid: Secondary index {} does not project one or more filter attributes: [{}]",
+        index.name,
+        missing.join(", ")
+    )))
+}
+
+/// Whether a WHERE clause is keyed on `partition` the way DynamoDB decides to query rather than
+/// scan an index: it has no `OR` once `NOT` is pushed down to its conditions, and one of the
+/// conditions it joins with `AND` is `partition = ...` or `partition IN [...]`.
+fn keys_partition(condition: &Condition, partition: &str) -> bool {
+    fn conjunction(condition: &Condition, negated: bool) -> bool {
+        match condition {
+            Condition::And(left, right) if !negated => conjunction(left, negated) && conjunction(right, negated),
+            Condition::Or(left, right) if negated => conjunction(left, negated) && conjunction(right, negated),
+            Condition::And(..) | Condition::Or(..) => false,
+            Condition::Not(inner) => conjunction(inner, !negated),
+            _ => true,
+        }
+    }
+    fn names_partition(condition: &Condition, partition: &str) -> bool {
+        let is_partition = |operand: &Operand| matches!(operand, Operand::Path(path) if path.is_top_level() && path.root() == partition);
+        match condition {
+            Condition::And(left, right) => names_partition(left, partition) || names_partition(right, partition),
+            Condition::Compare(left, Comparator::Eq, right) => is_partition(left) || is_partition(right),
+            Condition::In(value, _) => is_partition(value),
+            _ => false,
+        }
+    }
+    conjunction(condition, false) && names_partition(condition, partition)
+}
+
 fn select(
     state: &State,
     statement: &Statement,
@@ -1172,6 +1242,9 @@ fn select(
     }
     let key = index.map_or(&table.key, |index| &index.key);
     let directions = if order.is_empty() { None } else { Some(order_directions(order, condition.as_ref(), key)?) };
+    if let Some(index) = index {
+        check_index_attributes(index, &table.key, projection.as_deref(), condition.as_ref())?;
+    }
     // A WHERE clause that names the partition key values is one query per value (no scan): only
     // their items are read, evaluated (`Limit`) and charged.
     let partitions: Option<Vec<StoredKey>> = condition
