@@ -31,8 +31,7 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `WriteOutcomeUnknownError`, and increments, `add()` and `append()` were not retried, although
   sending them again is safe. Failures to connect now count as sent nothing: every write is
   retried after them, and when all attempts fail to connect the call raises a retryable
-  `TransportError`. The SDK's connect timeout is now at most `timeout`. `testing.inject_fault()`
-  takes `refuse_connection=True` to simulate them.
+  `TransportError`. `testing.inject_fault()` takes `refuse_connection=True` to simulate them.
 
 ## [0.4.0] - 2026-10-31
 

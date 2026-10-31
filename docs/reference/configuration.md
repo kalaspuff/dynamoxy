@@ -15,7 +15,7 @@ at most 4,294,967,295; other types raise `TypeError` when the object is created.
 | `profile` | `None` | Named AWS profile |
 | `credentials` | `None` | Static `Credentials`; default: the AWS credential chain (environment, profiles, SSO, web identity, container and instance roles) |
 | `timeout` | `10.0` | Time limit of one attempt of a request |
-| `connect_timeout` | `3.1` | Time limit to establish a connection (at most `timeout`) |
+| `connect_timeout` | `3.1` | Time limit to establish a connection |
 | `retry` | `RetryPolicy()` | How throttling, server errors, transaction conflicts and timeouts are retried |
 | `table_prefix` | `""` | Prefix added to every logical table name (`"prod-"`) |
 | `table_names` | `None` | Explicit physical names for logical table names (overrides the prefix) |
