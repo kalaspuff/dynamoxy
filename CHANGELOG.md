@@ -203,6 +203,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   condition with it raised `ValidationError` ("cannot store a value of type datetime") before
   any request. The value is now validated and encoded as the field stores its elements, as
   comparisons already were.
+- Large sets were slow to write, and stalled the event loop while they converted. Converting a
+  number set to DynamoDB's format took time quadratic in its size, with the GIL held on the event
+  loop's thread: `set(range(60_000))`, an item of about 210 KB that DynamoDB accepts, took 3 s,
+  during which no other task or thread ran. The in-memory DynamoDB's duplicate check, set
+  comparisons and `ADD`/`DELETE` of set elements were quadratic too (a put of that set took
+  10 s). All of them now take linear time (13 ms for the conversion, 40 ms for the put).
 
 ### Security
 
