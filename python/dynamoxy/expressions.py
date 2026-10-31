@@ -686,6 +686,26 @@ class Function(Condition):
         return f"{self.name}({builder.path(self.path)}, {self.argument.compile(builder)})"
 
 
+def _grouped(text: str) -> str:
+    """``text`` in parentheses, unless one pair encloses all of it already (``(a OR b)``).
+
+    DynamoDB refuses redundant parentheses (``((a = :v))``), which a hand-written condition in
+    parentheses of its own would get here.
+    """
+    if text.startswith("("):
+        depth = 0
+        for position, character in enumerate(text):
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    if position == len(text) - 1:
+                        return text
+                    break
+    return f"({text})"
+
+
 class And(Condition):
     """Every part holds."""
 
@@ -698,7 +718,7 @@ class And(Condition):
         self.parts = tuple(flat)
 
     def compile(self, builder: ExpressionBuilder) -> str:
-        return " AND ".join(f"({part.compile(builder)})" for part in self.parts)
+        return " AND ".join(_grouped(part.compile(builder)) for part in self.parts)
 
 
 class Or(Condition):
@@ -713,7 +733,7 @@ class Or(Condition):
         self.parts = tuple(flat)
 
     def compile(self, builder: ExpressionBuilder) -> str:
-        return " OR ".join(f"({part.compile(builder)})" for part in self.parts)
+        return " OR ".join(_grouped(part.compile(builder)) for part in self.parts)
 
 
 class Not(Condition):
@@ -725,7 +745,7 @@ class Not(Condition):
         self.inner = inner
 
     def compile(self, builder: ExpressionBuilder) -> str:
-        return f"NOT ({self.inner.compile(builder)})"
+        return f"NOT {_grouped(self.inner.compile(builder))}"
 
 
 class RawCondition(Condition):

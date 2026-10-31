@@ -88,7 +88,9 @@ keyed by the operation id in the same transaction (see `examples/transactions.py
 ## Limits and costs
 
 - 100 operations, 4 MB in total, and each item at most once per transaction.
-- Every operation costs twice the capacity of the same non-transactional write.
+- Every operation costs twice the table's capacity of the same non-transactional write; the
+  index entries it writes cost what they cost outside a transaction (a put of an item with one
+  global index: 2 units on the table and 1 on the index).
 - Items may be in different tables of the same account and region.
 - A transaction conflicts with other transactions and writes on the same items; DynamoDB cancels
   one of them (`TransactionConflict`).

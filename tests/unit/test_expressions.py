@@ -96,9 +96,12 @@ def test_raw_conditions_are_renamed_to_avoid_clashes() -> None:
     assert values == {":v0": "x", ":v1": 1, ":v2": 1}
     check(condition=text, names=names, values=values)
     assert text == "(#a0 = :v0) AND (#a0 = :v1 AND #a1 > :v2)", "no redundant parentheses, which DynamoDB refuses"
-    for combined in (raw | (F("n") > 1), ~raw, raw, raw & raw):
+    grouped = dynamoxy.condition("(#s = :v OR #n > :v)", names={"#s": "status", "#n": "n"}, values={":v": 1})
+    for combined in (raw | (F("n") > 1), ~raw, raw, raw & raw, grouped & raw, ~grouped, grouped | (F("n") > 1)):
         text, names, values = compile_condition(combined)
         check(condition=text, names=names, values=values)
+    text, _, _ = compile_condition(grouped & (F("n") > 1))
+    assert text == "(#a0 = :v0 OR #a1 > :v1) AND (#a1 > :v2)"
     with pytest.raises(ValueError, match="does not define"):
         compile_condition(dynamoxy.condition("#x = :y"))
 
