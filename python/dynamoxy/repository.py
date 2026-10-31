@@ -1739,6 +1739,9 @@ class Repository[M]:
             TypeError: The model has no unique attributes.
             ValueError: ``report`` is of another model, or values are held by several items
                 (and neither ``skip_duplicates`` nor ``dry_run`` is set); nothing is written.
+            DynamoxyError: A fix failed for another reason than its conditions (throttling after
+                the retries, a transport error, ...), raised as it is. Fixes that ran before or
+                alongside it are applied, no other fix starts: repair again, which redoes nothing.
         """
         self._check_unique_model()
         name = self.model_class.__name__
@@ -1756,14 +1759,22 @@ class Repository[M]:
         applied: list[bool] = [True] * len(fixes)
         if not dry_run:
             limit = asyncio.Semaphore(16)
+            errors: list[Exception] = []
 
             async def run(index: int, fix: MissingGuard | OrphanedGuard) -> None:
                 async with limit:
-                    applied[index] = await self._apply_unique_fix(fix)
+                    if errors:  # after a failure, no new fix starts
+                        return
+                    try:
+                        applied[index] = await self._apply_unique_fix(fix)
+                    except Exception as error:  # noqa: BLE001 - raised below, as it is (not as a group)
+                        errors.append(error)
 
             async with asyncio.TaskGroup() as group:
                 for index, fix in enumerate(fixes):
                     group.create_task(run(index, fix))
+            if errors:
+                raise errors[0]
         done = [fix for fix, ok in zip(fixes, applied, strict=True) if ok]
         return UniqueRepair(
             report=report,

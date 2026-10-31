@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, Model, field, partition_key, sort_key
+from dynamoxy import Attr, Model, field, partition_key, sort_key, testing
 from tests.integration.test_unique import Current, Legacy, guards
 
 
@@ -161,3 +161,16 @@ async def test_models_without_unique_attributes_are_refused(client: dynamoxy.Cli
         await client.model(Legacy).repair_unique()
     with pytest.raises(ValueError, match="the report is of Legacy"):
         await client.model(Current).repair_unique(dynamoxy.UniqueReport(model=Legacy, items=0, guards=0))
+
+
+async def test_service_errors_of_fixes_are_raised_as_they_are() -> None:
+    async with testing.memory_client(retry=dynamoxy.RetryPolicy.none()) as client:
+        await client.create_tables(Legacy)
+        await store_legacy(client, u1="ada@example.com", u2="bob@example.com")
+        users = client.model(Current)
+        testing.inject_fault(client, operation="TransactWriteItems", error="throttling", times=1)
+        with pytest.raises(dynamoxy.ThrottlingError):  # not an ExceptionGroup
+            await users.repair_unique()
+        await users.repair_unique()  # repairs what is left
+        assert len(await guards(users)) == 2
+        assert (await users.verify_unique()).ok
