@@ -505,7 +505,7 @@ probe 106-lsi-filter-two "Query local index, filter on two attributes it does no
     query --table-name "$P-idx" --index-name lsi --key-condition-expression "pk = :p" --filter-expression "secret = :s AND note = :o" --expression-attribute-values '{":p": {"S": "a"}, ":s": {"S": "s"}, ":o": {"S": "o"}}'
 probe 106-lsi-filter-two-reversed "same, note first" \
     query --table-name "$P-idx" --index-name lsi --key-condition-expression "pk = :p" --filter-expression "note = :o AND secret = :s" --expression-attribute-values '{":p": {"S": "a"}, ":s": {"S": "s"}, ":o": {"S": "o"}}'
-probe 106-lsi-filter-mixed "Query local index, filter on a projected and an unprojected attribute" \
+probe 106-lsi-filter-mixed "Query local index, filter on the global index's key and an attribute neither index holds" \
     query --table-name "$P-idx" --index-name lsi --key-condition-expression "pk = :p" --filter-expression "gk = :g AND secret = :s" --expression-attribute-values '{":p": {"S": "a"}, ":s": {"S": "s"}, ":g": {"S": "g"}}'
 probe 106-gsi-projection-several "Query global index, projection of several attributes it does not project" \
     query --table-name "$P-idx" --index-name gsi --key-condition-expression "gk = :g" --projection-expression "note, m.x, pk, secret" --expression-attribute-values '{":g": {"S": "g"}}'
@@ -518,7 +518,7 @@ for total in 204690 204700 204740 204750 204751 204760 204790 204800 204801 2048
         put-item --table-name "$P-lsi" --item "file://$TMP/all$total.json"
 done
 for total in 409480 409488 409489 409500 409580 409588 409589 409600; do
-    probe "93-keys-$total" "PutItem of a $total-byte item that a KEYS_ONLY local index holds (index entry: 12 bytes of keys)" \
+    probe "93-keys-$total" "PutItem of a $total-byte item that a KEYS_ONLY local index holds (index entry: 18 bytes of keys)" \
         put-item --table-name "$P-keys" --item "file://$TMP/keys$total.json"
 done
 for total in 409600 409601; do
