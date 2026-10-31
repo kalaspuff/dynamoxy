@@ -655,7 +655,7 @@ class Repository[M]:
         if mode != "create":
             stored = self._stored(instance)
             if stored is not None:
-                item.update(self._check_unchanged(stored, item))
+                item.update(self._check_unchanged(stored, item))  # what changes no value stays as stored
                 item = self._with_undeclared(stored, item)
         if standalone and schema.write_ids:  # replaces the id of the write that stored the loaded item
             item[WRITE_ID_ATTRIBUTE] = new_write_id()
@@ -755,7 +755,9 @@ class Repository[M]:
     def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
         """Refuses a write of a loaded instance that changes its key or an immutable field.
 
-        Returns the key of the stored item (see :meth:`_check_key_unchanged`).
+        Returns the attributes the write keeps as stored: the key (see
+        :meth:`_check_key_unchanged`), and immutable values stored in a form that decodes to the
+        instance's value but that the field's codec does not write.
 
         Raises:
             ValueError: The key (or a field a key template uses) or an immutable value changed
@@ -763,12 +765,18 @@ class Repository[M]:
         """
         schema = self.schema
         name = self.model_class.__name__
-        key = self._check_key_unchanged(stored, item)
+        kept = self._check_key_unchanged(stored, item)
         for spec in schema._immutable:
             old = stored.get(spec.attribute)
-            if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
+            if old is None:
+                continue
+            new = item.get(spec.attribute)
+            if stored_identity(old) == stored_identity(new):
+                continue
+            if new is None or not _same_value(spec, old, new):
                 raise ValueError(f"{name}.{spec.name} is immutable: it cannot change once stored")
-        return key
+            kept[spec.attribute] = old
+        return kept
 
     async def _plan_put(
         self,
@@ -1718,6 +1726,15 @@ def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
     if kind == "N":
         return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
     return isinstance(value, bytes)
+
+
+def _same_value(spec: FieldSpec, old: Any, new: Any) -> bool:
+    """Whether two stored forms of a field decode to the same value."""
+    decode = spec.codec.decode
+    try:
+        return bool(decode(old) == decode(new))
+    except (ValueError, TypeError, ArithmeticError):
+        return False
 
 
 def _has_entity(attribute: str, entity: str, item: dict[str, Any]) -> bool:

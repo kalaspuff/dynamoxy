@@ -80,22 +80,24 @@ class Device(Model, table="decoding-devices"):
     pk: Attr[str] = partition_key(template="DEVICE#{device_id}")
     day: Attr[date] = sort_key()
     device_id: Attr[UUID]
+    since: Attr[date] = field(immutable=True)
     name: Attr[str] = field(default="")
 
 
 async def test_keys_stored_in_another_form_address_their_item(client: dynamoxy.Client) -> None:
-    # Another writer stored the UUID upper-case and the date in ISO 8601's basic format. Both
-    # decode, but render in another form: writes through the instance addressed no item.
+    # Another writer stored the UUID upper-case and the dates in ISO 8601's basic format. They
+    # decode, but render in another form: writes through the instance addressed no item, and
+    # saves took the immutable date for a changed one.
     await client.create_tables(Device)
     devices = client.model(Device)
     device_id = UUID("6f1c2a52-8a5e-4f43-9a54-0a4a4b0e5c11")
     key = {"pk": f"DEVICE#{str(device_id).upper()}", "day": "20260102"}
-    await devices.table.put({**key, "device_id": str(device_id).upper(), "name": "a"})
+    await devices.table.put({**key, "device_id": str(device_id).upper(), "since": "20250101", "name": "a"})
 
     [device] = await devices.query(pk=key["pk"]).all()
     assert (device.device_id, device.day) == (device_id, date(2026, 1, 2))
     assert device.primary_key() == key
-    assert Device(device_id=device_id, day=date(2026, 1, 2)).primary_key() != key
+    assert Device(device_id=device_id, day=date(2026, 1, 2), since=date(2025, 1, 1)).primary_key() != key
 
     device.name = "b"
     await devices.save(device)
@@ -107,7 +109,13 @@ async def test_keys_stored_in_another_form_address_their_item(client: dynamoxy.C
         device.name = "e"
         await batch.put(device)
     stored = await devices.table.scan(consistent=True).all()
-    assert [(item["pk"], item["day"], item["name"]) for item in stored] == [(key["pk"], key["day"], "e")]
+    assert [(item["pk"], item["day"], item["since"], item["name"]) for item in stored] == [
+        (key["pk"], key["day"], "20250101", "e")
+    ]
+    device.since = date(2025, 1, 2)
+    with pytest.raises(ValueError, match=r"Device\.since is immutable"):
+        await devices.save(device)
+    device.since = date(2025, 1, 1)
 
     device.device_id = uuid4()  # now another item: refused as before
     with pytest.raises(ValueError, match="the key of this instance changed"):

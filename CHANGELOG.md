@@ -410,8 +410,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   that dynamoxy does not write (an upper-case UUID, a date as `20260102`, also inside a key
   template) rendered the canonical form, which addresses no item: `save()`, `delete()` and
   `update()` through them raised "the key of this instance changed", and `primary_key()`
-  returned a key of no item. Writes through a loaded instance (batches and transactions
-  included) and its `primary_key()` now use the key as stored, as ADR 0015 says.
+  returned a key of no item, and an immutable value stored that way made `save()` raise "is
+  immutable". Writes through a loaded instance (batches and transactions included) and its
+  `primary_key()` now use the key as stored, as ADR 0015 says, and keep such immutable values.
 
 ### Security
 
