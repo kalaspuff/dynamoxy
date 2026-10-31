@@ -407,6 +407,15 @@ pub struct Table {
 }
 
 impl Table {
+    /// Keeps only the attribute definitions that the table's key or an index key uses.
+    pub fn retain_used_definitions(&mut self) {
+        let used: BTreeSet<&str> = std::iter::once(&self.key)
+            .chain(self.indexes.iter().map(|index| &index.key))
+            .flat_map(KeyInfo::names)
+            .collect();
+        self.attribute_definitions.retain(|definition| used.contains(definition.name.as_str()));
+    }
+
     /// The index with this name.
     pub fn index(&self, name: &str) -> Result<&Index> {
         self.indexes

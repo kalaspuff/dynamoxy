@@ -214,6 +214,13 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   parsed them, and the in-memory DynamoDB computed them, but the outputs left them out. They now
   return `item_collection_metrics`, a list of metrics per table (empty when not asked for), as
   `put_item`, `update_item` and `delete_item` return theirs.
+- The in-memory DynamoDB applied part of an `UpdateTable` or `TagResource` request that it then
+  refused, where DynamoDB applies nothing: `UpdateTable` set the billing mode, and created and
+  backfilled a new global index, before it found an error later in the request (a stream that
+  is already enabled, an index that does not exist). `billing_mode=PROVISIONED` without
+  throughput left the table provisioned without capacity, so that every later `UpdateTable`
+  failed, even one that only turns on deletion protection. `TagResource` added the tags before
+  it refused the request for going over 50 tags. Both now validate the whole request first.
 
 ### Security
 

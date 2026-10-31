@@ -11,7 +11,7 @@ use super::table::{Index, KeyInfo, Table};
 use super::{Backup, State, now, random_hex};
 use crate::error::{Error, Result, ServiceError};
 use crate::types::{
-    BackupDescription, BackupDetails, BackupStatus, BackupType, BackupTypeFilter, BillingMode,
+    AttributeDefinition, BackupDescription, BackupDetails, BackupStatus, BackupType, BackupTypeFilter, BillingMode,
     ContinuousBackupsDescription, ContinuousBackupsStatus, CreateTableInput, GlobalSecondaryIndexUpdate, IndexStatus,
     ListBackupsInput, ListBackupsOutput, ListTablesInput, ListTablesOutput, ListTagsOutput, Projection, ProjectionType,
     RestoreOverrides, RestoreTableFromBackupInput, RestoreTableToPointInTimeInput, SseDescription, SseSpecification,
@@ -275,29 +275,28 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
             "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table",
         ));
     }
-    if let Some(mode) = input.billing_mode {
-        table.billing_mode = mode;
-        if mode == BillingMode::PayPerRequest {
-            table.provisioned_throughput = None;
-        }
+    // DynamoDB applies nothing of a request it refuses: validate all of it before changing the table.
+    let billing_mode = input.billing_mode.unwrap_or(table.billing_mode);
+    if input.provisioned_throughput.is_some() && billing_mode != BillingMode::Provisioned {
+        return Err(parameter_error(
+            "Neither ReadCapacityUnits nor WriteCapacityUnits can be specified when BillingMode is PAY_PER_REQUEST",
+        ));
     }
-    if let Some(throughput) = input.provisioned_throughput {
-        if table.billing_mode != BillingMode::Provisioned {
-            return Err(parameter_error(
-                "Neither ReadCapacityUnits nor WriteCapacityUnits can be specified when BillingMode is PAY_PER_REQUEST",
-            ));
-        }
-        table.provisioned_throughput = Some(throughput);
-    }
-    if table.billing_mode == BillingMode::Provisioned && table.provisioned_throughput.is_none() {
+    let provisioned_throughput = match billing_mode {
+        BillingMode::PayPerRequest => None,
+        BillingMode::Provisioned => input.provisioned_throughput.or(table.provisioned_throughput),
+    };
+    if billing_mode == BillingMode::Provisioned && provisioned_throughput.is_none() {
         return Err(parameter_error(
             "ReadCapacityUnits and WriteCapacityUnits must both be specified when BillingMode is PROVISIONED",
         ));
     }
-    if let Some(on_demand) = input.on_demand_throughput {
-        table.on_demand_throughput = Some(on_demand);
-    }
-    for update in input.global_secondary_index_updates {
+    let index_not_found = |index_name: &str| -> Error {
+        ServiceError::resource_not_found(format!("Requested resource not found: Index: {index_name} not found")).into()
+    };
+    // The index to create, with the attribute definitions it adds (at most one, checked above).
+    let mut created: Option<(Index, Vec<AttributeDefinition>)> = None;
+    for update in &input.global_secondary_index_updates {
         match update {
             GlobalSecondaryIndexUpdate::Create(global) => {
                 check_name(&global.index_name, "indexName")?;
@@ -327,7 +326,7 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                     }
                 }
                 let key = KeyInfo::new(&global.key_schema, &definitions)?;
-                let mut index = Index {
+                let index = Index {
                     name: global.index_name.clone(),
                     global: true,
                     key,
@@ -337,6 +336,35 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                     provisioned_throughput: global.provisioned_throughput,
                     on_demand_throughput: global.on_demand_throughput,
                 };
+                created = Some((index, definitions));
+            }
+            GlobalSecondaryIndexUpdate::Update { index_name, .. }
+            | GlobalSecondaryIndexUpdate::Delete { index_name } => {
+                if !table.indexes.iter().any(|index| index.global && index.name == *index_name) {
+                    return Err(index_not_found(index_name));
+                }
+            }
+        }
+    }
+    if let Some(stream) = &input.stream_specification {
+        let currently = table.stream_specification.is_some_and(|current| current.enabled);
+        if stream.enabled && currently {
+            return Err(invalid(format!("Table already has an enabled stream: {}", table.arn)));
+        }
+        if stream.enabled && stream.view_type.is_none() {
+            return Err(parameter_error("StreamViewType is required when StreamEnabled is true"));
+        }
+    }
+    // Apply it.
+    table.billing_mode = billing_mode;
+    table.provisioned_throughput = provisioned_throughput;
+    if let Some(on_demand) = input.on_demand_throughput {
+        table.on_demand_throughput = Some(on_demand);
+    }
+    for update in input.global_secondary_index_updates {
+        match update {
+            GlobalSecondaryIndexUpdate::Create(_) => {
+                let Some((mut index, definitions)) = created.take() else { continue };
                 // Backfill: items whose index key attributes have the wrong type are not indexed.
                 for (stored, item) in &table.items {
                     if index.check_item(item).is_ok()
@@ -346,56 +374,26 @@ pub fn update_table(state: &mut State, input: UpdateTableInput) -> Result<TableD
                     }
                 }
                 table.indexes.push(index);
-                // Keep only the definitions some key uses.
-                let used: BTreeSet<String> = std::iter::once(&table.key)
-                    .chain(table.indexes.iter().map(|index| &index.key))
-                    .flat_map(|key| key.names().into_iter().map(str::to_owned))
-                    .collect();
-                definitions.retain(|definition| used.contains(&definition.name));
                 table.attribute_definitions = definitions;
+                table.retain_used_definitions();
             }
             GlobalSecondaryIndexUpdate::Update { index_name, provisioned_throughput, on_demand_throughput } => {
-                let index =
-                    table.indexes.iter_mut().find(|index| index.global && index.name == index_name).ok_or_else(
-                        || {
-                            ServiceError::resource_not_found(format!(
-                                "Requested resource not found: Index: {index_name} not found"
-                            ))
-                        },
-                    )?;
-                if provisioned_throughput.is_some() {
-                    index.provisioned_throughput = provisioned_throughput;
-                }
-                if on_demand_throughput.is_some() {
-                    index.on_demand_throughput = on_demand_throughput;
+                if let Some(index) = table.indexes.iter_mut().find(|index| index.global && index.name == index_name) {
+                    if provisioned_throughput.is_some() {
+                        index.provisioned_throughput = provisioned_throughput;
+                    }
+                    if on_demand_throughput.is_some() {
+                        index.on_demand_throughput = on_demand_throughput;
+                    }
                 }
             }
             GlobalSecondaryIndexUpdate::Delete { index_name } => {
-                let position =
-                    table.indexes.iter().position(|index| index.global && index.name == index_name).ok_or_else(
-                        || {
-                            ServiceError::resource_not_found(format!(
-                                "Requested resource not found: Index: {index_name} not found"
-                            ))
-                        },
-                    )?;
-                table.indexes.remove(position);
-                let used: BTreeSet<String> = std::iter::once(&table.key)
-                    .chain(table.indexes.iter().map(|index| &index.key))
-                    .flat_map(|key| key.names().into_iter().map(str::to_owned))
-                    .collect();
-                table.attribute_definitions.retain(|definition| used.contains(&definition.name));
+                table.indexes.retain(|index| !(index.global && index.name == index_name));
+                table.retain_used_definitions();
             }
         }
     }
     if let Some(stream) = input.stream_specification {
-        let currently = table.stream_specification.is_some_and(|current| current.enabled);
-        if stream.enabled && currently {
-            return Err(invalid(format!("Table already has an enabled stream: {}", table.arn)));
-        }
-        if stream.enabled && stream.view_type.is_none() {
-            return Err(parameter_error("StreamViewType is required when StreamEnabled is true"));
-        }
         table.stream_label = stream.enabled.then(|| stream_label(now()));
         table.stream_specification = Some(stream);
     }
@@ -467,13 +465,15 @@ fn table_by_arn<'a>(state: &'a mut State, arn: &str) -> Result<&'a mut Table> {
 /// `TagResource`.
 pub fn tag_resource(state: &mut State, arn: &str, tags: BTreeMap<String, String>) -> Result<()> {
     let table = table_by_arn(state, arn)?;
-    table.tags.extend(tags);
-    if table.tags.len() > 50 {
+    // A refused request adds none of its tags.
+    let added = tags.keys().filter(|key| !table.tags.contains_key(*key)).count();
+    if table.tags.len() + added > 50 {
         return Err(Error::from(ServiceError::new(
             "LimitExceededException",
             "Too many tags: a resource can have at most 50",
         )));
     }
+    table.tags.extend(tags);
     Ok(())
 }
 
