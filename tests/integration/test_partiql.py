@@ -49,7 +49,8 @@ async def test_transactions_and_batches(client: dynamoxy.Client, table: str, tar
     with pytest.raises(dynamoxy.TransactionCanceledError) as caught:
         await client.execute_transaction([(insert, ["t", 3]), (insert, ["t", 1])])
     # LocalStack (DynamoDB Local) gives the duplicate INSERT the reason ValidationError, with the
-    # message "Duplicate primary key exists in table" (docs/parity, round 3).
+    # message "Duplicate primary key exists in table"; DynamoDB gives DuplicateItem (docs/parity,
+    # round 3).
     duplicate = "ValidationError" if target == "localstack" else "DuplicateItem"
     assert [reason.code for reason in caught.value.cancellation_reasons] == ["None", duplicate]
     results = await client.batch_execute([(insert, ["b", 1]), (insert, ["t", 1])])

@@ -160,4 +160,4 @@ not refused (DynamoDB's answer to them was not measured).
   LocalStack also keeps the Time to Live of a table deleted and created again, sends
   `DuplicateItem` where DynamoDB sends `DuplicateItemException` (dynamoxy reads both as
   `DuplicateItemError`), and gives a duplicate `INSERT` in `ExecuteTransaction` the reason
-  `ValidationError` (round 3 asks what DynamoDB gives).
+  `ValidationError` where DynamoDB gives `DuplicateItem` (round 3).
