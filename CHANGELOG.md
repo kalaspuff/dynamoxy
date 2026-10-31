@@ -406,6 +406,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   clause keyed on the index's partition key that filters on them, of either kind ("Secondary
   index i does not project one or more filter attributes: [a]"). Both are now refused. An
   unkeyed `WHERE` clause still scans the index and matches nothing on such attributes.
+- Loaded instances whose key another writer stored in a form that decodes to the same values but
+  that dynamoxy does not write (an upper-case UUID, a date as `20260102`, also inside a key
+  template) rendered the canonical form, which addresses no item: `save()`, `delete()` and
+  `update()` through them raised "the key of this instance changed", and `primary_key()`
+  returned a key of no item. Writes through a loaded instance (batches and transactions
+  included) and its `primary_key()` now use the key as stored, as ADR 0015 says.
 
 ### Security
 

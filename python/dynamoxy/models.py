@@ -996,10 +996,14 @@ class Model(Document, _Persistence):
     def primary_key(self) -> dict[str, Any]:
         """The stored primary key of this instance (attribute names to stored values).
 
+        For an instance loaded from an item, it is the item's key as stored, while no key field
+        changed.
+
         Raises:
             ValueError: A key component is not set.
         """
-        return schema_of(type(self)).key_of(self)
+        schema = schema_of(type(self))
+        return schema.loaded_key(self) or schema.key_of(self)
 
     @classmethod
     def key(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:

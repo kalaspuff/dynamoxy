@@ -357,8 +357,9 @@ class PydanticModel(BaseModel, _Persistence, metaclass=_ModelMetaclass):
         return schema_of(cls).decode(item)
 
     def primary_key(self) -> dict[str, Any]:
-        """The stored primary key of this instance."""
-        return schema_of(type(self)).key_of(self)
+        """The stored primary key of this instance (see :meth:`dynamoxy.Model.primary_key`)."""
+        schema = schema_of(type(self))
+        return schema.loaded_key(self) or schema.key_of(self)
 
     @classmethod
     def key(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
