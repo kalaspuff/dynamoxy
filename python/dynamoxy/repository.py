@@ -38,6 +38,7 @@ subclasses included.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import os
@@ -49,7 +50,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from dynamoxy import _core
 from dynamoxy._utils import MISSING, stored_identity
-from dynamoxy.constraints import GUARD_PREFIX, guard_item, guard_key
+from dynamoxy.constraints import (
+    GUARD_PREFIX,
+    MissingGuard,
+    OrphanedGuard,
+    UniqueRepair,
+    UniqueReport,
+    audit,
+    guard_item,
+    guard_key,
+)
 from dynamoxy.errors import (
     ConditionalCheckFailedError,
     DynamoxyError,
@@ -66,7 +76,7 @@ from dynamoxy.errors import (
     validation_error,
 )
 from dynamoxy.events import EventKind
-from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition
+from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition, or_
 from dynamoxy.query import Query, Scan
 from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, models_for_table, schema_of
 
@@ -1635,8 +1645,9 @@ class Repository[M]:
             owned = UniqueConstraintError(
                 f"{self.model_class.__name__}.{spec.name}: the stored value's guard item belongs to another item "
                 f"(see .value, and the owner's key in .item['_owner']), so this {write.mode} does not delete it; "
-                "the stored data breaks the unique constraint: if the owner holds the same value, change the value "
-                "of one of the items, and if it is gone or holds another value, delete the guard item (.item)",
+                "the stored data breaks the unique constraint: if the owner holds the same value, change the "
+                "value of one of the items, and if it is gone or holds another value, repair_unique() deletes "
+                "the stale guard",
                 model=self.model_class,
                 field=spec.name,
                 value=spec.codec.decode(value),
@@ -1660,6 +1671,176 @@ class Repository[M]:
             if value is not None:
                 setattr(failed, name, value)
         return self._conflict(write, failed, item)
+
+    # ---- unique guards: verification and repair --------------------------------------------
+
+    def _check_unique_model(self) -> None:
+        schema = self.schema
+        if not schema.unique_fields:
+            raise TypeError(f"{self.model_class.__name__} has no unique attributes")
+        partition = schema.partition_key
+        if partition is None or partition.codec.key_type() != "S":
+            raise TypeError(
+                f"{self.model_class.__name__}: unique attributes need a table whose partition key is a string"
+            )
+
+    async def verify_unique(self, *, segments: int | None = None) -> UniqueReport:
+        """Compares the unique values of the stored items with the guard items, in one scan.
+
+        Guards and items disagree when items were stored before a field became ``unique=True``,
+        written by other tools (or ``client.table(...)``, batches of raw items, imports and
+        restores), or when the entity type or a unique field's stored name changed. The report
+        lists values without a guard (``missing``), guards that the item holding their value
+        does not own (``orphaned``), values that several items hold (``duplicates``) and values
+        that cannot be unique (``invalid``); :meth:`repair_unique` fixes the first two.
+
+        The scan reads the whole table with strong consistency (projected to the key, type and
+        unique attributes, and the guards' owners), ``segments`` of it in parallel, and holds
+        what it read in memory. Reports hold values and keys: do not log them.
+
+        Raises:
+            TypeError: The model has no unique attributes.
+        """
+        self._check_unique_model()
+        schema = self.schema
+        names = [*schema._key_attributes, *(spec.attribute for spec in schema.unique_fields), "_owner", "_attribute"]
+        if schema.type_attribute is not None:
+            names.append(schema.type_attribute)
+        scan = self.table.scan(consistent=True).project(*dict.fromkeys(names))
+        if segments is not None:
+            scan = scan.segments(segments)
+        return audit(schema, await scan.all())
+
+    async def repair_unique(
+        self,
+        report: UniqueReport | None = None,
+        *,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
+        segments: int | None = None,
+    ) -> UniqueRepair:
+        """Creates missing guard items and fixes orphaned ones (``report``, or a new :meth:`verify_unique`).
+
+        Each fix is a small transaction that holds only while the data is as the scan saw it: a
+        guard is created only if it is still missing (``attribute_not_exists``) and the item
+        still holds the value, so a repair cannot take a value a live writer just took; an
+        orphaned guard is deleted (or given to the one item that holds its value) only while its
+        owner and the owner's value are unchanged. Fixes whose conditions fail are ``skipped``:
+        verify again. Repairs are idempotent. Values that several items hold cannot be repaired:
+        change the data so that one item holds each.
+
+        Args:
+            report: A report of :meth:`verify_unique` (scans again when ``None``).
+            dry_run: List the fixes without writing anything.
+            skip_duplicates: Repair the rest when values are held by several items.
+            segments: Parallel segments of the scan, when ``report`` is ``None``.
+
+        Raises:
+            TypeError: The model has no unique attributes.
+            ValueError: ``report`` is of another model, or values are held by several items
+                (and neither ``skip_duplicates`` nor ``dry_run`` is set); nothing is written.
+        """
+        self._check_unique_model()
+        name = self.model_class.__name__
+        if report is None:
+            report = await self.verify_unique(segments=segments)
+        elif report.model is not self.model_class:
+            raise ValueError(f"the report is of {report.model.__name__}, not {name}")
+        if report.duplicates and not (skip_duplicates or dry_run):
+            raise ValueError(
+                f"{name}: {len(report.duplicates)} unique values are held by several items (see .duplicates of "
+                "verify_unique()): change the data so that one item holds each value, or pass skip_duplicates=True "
+                "to repair the rest; nothing was written"
+            )
+        fixes: list[MissingGuard | OrphanedGuard] = [*report.missing, *report.orphaned]
+        applied: list[bool] = [True] * len(fixes)
+        if not dry_run:
+            limit = asyncio.Semaphore(16)
+
+            async def run(index: int, fix: MissingGuard | OrphanedGuard) -> None:
+                async with limit:
+                    applied[index] = await self._apply_unique_fix(fix)
+
+            async with asyncio.TaskGroup() as group:
+                for index, fix in enumerate(fixes):
+                    group.create_task(run(index, fix))
+        done = [fix for fix, ok in zip(fixes, applied, strict=True) if ok]
+        return UniqueRepair(
+            report=report,
+            dry_run=dry_run,
+            created=tuple(fix for fix in done if isinstance(fix, MissingGuard)),
+            deleted=tuple(fix for fix in done if isinstance(fix, OrphanedGuard) and fix.holder is None),
+            reassigned=tuple(fix for fix in done if isinstance(fix, OrphanedGuard) and fix.holder is not None),
+            skipped=tuple(fix for fix, ok in zip(fixes, applied, strict=True) if not ok),
+            duplicates=report.duplicates,
+        )
+
+    def _holds(self, attribute: str, value: Any) -> Condition:
+        """The condition that an item of this model holds ``value`` (as stored) in ``attribute``."""
+        schema = self.schema
+        path = F(attribute)
+        condition = path == value if value is not None else path.not_exists() | path.is_type("NULL")
+        if schema.type_attribute is not None and schema.entity is not None:
+            condition = condition & (F(schema.type_attribute) == schema.entity)
+        return condition
+
+    def _operation(self, kind: str, condition: Condition, **fields: Any) -> dict[str, Any]:
+        builder = ExpressionBuilder()
+        return {
+            "kind": kind,
+            "table_name": self.table_name,
+            **fields,
+            "condition_expression": builder.condition(condition),
+            **builder.arguments(),
+        }
+
+    async def _apply_unique_fix(self, fix: MissingGuard | OrphanedGuard) -> bool:
+        """Applies one fix of :meth:`repair_unique`; ``False`` when the data changed since the scan."""
+        schema = self.schema
+        assert schema.partition_key is not None
+        partition = schema.partition_key.attribute
+        if isinstance(fix, MissingGuard):
+            spec = schema.fields[fix.field]
+            operations = [
+                self._operation("put", F(partition).not_exists(), item=guard_item(schema, spec, fix.stored, fix.key)),
+                self._operation("condition_check", self._holds(spec.attribute, fix.stored), key=fix.key),
+            ]
+        else:
+            if fix.owner is not None:
+                unchanged = F(partition).exists() & and_(*(F("_owner", a) == v for a, v in fix.owner.items()))
+            else:  # a guard with no complete owner key, which a guard dynamoxy writes always has
+                unchanged = F(partition).exists() & or_(*(F("_owner", a).not_exists() for a in schema._key_attributes))
+            if fix.holder is None:
+                operations = [self._operation("delete", unchanged, key=fix.key)]
+            else:
+                assert fix.field is not None
+                spec = schema.fields[fix.field]
+                operations = [
+                    self._operation("put", unchanged, item=guard_item(schema, spec, fix.stored, fix.holder)),
+                    self._operation("condition_check", self._holds(spec.attribute, fix.stored), key=fix.holder),
+                ]
+            if fix.owner is not None and fix.reason != "not unique":
+                if fix.owner_found:
+                    owner = self._holds(fix.attribute, fix.owner_value)
+                else:
+                    owner = F(partition).not_exists()
+                    if schema.type_attribute is not None and schema.entity is not None:
+                        owner = owner | ~(F(schema.type_attribute) == schema.entity)
+                operations.append(self._operation("condition_check", owner, key=fix.owner))
+        try:
+            await self.client.call(
+                "transact_write_items",
+                "TransactWriteItems",
+                table=self.table_name,
+                model=self.model_class,
+                transact_items=operations,
+            )
+        except TransactionCanceledError as error:
+            codes = {reason.code for reason in cancellation_reasons(error)}
+            if "ConditionalCheckFailed" in codes and codes <= {"ConditionalCheckFailed", "None"}:
+                return False
+            raise
+        return True
 
     async def batch_put(self, items: Iterable[M]) -> None:
         """Writes many items (managed ``BatchWriteItem``: unconditional, not atomic).

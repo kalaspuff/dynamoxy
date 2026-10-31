@@ -555,7 +555,7 @@ async def test_guards_of_items_that_are_gone_say_how_to_free_the_value(client: d
     users = client.model(Current)
     await users.create(Current(user_id="u2", email="ada@example.com"))
     await users.table.delete({"user_id": "u2"})  # by another tool (or TTL): its guard stays
-    with pytest.raises(dynamoxy.UniqueConstraintError, match=r"if it is gone or holds another value") as caught:
+    with pytest.raises(dynamoxy.UniqueConstraintError, match=r"repair_unique\(\) deletes the stale guard") as caught:
         await users.delete("u1")
     guard = caught.value.item
     assert guard is not None

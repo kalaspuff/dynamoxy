@@ -77,6 +77,7 @@ from dynamoxy.batch import BatchWriter
 from dynamoxy.client import Client, Credentials, RetryPolicy
 from dynamoxy.codecs import Codec, UseCodec
 from dynamoxy.collection import Collection
+from dynamoxy.constraints import DuplicateValue, MissingGuard, OrphanedGuard, UniqueRepair, UniqueReport
 from dynamoxy.errors import (
     AccessDeniedError,
     BackupError,
@@ -174,6 +175,7 @@ __all__ = [
     "CredentialsError",
     "Document",
     "DuplicateItemError",
+    "DuplicateValue",
     "DynamoxyError",
     "Event",
     "EventHook",
@@ -199,9 +201,11 @@ __all__ = [
     "MemoryStore",
     "MetricsSnapshot",
     "Middleware",
+    "MissingGuard",
     "Model",
     "OperationMetrics",
     "OperationRecord",
+    "OrphanedGuard",
     "Page",
     "PartitionKey",
     "Path",
@@ -232,6 +236,8 @@ __all__ = [
     "TransportError",
     "Unique",
     "UniqueConstraintError",
+    "UniqueRepair",
+    "UniqueReport",
     "UnprocessedItemsError",
     "UpdateAction",
     "UpdatedAt",
