@@ -26,14 +26,14 @@ class ProfileV1(dynamoxy.Model, table="profiles_v"):
 
     profile_id: Attr[str] = partition_key()
     name: Attr[str] = field(default="")
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class ProfileV2(dynamoxy.Model, table="profiles_v"):
     profile_id: Attr[str] = partition_key()
     name: Attr[str] = field(default="")
     nickname: Attr[str | None] = field(default=None)
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class Street(dynamoxy.Document):
@@ -71,10 +71,12 @@ async def players(client: dynamoxy.Client) -> dynamoxy.Repository[Player]:
 async def test_save_writes_the_changes_of_a_loaded_instance(players: dynamoxy.Repository[Player]) -> None:
     await players.create(Player(player_id="p1", name="Ada"))
     player = await players.get_or_raise("p1")
+    loaded_version = player.version
     player.name = "Ada Lovelace"
     player.score = 7
     assert await player.save() is player
-    assert (player.version, player.rank) == (2, "SCORE#00000007"), "automatic and derived fields are maintained"
+    assert player.rank == "SCORE#00000007", "derived fields are maintained"
+    assert player.version not in (None, loaded_version), "a new version token"
     assert await players.get_or_raise("p1") == player
 
 
@@ -96,11 +98,14 @@ async def test_models_create_items_from_field_values(client: dynamoxy.Client) ->
     assert_type(user, User)
     assert usage.calls == 1, "the item and its unique guard, in one transaction"
     assert user.is_loaded
-    assert (user.version, user.visits) == (1, 0)
+    assert user.visits == 0
+    assert re.fullmatch(r"[0-9a-f]{16}", user.version or ""), "a random version token"
     assert user.created_at is not None
     assert await client.model(User).get_or_raise("u1") == user
+    created_version = user.version
     await user.increment(User.visits)  # bound to client.model(User)
-    assert (user.visits, user.version) == (1, 2)
+    assert user.visits == 1
+    assert user.version != created_version
     with pytest.raises(dynamoxy.ItemAlreadyExistsError):
         await User.create(client, user_id="u1", email="bo@example.com", name="Bo")
     with pytest.raises(dynamoxy.UniqueConstraintError) as caught:
@@ -175,7 +180,8 @@ async def test_pydantic_models_create_items(client: dynamoxy.Client) -> None:
     await client.create_tables(Account, ContactRecord)
     account = await Account.create(client, account_id="a1", owner="Ada", handle="ada")
     assert_type(account, Account)
-    assert (account.version, account.is_loaded) == (1, True)
+    assert account.version is not None
+    assert account.is_loaded
     await account.increment(dynamoxy.attr(Account.balance), 5)
     assert (await client.model(Account).get_or_raise("a1")).balance == 5
     with pytest.raises(dynamoxy.UniqueConstraintError):
@@ -301,7 +307,7 @@ async def test_save_checks_versions_and_conditions(players: dynamoxy.Repository[
     with pytest.raises(dynamoxy.VersionConflictError):
         await stale.save()
     await stale.refresh()  # reload, re-apply the change, save again
-    assert (stale.name, stale.version) == ("Bo", 2)
+    assert (stale.name, stale.version) == ("Bo", player.version)
     stale.name = "Cy"
     await stale.save(condition=Player.score == 0)
     with pytest.raises(dynamoxy.ConditionalCheckFailedError) as caught:
@@ -313,17 +319,18 @@ async def test_save_checks_versions_and_conditions(players: dynamoxy.Repository[
 async def test_items_stored_before_the_model_had_a_version_can_be_saved(
     client: dynamoxy.Client, players: dynamoxy.Repository[Player]
 ) -> None:
-    # As stored by the application before it added `version: Attr[int] = dynamoxy.version()`.
+    # As stored by the application before it added `version: Attr[str] = dynamoxy.version()`.
     legacy = {"player_id": "p1", "name": "Ada", "board": "global", "score": 0, "rank": "SCORE#00000000"}
     await client.table("players").put(legacy)
     player = await players.get_or_raise("p1")
     stale = await players.get_or_raise("p1")
     assert (player.version, player.is_loaded) == (None, True)
     player.name = "Ada L."
-    await player.save()  # the stored item must still have no version: it gets version 1
-    assert (player.version, (await players.get_or_raise("p1")).version) == (1, 1)
+    await player.save()  # the stored item must still have no version: it gets its first one
+    assert player.version is not None
+    assert (await players.get_or_raise("p1")).version == player.version
     stale.name = "Stale"
-    with pytest.raises(dynamoxy.VersionConflictError, match="stored version 1, expected no version"):
+    with pytest.raises(dynamoxy.VersionConflictError, match=f"stored version {player.version}, expected no version"):
         await stale.save()
     await client.table("players").put({**legacy, "player_id": "p2"})
     gone = await players.get_or_raise("p2")
@@ -335,7 +342,8 @@ async def test_items_stored_before_the_model_had_a_version_can_be_saved(
     in_transaction = await players.get_or_raise("p3")
     async with client.transaction() as tx:
         tx.save(in_transaction)
-    assert (in_transaction.version, (await players.get_or_raise("p3")).version) == (1, 1)
+    assert in_transaction.version is not None
+    assert (await players.get_or_raise("p3")).version == in_transaction.version
 
 
 async def test_delete_through_the_instance(client: dynamoxy.Client, players: dynamoxy.Repository[Player]) -> None:
@@ -359,6 +367,14 @@ async def test_delete_through_the_instance(client: dynamoxy.Client, players: dyn
 
 async def test_atomic_changes_through_the_instance(players: dynamoxy.Repository[Player]) -> None:
     player = await players.create(Player(player_id="p1", name="Ada", badges={"rookie"}))
+    versions = {player.version}
+
+    async def record_version(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        response = await call_next(request)
+        versions.add(player.version)
+        return response
+
+    remove = players.client.use(record_version)
     assert await player.increment(Player.score) is player
     await player.increment(Player.score, 9)
     await player.decrement(Player.score, 2)
@@ -377,7 +393,9 @@ async def test_atomic_changes_through_the_instance(players: dynamoxy.Repository[
     assert player.badges == {"rookie", "first-win", "sharp", "fast"}
     assert player.history == ["won", "lost"]
     assert player.stats == {"wins": 3, "streak": -1, "draws": 4}
-    assert player.version == 15, "every change was one versioned write"
+    remove()
+    versions.add(player.version)
+    assert len(versions) == 15, "every change was one versioned write, with a new version token"
     assert player.rank == "SCORE#00000013", "derived attributes follow the new value"
     assert await players.get_or_raise("p1") == player, "the instance holds what DynamoDB stored"
 
@@ -385,7 +403,9 @@ async def test_atomic_changes_through_the_instance(players: dynamoxy.Repository[
 async def test_lists_are_created_and_derived_index_keys_follow(
     client: dynamoxy.Client, players: dynamoxy.Repository[Player]
 ) -> None:
-    await client.table("players").put({"player_id": "p1", "name": "Ada", "board": "global", "score": 0, "version": 1})
+    await client.table("players").put(
+        {"player_id": "p1", "name": "Ada", "board": "global", "score": 0, "version": "v1"}
+    )
     legacy = await players.get_or_raise("p1")  # stored without history (an older item)
     await legacy.add(Player.history, "joined")
     assert legacy.history == ["joined"]
@@ -581,7 +601,7 @@ async def test_pydantic_instances(client: dynamoxy.Client) -> None:
     await account.increment(balance, Decimal("10.5"))
     await account.decrement(balance, 3)
     await account.update(dynamoxy.attr(Account.handle).set("ada2"))  # unique: guard items follow
-    assert (account.owner, account.balance, account.handle, account.version) == ("Ada L.", Decimal("7.5"), "ada2", 5)
+    assert (account.owner, account.balance, account.handle) == ("Ada L.", Decimal("7.5"), "ada2")
     await accounts.create(Account(account_id="a2", owner="Bo", handle="ada"))  # the old handle is free again
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await accounts.create(Account(account_id="a3", owner="Cy", handle="ada2"))
@@ -735,14 +755,15 @@ async def test_writes_of_loaded_instances_keep_attributes_their_model_does_not_d
     await loaded.save()
     await older.model(ProfileV1).put(loaded)
     stored = await newer.model(ProfileV2).get_or_raise("p1")
-    assert (stored.name, stored.nickname, stored.version) == ("Ada L.", "ada", 3)
+    assert (stored.name, stored.nickname, stored.version) == ("Ada L.", "ada", loaded.version)
     await older.model(ProfileV1).update(loaded, F("nickname").remove())  # how to remove one
     assert (await newer.model(ProfileV2).get_or_raise("p1")).nickname is None
     await older.model(ProfileV1).put(ProfileV1(profile_id="p1", name="New"))  # not loaded: replaced
     replaced = await newer.table("profiles_v").get({"profile_id": "p1"})
     assert replaced is not None
     assert re.fullmatch(r"[0-9a-f]{16}", replaced.pop("_wid")), "the id of the write"
-    assert replaced == {"profile_id": "p1", "name": "New", "version": 1}
+    assert re.fullmatch(r"[0-9a-f]{16}", replaced.pop("version")), "a new version token"
+    assert replaced == {"profile_id": "p1", "name": "New"}
 
 
 async def test_documents_keep_the_keys_their_class_does_not_declare(client: dynamoxy.Client) -> None:

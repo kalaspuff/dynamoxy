@@ -49,7 +49,7 @@ class User(Model, table="users"):
     status: Attr[Status] = field(default=Status.ACTIVE)
     created_at: Attr[datetime] = created_at()
     updated_at: Attr[datetime] = updated_at()
-    version: Attr[int] = version()
+    version: Attr[str] = version()
 
     by_email = GlobalIndex(partition_key=email)
     by_status = GlobalIndex(partition_key=status, sort_key=created_at, projection=Projection.keys_only())
@@ -116,7 +116,7 @@ class Player(Model, table="players"):
     stats: Attr[dict[str, int]] = field(default_factory=dict)
     rank: Attr[str] = field(template="SCORE#{score:08d}")
     updated_at: Attr[datetime] = updated_at()
-    version: Attr[int] = version()
+    version: Attr[str] = version()
 
     by_rank = GlobalIndex(partition_key=board, sort_key=rank)
 
@@ -141,7 +141,7 @@ class Account(PydanticModel, table="accounts"):
     owner: str
     handle: Annotated[str, Unique()]
     balance: Decimal = Decimal(0)
-    version: Annotated[int | None, Version()] = None
+    version: Annotated[str | None, Version()] = None
 
 
 class Contact(BaseModel):

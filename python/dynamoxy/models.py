@@ -380,7 +380,7 @@ class Document:
 
         Automatic fields (``created_at``, ``updated_at``, ``version``) start empty, as in a
         constructed instance, so saving the copy behaves like saving a new instance: a versioned
-        copy is written with version 1, and its ``save()`` fails if the key exists. Pass them in
+        copy gets a version of its own, and its ``save()`` fails if the key exists. Pass them in
         ``changes`` to keep them (``item.copy(created_at=item.created_at)``). ``copy.copy()`` and
         ``copy.deepcopy()`` make exact duplicates instead.
 

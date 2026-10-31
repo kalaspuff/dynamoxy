@@ -44,6 +44,16 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   different guards for the same value. A collection stored in a unique `Any` field raises
   `ValueError` before any write. Drop `unique=True` from such fields, or make the value a
   string (`",".join(sorted(tags))`) in a field of its own.
+- [**breaking**] `version()` fields hold a random token (`Attr[str]`), new on every write, instead
+  of a counter ([ADR 0022](docs/adr/0022-versions-are-random-tokens.md)). A counter started
+  again at 1 on a `put()` of an instance that was not loaded, and on creating an item again after
+  it was deleted, so an instance loaded before at version 1 passed its check again and
+  overwrote both writes (#84); a token never repeats, and such an instance raises
+  `VersionConflictError`. Declare version fields `Attr[str]` (`Annotated[str | None, Version()]`
+  in pydantic models; other types raise `TypeError`), and compare versions for equality only;
+  stored numeric versions are not read. Updates set the new token instead of adding 1, and the
+  operations of a transaction with an idempotency token derive their tokens from it, so that the
+  transaction planned again with the token is the same request.
 
 ### Deprecated
 
@@ -102,7 +112,7 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - Items stored before their model had a `version()` field could never be saved: `save()` of such
   a loaded instance (version `None`) required that the item did not exist, like a new instance,
   and raised an unexplained `ConditionalCheckFailedError`, also in transactions. It now requires
-  that the item still has no version, stores version 1, and raises `VersionConflictError` when
+  that the item still has no version, stores its first version, and raises `VersionConflictError` when
   another writer saved or deleted the item meanwhile.
 - A member of a `(str, Enum)` or `(int, Enum)` (the mixins that predate `StrEnum` and `IntEnum`)
   in a `str`, `int` or `Literal` field was stored as its value (`"book"`), but keys, templates

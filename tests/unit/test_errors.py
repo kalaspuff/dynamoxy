@@ -58,7 +58,7 @@ async def test_errors_of_calls_keep_their_attributes() -> None:
 def test_python_errors_keep_their_attributes() -> None:
     errors: list[dynamoxy.DynamoxyError] = [
         dynamoxy.ItemNotFoundError("missing", model=User, key={"user_id": "u1"}),
-        dynamoxy.VersionConflictError("stale", model=User, key={"user_id": "u1"}, expected_version=3),
+        dynamoxy.VersionConflictError("stale", model=User, key={"user_id": "u1"}, expected_version="3f2a"),
         dynamoxy.ItemDecodeError("bad", model=User, key={"user_id": "u1"}),
         dynamoxy.UnprocessedItemsError("left", unprocessed=[("put", {"user_id": "u1"})]),
     ]

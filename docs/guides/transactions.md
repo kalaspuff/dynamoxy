@@ -81,9 +81,11 @@ Every commit sends a client request token (generated, or `client.transaction(tok
 characters, such as a UUID, and unique per logical operation across the account and region).
 DynamoDB treats a repeated request with the same token within 10 minutes as the same transaction:
 it succeeds without being applied again. A *different* transaction with a used token raises
-`IdempotentParameterMismatchError`. Because automatic fields (`updated_at`) differ between
-attempts, application-level retries are best protected by conditions, such as creating an item
-keyed by the operation id in the same transaction (see `examples/transactions.py`).
+`IdempotentParameterMismatchError`. The version tokens of versioned models derive from the token,
+so the same transaction planned again is the same request; timestamps (`updated_at`) differ
+between attempts, though, so application-level retries are best protected by conditions too, such
+as creating an item keyed by the operation id in the same transaction (see
+`examples/transactions.py`).
 
 ## Limits and costs
 
