@@ -31,3 +31,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0019](0019-missing-attributes-read-as-none-or-empty-sets.md) | A missing attribute reads as `None` or an empty set where the field can hold one, not as the field's default | Accepted |
 | [0020](0020-documents-keep-undeclared-keys.md) | Documents read from an item keep the map keys their class does not declare | Accepted |
 | [0021](0021-index-reads-follow-dynamodbs-refusals.md) | Filters and projections of indexes follow DynamoDB's refusals, measured against it; queries of an index without the type attribute fail | Accepted |
+| [0022](0022-versions-are-random-tokens.md) | Versions are random tokens, new on every write, so a stale instance never matches again | Accepted |

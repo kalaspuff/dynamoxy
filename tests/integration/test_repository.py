@@ -26,7 +26,7 @@ class Ticket(Model, table="tickets"):
     country: Attr[str] = field(default="SE", immutable=True)
     spent: Attr[timedelta] = field(default=timedelta(0))
     updated_at: Attr[datetime] = updated_at()
-    version: Attr[int] = version()
+    version: Attr[str] = version()
     recent: Attr[str] = field(template="{updated_at}")
     state_recent: Attr[str] = field(template="{state}#{updated_at}")
     revision: Attr[str] = field(template="v{version}")
@@ -96,7 +96,8 @@ async def events(client: dynamoxy.Client) -> dynamoxy.Repository[Event]:
 async def test_create_get_and_automatic_fields(users: dynamoxy.Repository[User]) -> None:
     before = datetime.now(UTC) - timedelta(seconds=1)
     user = await users.create(make_user())
-    assert user.version == 1
+    assert user.version is not None
+    assert len(user.version) == 16, "a random version token"
     assert user.created_at is not None
     assert user.created_at >= before
     assert user.updated_at == user.created_at
@@ -124,17 +125,18 @@ async def test_create_refuses_existing_keys(users: dynamoxy.Repository[User]) ->
 async def test_put_replaces_and_save_checks_versions(users: dynamoxy.Repository[User]) -> None:
     user = await users.create(make_user())
     stale = await users.get_or_raise("u1")
+    created_version = user.version
     user.name = "Ada"
     await users.save(user)
-    assert user.version == 2
+    assert user.version not in (None, created_version)
     stale.name = "Stale"
     with pytest.raises(dynamoxy.VersionConflictError) as caught:
         await users.save(stale)
-    assert caught.value.expected_version == 1
+    assert caught.value.expected_version == created_version
     assert (await users.get_or_raise("u1")).name == "Ada"
     await users.refresh(stale)
     assert stale.name == "Ada"
-    assert stale.version == 2
+    assert stale.version == user.version
     stale.name = "Fresh"
     await users.save(stale)
     replacement = make_user(name="Replaced")
@@ -148,6 +150,42 @@ async def test_save_of_a_new_versioned_item_requires_absence(users: dynamoxy.Rep
         await users.save(make_user(email="second@example.com"))
 
 
+async def test_stale_instances_never_match_a_version_again(users: dynamoxy.Repository[User]) -> None:
+    # Versions are random tokens (ADR 0022): a counter restarted at 1 on a put() of an instance
+    # that was not loaded and on delete-and-create, so a stale instance passed its check again.
+    await users.create(make_user())
+    stale = await users.get_or_raise("u1")
+    await users.put(make_user(name="Replaced"))  # not loaded: a new item over the old one
+    stale.name = "Stale"
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.save(stale)
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.update(stale, User.visits.add(1))
+    await users.refresh(stale)
+    await users.delete(stale)
+    await users.create(make_user(name="Created again"))
+    stale.name = "Stale"
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.save(stale)
+    with pytest.raises(dynamoxy.VersionConflictError):
+        await users.delete(stale)
+    assert (await users.get_or_raise("u1")).name == "Created again"
+    for user_id in ("u2", "u3"):
+        await users.create(make_user(user_id))
+    versions = {user.version for user in await users.batch_get(["u1", "u2", "u3"])}
+    assert None not in versions
+    assert len(versions) == 3, "every write has a token of its own"
+
+
+def test_version_fields_hold_text() -> None:
+    class Counted(dynamoxy.Model, table="counted"):
+        counted_id: Attr[str] = partition_key()
+        version: Attr[int] = version()
+
+    with pytest.raises(TypeError, match=r"Counted\.version: a version\(\) field holds a random token.*Attr\[str\]"):
+        dynamoxy.schema_of(Counted)
+
+
 async def test_copies_save_like_new_instances(users: dynamoxy.Repository[User]) -> None:
     original = make_user("u1")
     # A fixed moment: the copy's own timestamp is later even where the clock is coarse (Windows'
@@ -158,11 +196,11 @@ async def test_copies_save_like_new_instances(users: dynamoxy.Repository[User]) 
     clone = original.copy(user_id="u2", email="u2@example.com")
     assert (clone.version, clone.created_at, clone.updated_at, clone.is_loaded) == (None, None, None, False)
     assert clone.visits == 1, "the other values are copied"
-    await users.save(clone)  # a new item: version 1 and timestamps of its own
-    assert clone.version == 1
+    await users.save(clone)  # a new item: a version and timestamps of its own
+    assert clone.version not in (None, original.version)
     assert clone.created_at is not None
     assert clone.created_at > at(1), "not the original's"
-    assert (await users.get_or_raise("u1")).version == 2, "the original is unchanged"
+    assert (await users.get_or_raise("u1")).version == original.version, "the original is unchanged"
     with pytest.raises(dynamoxy.VersionConflictError):
         await users.save(original.copy(name="Same key"))  # like a new instance: the key must be free
     kept = original.copy(user_id="u3", email="u3@example.com", created_at=original.created_at)
@@ -181,16 +219,17 @@ async def test_update_actions(users: dynamoxy.Repository[User]) -> None:
         User.age.set(36),
     )
     assert returned is user
-    assert (user.visits, user.tags, user.name, user.age, user.version) == (2, {"a", "b", "c"}, "Ada", 36, 2)
+    assert (user.visits, user.tags, user.name, user.age) == (2, {"a", "b", "c"}, "Ada", 36)
+    assert user.version == (await users.get_or_raise(user.user_id)).version
     assert user.created_at == created
     assert user.updated_at is not None
     assert user.updated_at >= created
     await users.update(user, User.tags.delete({"a", "b"}), User.age.remove(), User.visits.set(User.visits + 10))
     stored = await users.get_or_raise("u1")
-    assert (stored.tags, stored.age, stored.visits, stored.version) == ({"c"}, None, 12, 3)
+    assert (stored.tags, stored.age, stored.visits, stored.version) == ({"c"}, None, 12, user.version)
     by_key = await users.update(User.key("u1"), User.visits.decrement(2))
     assert by_key.visits == 10
-    assert by_key.version == 4
+    assert by_key.version not in (None, user.version)
 
 
 async def test_update_requires_the_item_unless_upsert(events: dynamoxy.Repository[Event]) -> None:
@@ -218,7 +257,8 @@ async def test_upserts_create_complete_items(client: dynamoxy.Client) -> None:
     created = await users.update(
         User.key("u3"), User.email.set("u3@example.com"), User.name.set("Ann"), User.visits.add(2), upsert=True
     )
-    assert (created.visits, created.status, created.tags, created.version) == (2, Status.ACTIVE, set(), 1)
+    assert (created.visits, created.status, created.tags) == (2, Status.ACTIVE, set())
+    assert created.version is not None
     assert created.created_at is not None
     assert created.created_at == created.updated_at
     with pytest.raises(dynamoxy.UniqueConstraintError):
@@ -1000,13 +1040,12 @@ async def test_templates_follow_automatic_fields(client: dynamoxy.Client) -> Non
 
     await check()
     await tickets.update(ticket, Ticket.title.set("hello"))
-    assert ticket.revision == "v2"
+    assert ticket.revision == f"v{ticket.version}"
     await check()
     await ticket.update(Ticket.state.set("closed"))
     await check()
-    await tickets.update(Ticket.key("t1"), Ticket.title.set("by key"))  # reads the version it cannot know
+    await tickets.update(Ticket.key("t1"), Ticket.title.set("by key"))  # renders the new version token
     await check()
-    assert (await tickets.get_or_raise("t1")).revision == "v4"
 
 
 async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -> None:
@@ -1021,8 +1060,9 @@ async def test_loaded_instances_keep_immutable_values(client: dynamoxy.Client) -
     assert (await tickets.get_or_raise("t1")).country == "SE"
     ticket.country = "SE"
     ticket.title = "fine"
+    created_version = ticket.version
     await ticket.save()
-    assert ticket.version == 2
+    assert ticket.version not in (None, created_version)
     # An instance that was not loaded replaces the item, as put() does.
     await tickets.put(Ticket(ticket_id="t1", country="DK"))
     assert (await tickets.get_or_raise("t1")).country == "DK"

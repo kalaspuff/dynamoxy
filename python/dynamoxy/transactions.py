@@ -131,6 +131,15 @@ class Transaction:
             repository = self._repositories[model] = self.client.model(model)
         return repository
 
+    def _version_seed(self) -> str | None:
+        """What the version tokens of the next operation derive from (``None``: random ones).
+
+        With an idempotency token, the token and the operation's position, so that the
+        transaction planned again with the token sends the same request (DynamoDB refuses a
+        different one).
+        """
+        return None if self.token is None else f"{self.token}#{len(self._steps)}"
+
     def _add(self, description: str, plan: Callable[[], Awaitable[Any]]) -> Self:
         if self._committed:
             raise RuntimeError("this transaction was committed already; start a new one")
@@ -141,18 +150,25 @@ class Transaction:
 
     def create(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Creates an item (fails the transaction if the key exists)."""
-        repository = self._repository(type(item), item)
-        return self._add(f"create {type(item).__name__}", lambda: repository._plan_put(item, "create", condition))
+        repository, seed = self._repository(type(item), item), self._version_seed()
+        return self._add(
+            f"create {type(item).__name__}",
+            lambda: repository._plan_put(item, "create", condition, version_seed=seed),
+        )
 
     def put(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Writes an item, replacing any item with the same key."""
-        repository = self._repository(type(item), item)
-        return self._add(f"put {type(item).__name__}", lambda: repository._plan_put(item, "put", condition))
+        repository, seed = self._repository(type(item), item), self._version_seed()
+        return self._add(
+            f"put {type(item).__name__}", lambda: repository._plan_put(item, "put", condition, version_seed=seed)
+        )
 
     def save(self, item: Any, *, condition: Condition | bool | None = None) -> Self:
         """Writes an item with optimistic locking (versioned models)."""
-        repository = self._repository(type(item), item)
-        return self._add(f"save {type(item).__name__}", lambda: repository._plan_put(item, "save", condition))
+        repository, seed = self._repository(type(item), item), self._version_seed()
+        return self._add(
+            f"save {type(item).__name__}", lambda: repository._plan_put(item, "save", condition, version_seed=seed)
+        )
 
     def update(
         self,
@@ -169,10 +185,10 @@ class Transaction:
         does (exact for versioned models; reload other models if concurrent writers matter).
         """
         resolved = model or _model_of(target, actions)
-        repository = self._repository(resolved, target)
+        repository, seed = self._repository(resolved, target), self._version_seed()
         return self._add(
             f"update {resolved.__name__}",
-            lambda: repository._plan_update(target, actions, condition, upsert),
+            lambda: repository._plan_update(target, actions, condition, upsert, version_seed=seed),
         )
 
     def delete(self, target: Any, *, condition: Condition | bool | None = None, model: type | None = None) -> Self:

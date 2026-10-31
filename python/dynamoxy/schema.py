@@ -1292,6 +1292,8 @@ def make_field(
         codec = _given_codec(codec, annotation)
     if auto == "ttl" and options.get("codec") is None:
         codec = _ttl_codec(codec, where)
+    if auto == "version":
+        _check_version_codec(codec, where)
     if auto in ("created_at", "updated_at", "version") or template is not None:
         codec = _optional(codec)
     return FieldSpec(
@@ -1322,6 +1324,18 @@ def make_field(
         description=options.get("description"),
         path=path,
     )
+
+
+def _check_version_codec(codec: Codec[Any], where: str) -> None:
+    """Version fields hold a random token (ADR 0022): text, stored as a string."""
+    from dynamoxy.codecs import StrCodec
+
+    inner = codec.inner if isinstance(codec, OptionalCodec) else codec
+    if not isinstance(inner, StrCodec):
+        raise TypeError(
+            f"{where}: a version() field holds a random token, which changes on every write: declare it as "
+            f"Attr[str] (Annotated[str | None, Version()] in pydantic models), not {codec.describe()}"
+        )
 
 
 def _ttl_codec(codec: Codec[Any], where: str) -> Codec[Any]:

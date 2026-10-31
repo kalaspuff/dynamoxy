@@ -116,7 +116,7 @@ for the stored item as a dict.
 | --- | --- |
 | `created_at()` | Set on the first write (`create`, `put` of a new item, upserts) |
 | `updated_at()` | Set on every write, including `update()` |
-| `version()` | 1 on the first write, +1 on every write; enables optimistic locking |
+| `version()` | a random token (`str`), new on every write; enables optimistic locking |
 | `ttl(default=None)` | When DynamoDB may delete the item (stored as epoch seconds); `ensure_tables()` enables TTL |
 
 They are not constructor arguments (type checkers know this too) and are `None` until the

@@ -19,7 +19,7 @@ class Project(Model, table="pm-projects"):
     project_id: Attr[str] = partition_key()
     name: Attr[str]
     open_tasks: Attr[int] = field(default=0, ge=0)
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class Task(Model, table="pm-tasks"):

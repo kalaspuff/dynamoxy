@@ -26,7 +26,7 @@ class Customer(dynamoxy.PydanticModel, table="customers"):
     address: Address | None = None
     created_at: Annotated[datetime | None, dynamoxy.CreatedAt()] = None
     updated_at: Annotated[datetime | None, dynamoxy.UpdatedAt()] = None
-    version: Annotated[int | None, dynamoxy.Version()] = None
+    version: Annotated[str | None, dynamoxy.Version()] = None
     expires_at: Annotated[datetime | None, dynamoxy.TTL()] = None
 
     by_email = dynamoxy.GlobalIndex(partition_key="email")

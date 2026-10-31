@@ -68,7 +68,7 @@ class User(dynamoxy.Model, table="users"):
     tags: Attr[set[str]] = field(default_factory=set)
     created_at: Attr[datetime] = dynamoxy.created_at()
     updated_at: Attr[datetime] = dynamoxy.updated_at()
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
     by_email = dynamoxy.GlobalIndex(partition_key=email)
 
@@ -170,7 +170,7 @@ Automatic fields are set by dynamoxy and are not constructor arguments:
 | --- | --- |
 | `dynamoxy.created_at()` | `datetime` of the first write |
 | `dynamoxy.updated_at()` | `datetime` of every write |
-| `dynamoxy.version()` | `int`, 1 on create, +1 on every write; enables optimistic locking |
+| `dynamoxy.version()` | `str`, a random token, new on every write; enables optimistic locking |
 | `dynamoxy.ttl(default=None)` | `datetime` (stored as epoch seconds) after which DynamoDB deletes the item |
 
 Timestamp formats: `"iso"` (default, `2026-10-13T08:48:47.966937+00:00`), `"iso_z"`
@@ -313,7 +313,7 @@ class Wallet(dynamoxy.PydanticModel, table="wallets"):
     wallet_id: Annotated[str, dynamoxy.PartitionKey()]
     handle: Annotated[str, dynamoxy.Unique()]
     balance: Decimal = Decimal(0)
-    version: Annotated[int | None, dynamoxy.Version()] = None
+    version: Annotated[str | None, dynamoxy.Version()] = None
 
     by_handle = dynamoxy.GlobalIndex(partition_key="handle")
 ```
@@ -583,7 +583,8 @@ async def rename(user_id: str, name: str) -> User:
 ```
 
 `update()` of an instance checks the version too; `update()` of a key does not (the atomic
-actions are safe without it).
+actions are safe without it). Versions are random tokens (`Attr[str]`), not counters: an instance
+loaded before the item was replaced or deleted and created again never matches them.
 
 ## 8. Transactions
 

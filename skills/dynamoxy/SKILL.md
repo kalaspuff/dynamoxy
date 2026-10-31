@@ -67,7 +67,7 @@ class User(dynamoxy.Model, table="users"):
     user_id: Attr[str] = partition_key()
     email: Attr[str] = field(unique=True)
     name: Attr[str]
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
     by_email = dynamoxy.GlobalIndex(partition_key=email)
 

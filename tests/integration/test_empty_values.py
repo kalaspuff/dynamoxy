@@ -23,7 +23,7 @@ class Member(Model, table="members"):
     badges: Attr[frozenset[int]] = field(default=frozenset({1}))
     labels: Attr[set[str] | None] = field(default=None)
     visits: Attr[int] = field(default=7)
-    version: Attr[int] = version()
+    version: Attr[str] = version()
 
 
 class PydanticMember(dynamoxy.PydanticModel, table="pydantic-members"):

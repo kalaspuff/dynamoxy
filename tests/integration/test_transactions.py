@@ -15,11 +15,19 @@ from tests.models import Article, Customer, Event, Order, Player, User
 ANNOUNCED: list[str] = []
 
 
+class Wallet(Model, table="wallets"):
+    """Versioned, without timestamps: a transaction planned again sends the same request."""
+
+    wallet_id: Attr[str] = partition_key()
+    balance: Attr[int] = field(default=0)
+    version: Attr[str] = dynamoxy.version()
+
+
 class Note(Model, table="notes"):
     """A model whose after_save hook fails for one instance."""
 
     note_id: Attr[str] = partition_key()
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
     @dynamoxy.after_save
     def announce(self) -> None:
@@ -38,6 +46,27 @@ def order(order_id: str, total: str = "10") -> Order:
     return Order(customer_id="c1", order_id=order_id, placed_at=datetime(2026, 1, 1, tzinfo=UTC), total=Decimal(total))
 
 
+async def test_a_transaction_planned_again_with_its_token_is_the_same_request(
+    client_with_tables: dynamoxy.Client,
+) -> None:
+    # The version tokens of a transaction with an idempotency token derive from it: planned again
+    # (an application's retry), it sends the same request, which DynamoDB applies once.
+    client = client_with_tables
+    await client.create_tables(Wallet)
+    wallets = client.model(Wallet)
+    await wallets.create(Wallet(wallet_id="w1"))
+    token = "transfer-0001"
+    for _ in range(2):
+        async with client.transaction(token=token) as tx:
+            tx.update(Wallet.key("w1"), Wallet.balance.add(10))
+    stored = await wallets.get_or_raise("w1")
+    assert stored.balance == 10, "applied once"
+    async with client.transaction(token="transfer-0002") as tx:
+        tx.update(Wallet.key("w1"), Wallet.balance.add(10))
+    assert (await wallets.get_or_raise("w1")).version != stored.version, "another token, another version"
+    # Models with timestamps differ between plans anyway (see the transactions guide).
+
+
 async def test_commit_applies_everything(client_with_tables: dynamoxy.Client) -> None:
     client = client_with_tables
     user = await client.model(User).create(User(user_id="u1", email="a@example.com", name="Ada"))
@@ -48,7 +77,8 @@ async def test_commit_applies_everything(client_with_tables: dynamoxy.Client) ->
         tx.put_item("events", {"stream": "s", "seq": 1, "kind": "raw"})
     assert len(tx) == 4
     assert await client.model(Customer).get(customer_id="c1") is not None
-    assert (user.visits, user.tags, user.version) == (5, {"vip"}, 2), "instances are refreshed"
+    assert (user.visits, user.tags) == (5, {"vip"}), "instances are refreshed"
+    assert user.version == (await client.model(User).get_or_raise("u1")).version
     assert user.is_loaded
     assert (await client.model(User).get_or_raise("u1")).visits == 5
     assert await client.table("events").get({"stream": "s", "seq": 1}) == {"stream": "s", "seq": 1, "kind": "raw"}
@@ -198,10 +228,11 @@ async def test_failing_hooks_after_a_commit_leave_every_instance_final(client: d
     with pytest.raises(RuntimeError, match="the hook failed"):
         await tx.commit()
     assert ANNOUNCED == ["fails", "other"], "every hook ran"
-    assert (failing.version, other.version) == (1, 1)
+    assert None not in (failing.version, other.version)
     assert other.is_loaded
+    committed = other.version
     await other.save()
-    assert other.version == 2
+    assert other.version not in (None, committed)
 
 
 class Cart(Model, table="carts"):

@@ -23,7 +23,7 @@ class User(dynamoxy.Model, table="users"):
     name: Attr[str] = field(min_length=1)
     visits: Attr[int] = field(default=0)
     created_at: Attr[datetime] = dynamoxy.created_at()
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
     by_email = dynamoxy.GlobalIndex(partition_key=email)
 
