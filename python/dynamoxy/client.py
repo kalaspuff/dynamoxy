@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
 from dynamoxy._utils import LoopLocal, count, deprecated, seconds
-from dynamoxy.errors import DynamoxyError
+from dynamoxy.errors import DynamoxyError, ResourceInUseError
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
 from dynamoxy.results import CallStats, ConsumedCapacity, MetricsSnapshot, OperationRecord, capacity_split
@@ -772,7 +772,8 @@ class Client:
             models: Model classes.
             billing: Billing mode (default on-demand).
             wait: Wait until each table is active.
-            exist_ok: Skip tables that exist instead of raising ``ResourceInUseError``.
+            exist_ok: Skip tables that exist instead of raising ``ResourceInUseError``, also tables
+                that another writer creates at the same time (waited for with ``wait``).
             stream: Enable a DynamoDB stream with this view type (``"NEW_AND_OLD_IMAGES"``, ...).
             deletion_protection: Turn on deletion protection.
             tags: Tags for every table.
@@ -787,28 +788,39 @@ class Client:
             table = self.table(definition.name)
             if exist_ok and await table.exists():
                 continue
-            await table.create_from(
-                definition,
-                billing=billing,
-                wait=wait,
-                stream=stream,
-                deletion_protection=deletion_protection,
-                tags=tags,
-            )
+            try:
+                await table.create_from(
+                    definition,
+                    billing=billing,
+                    wait=wait,
+                    stream=stream,
+                    deletion_protection=deletion_protection,
+                    tags=tags,
+                )
+            except ResourceInUseError as error:
+                if not exist_ok or error.operation != "CreateTable":
+                    raise
+                # Another writer (a replica starting at the same time) created it since exists().
+                if wait:
+                    await table.wait_until_active()
+                continue
             created.append(table.physical_name)
         return created
 
     async def ensure_tables(self, *models: type, billing: Billing | None = None, wait: bool = True) -> list[str]:
         """Creates missing tables, global secondary indexes and TTL settings.
 
-        Indexes are added one at a time, as DynamoDB requires. Never deletes anything.
+        Indexes are added one at a time, as DynamoDB requires. Never deletes anything. A table
+        that another writer creates at the same time (replicas starting together) is checked like
+        an existing one.
 
         Returns:
             The physical names of the tables that were created or changed.
 
         Raises:
-            TypeError: A table's key, the key of an index with the same name or the TTL
-                attribute differs from the models (none of them can change in place).
+            TypeError: A table's key, the key of an index with the same name (their attributes
+                or types) or the TTL attribute differs from the models (none of them can change
+                in place).
         """
         from dynamoxy.table import definitions_for
 
@@ -816,9 +828,18 @@ class Client:
         for definition in definitions_for(models):
             table = self.table(definition.name)
             if not await table.exists():
-                await table.create_from(definition, billing=billing, wait=wait)
-                changed.append(table.physical_name)
-            elif await table.sync_with(definition, wait=wait):
+                try:
+                    await table.create_from(definition, billing=billing, wait=wait)
+                except ResourceInUseError as error:
+                    if error.operation != "CreateTable":
+                        raise
+                    # Another writer created it since exists(): check it like an existing table.
+                    if wait:
+                        await table.wait_until_active()
+                else:
+                    changed.append(table.physical_name)
+                    continue
+            if await table.sync_with(definition, wait=wait):
                 changed.append(table.physical_name)
         return changed
 

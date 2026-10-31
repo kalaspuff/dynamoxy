@@ -17,11 +17,14 @@ await client.ensure_tables(User, Order)
 
 - `create_tables()` creates each table with its key schema, every global and local index from the
   models, and Time to Live on `ttl()` fields; it waits until the tables are active.
-  `exist_ok=True` skips existing tables.
+  `exist_ok=True` skips existing tables, also a table that another process creates at the same
+  time (replicas or test workers starting together).
 - `ensure_tables()` creates missing tables and adds missing global indexes (one at a time, as
   DynamoDB requires, waiting for each backfill) and TTL settings. It never deletes indexes or
   tables, and raises `TypeError` when what exists differs from the models in a way it cannot
-  change: the key schema of the table or of an index with the same name, or the TTL attribute.
+  change: the key schema of the table or of an index with the same name (the attributes or their
+  types), or the TTL attribute. A table that another process creates at the same time is checked
+  like an existing one.
 - Indexes with a `KEYS_ONLY` or `INCLUDE` projection of models with an entity type also project
   the type attribute (`_type`), which model queries filter on.
 

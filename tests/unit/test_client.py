@@ -429,3 +429,13 @@ def dynamoxy_epoch(seconds: int) -> Any:
     from datetime import UTC, datetime
 
     return datetime.fromtimestamp(seconds, UTC)
+
+
+@pytest.mark.parametrize("call", ["create_tables", "ensure_tables"])
+async def test_only_create_table_conflicts_count_as_tables_created_meanwhile(call: str) -> None:
+    # Event has a TTL attribute: after CreateTable, UpdateTimeToLive enables it.
+    async with testing.memory_client() as client:
+        testing.inject_fault(client, operation="UpdateTimeToLive", error="ResourceInUseException")
+        create = client.create_tables(Event, exist_ok=True) if call == "create_tables" else client.ensure_tables(Event)
+        with pytest.raises(dynamoxy.ResourceInUseError, match="UpdateTimeToLive"):
+            await create

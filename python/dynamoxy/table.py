@@ -220,6 +220,11 @@ def definitions_for(models: Iterable[type]) -> list[TableDefinition]:
     return definitions
 
 
+def _describe_key(key: Sequence[tuple[str, str] | None]) -> str:
+    """A key's attributes and types for messages: ``sensor (N), seq (S)``."""
+    return ", ".join(f"{name} ({kind})" for name, kind in (part for part in key if part is not None))
+
+
 def _fields(definition: IndexDefinition) -> dict[str, Any]:
     return {
         "name": definition.name,
@@ -570,12 +575,17 @@ class Table:
                 from the definition (none of them can be changed in place).
         """
         description = await self.describe()
-        keys = (description.partition_key, description.sort_key)
-        expected = (definition.partition_key[0], definition.sort_key[0] if definition.sort_key else None)
+        types = description.attribute_types
+
+        def typed(name: str | None) -> tuple[str, str] | None:
+            return None if name is None else (name, types.get(name, "?"))
+
+        keys = (typed(description.partition_key), typed(description.sort_key))
+        expected = (definition.partition_key, definition.sort_key)
         if keys != expected:
             raise TypeError(
-                f"table {self.physical_name} has the key {keys}, the models expect {expected}; "
-                "a table's key cannot change (create a new table and migrate)"
+                f"table {self.physical_name} has the key {_describe_key(keys)}, the models expect "
+                f"{_describe_key(expected)}; a table's key cannot change (create a new table and migrate)"
             )
         changed = False
         billing = (
@@ -586,13 +596,14 @@ class Table:
         for index in definition.indexes:
             existing = description.indexes.get(index.name)
             if existing is not None:
-                found = (existing.kind, existing.partition_key, existing.sort_key)
-                wanted = (index.kind, index.partition_key[0], index.sort_key[0] if index.sort_key else None)
+                found = (existing.kind, typed(existing.partition_key), typed(existing.sort_key))
+                wanted = (index.kind, index.partition_key, index.sort_key)
                 if found != wanted:
                     raise TypeError(
                         f"table {self.physical_name} has the {found[0]} index {index.name!r} with the key "
-                        f"{found[1:]}, the models expect a {wanted[0]} index with {wanted[1:]}; an index's key cannot "
-                        "change: give the new index another name (and delete the old one with delete_index())"
+                        f"{_describe_key(found[1:])}, the models expect a {wanted[0]} index with "
+                        f"{_describe_key(wanted[1:])}; an index's key cannot change: give the new index another "
+                        "name (and delete the old one with delete_index())"
                     )
                 continue
             if index.kind == "local":

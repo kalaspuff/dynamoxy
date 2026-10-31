@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 import dynamoxy
-from dynamoxy import Attr, F, GlobalIndex, Model, field, partition_key, ttl
+from dynamoxy import Attr, F, GlobalIndex, Model, field, partition_key, sort_key, ttl
 from tests.helpers import record_consistent_reads
 from tests.models import Customer, Event, Order, User
 
@@ -88,6 +88,55 @@ async def test_ensure_tables_refuses_indexes_and_ttl_that_differ(client: dynamox
         await client.ensure_tables(SessionV2)
     with pytest.raises(TypeError, match="Time to Live on 'old_expiry', the models expect 'expires_at'"):
         await client.ensure_tables(SessionV3)
+
+
+class Reading(Model, table="readings"):
+    sensor: Attr[str] = partition_key()
+    seq: Attr[int] = sort_key()
+    station: Attr[str] = field(default="")
+
+    by_station = GlobalIndex(partition_key=station, sort_key=seq)
+
+
+async def test_ensure_tables_refuses_keys_of_other_types(client: dynamoxy.Client) -> None:
+    await client.table("readings").create(partition_key=("sensor", "N"), sort_key=("seq", "S"))
+    with pytest.raises(
+        TypeError, match=r"has the key sensor \(N\), seq \(S\), the models expect sensor \(S\), seq \(N\)"
+    ):
+        await client.ensure_tables(Reading)
+    await client.table("readings").delete_table()
+    await client.table("readings").create(partition_key=("sensor", "S"), sort_key=("seq", "N"))
+    index = dynamoxy.IndexDefinition(
+        name="by_station", kind="global", partition_key=("station", "N"), sort_key=("seq", "N")
+    )
+    await client.table("readings").add_index(index)
+    with pytest.raises(TypeError, match=r"index 'by_station' with the key station \(N\), seq \(N\), the models expect"):
+        await client.ensure_tables(Reading)
+
+
+@pytest.mark.parametrize("call", ["create_tables", "ensure_tables"])
+async def test_tables_created_by_another_writer_meanwhile_are_existing_tables(
+    client: dynamoxy.Client, call: str
+) -> None:
+    # Another replica creates the table between the existence check and CreateTable.
+    async def race(request: dynamoxy.Request, call_next: Any) -> Any:
+        try:
+            return await call_next(request)
+        except dynamoxy.ResourceNotFoundError:
+            if request.operation == "DescribeTable":
+                remove()
+                await client.create_tables(Event)
+            raise
+
+    remove = client.use(race)
+    if call == "create_tables":
+        assert await client.create_tables(Event, exist_ok=True) == []
+        with pytest.raises(dynamoxy.ResourceInUseError):
+            await client.create_tables(Event)
+    else:
+        assert await client.ensure_tables(Event) == []
+    description = await client.table("events").describe()
+    assert description.status == "ACTIVE"
 
 
 async def test_indexes_can_be_added_and_removed(client: dynamoxy.Client) -> None:
