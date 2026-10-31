@@ -26,11 +26,12 @@ python/dynamoxy/_core.pyi        Type stubs of the native module - keep in sync 
 python/dynamoxy/AGENT_GUIDE.md   Usage guide shipped in the wheel (`dynamoxy guide`)
 tests/unit|integration|e2e       pytest suites (integration runs on the memory backend AND MiniStack)
 tests/models.py                  Shared test models (plain, single-table, pydantic)
+tests/typecheck/                 Typing suite: what pyright, mypy and pyrefly infer and refuse (scripts/check_typing.py)
 examples/                        Runnable examples (executed by tests/integration/test_examples.py)
 docs/                            Guides, reference (configuration/errors checked, events generated), ADRs
 skills/dynamoxy/SKILL.md         Skill for agents of applications using dynamoxy (copy into a project)
 .claude/skills/                  Skills for agents developing dynamoxy (this repository)
-scripts/                         check_consistency.py, generate_reference.py, release.py, release_notes.py, smoke_test.py, benchmark.py,
+scripts/                         check_consistency.py, check_typing.py, generate_reference.py, release.py, release_notes.py, smoke_test.py, benchmark.py,
                                  probe_dynamodb.sh and probe_backends.py (DynamoDB's answers, docs/parity)
 .github/workflows/               ci.yml, pr-title.yml, prepare-release.yml, tag-release.yml, release.yml
 ```
@@ -49,6 +50,7 @@ Requirements: Rust (stable, see `rust-toolchain.toml`) and [uv](https://docs.ast
 | Rust parity tests against the emulator | `DYNAMOXY_TEST_ENDPOINT_URL=<url> cargo test -p dynamoxy-core --test emulator` |
 | Lint/format Python | `uv run ruff check --fix python tests examples scripts && uv run ruff format python tests examples scripts` |
 | Type check Python | `uv run pyrefly check` |
+| Typing suite and examples with pyright, mypy and pyrefly | `uv run python scripts/check_typing.py` |
 | Lint/format Rust | `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings` |
 | Docs drift checks | `uv run python scripts/check_consistency.py` |
 | Regenerate generated reference docs | `uv run python scripts/generate_reference.py` |
@@ -72,7 +74,7 @@ outside the repository if the workspace is a slow mounted volume.
    silently, fork safety, clean exit, instances bound to their repository, stored formats
    stable, no payload logging).
 3. **Every behaviour change ships with tests, docs and a changelog-worthy commit message.** CI
-   enforces formatting, lint, types (pyrefly), clippy `-D warnings`, tests on Python 3.12-3.15,
+   enforces formatting, lint, types (pyrefly; `tests/typecheck` with pyright and mypy too), clippy `-D warnings`, tests on Python 3.12-3.15,
    and `scripts/check_consistency.py`.
 4. **Both backends.** A backend operation is implemented in the AWS adapter *and* the memory
    backend, with DynamoDB's semantics and error codes, and tested against both. Python

@@ -1114,7 +1114,7 @@ async def test_reads_validate_key_values_like_writes(client: dynamoxy.Client) ->
     assert await members.query(handle="Ada").all() == [ada]
     assert await members.query(index=Member.by_email, email="ADA@example.COM").all() == [ada]
     assert await members.query(index=Member.by_team, team="CORE ", handle="Ada").all() == [ada], "index sort key"
-    assert await client.transact_get(dynamoxy.Get(Member, "ADA")) == [ada]
+    assert await client.transact_get(dynamoxy.Get(Member, "ADA")) == (ada,)
     intro = await posts.create(Post(author="Ada", slug=" Intro "))
     assert await posts.get("ADA", "INTRO") == intro
     assert await posts.query(author="ada", slug="intro ").all() == [intro], "table sort key"

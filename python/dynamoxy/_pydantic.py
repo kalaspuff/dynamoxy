@@ -29,9 +29,9 @@ from __future__ import annotations
 
 import copy
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, ClassVar, Self, overload, override
+from typing import TYPE_CHECKING, Any, ClassVar, Self, dataclass_transform, overload, override
 
-from pydantic import BaseModel, ConfigDict, PydanticUndefinedAnnotation
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, PydanticUndefinedAnnotation
 from pydantic import ValidationError as PydanticValidationError
 from pydantic._internal._model_construction import ModelMetaclass
 from pydantic_core import PydanticUndefined, SchemaValidator
@@ -128,6 +128,10 @@ def _without_inputs(error: PydanticValidationError) -> ValueError:
 _BUILDING: ContextVar[bool] = ContextVar("dynamoxy_pydantic_building", default=False)
 
 
+# Type checkers apply a metaclass's ``dataclass_transform`` only to classes built by that very
+# metaclass, not by a subclass of it: without repeating pydantic's, pyright and mypy would type the
+# constructor (and ``create()``) of every ``PydanticModel`` as ``(**data: Any)``.
+@dataclass_transform(kw_only_default=True, field_specifiers=(Field, PrivateAttr))
 class _ModelMetaclass(ModelMetaclass):
     """Pydantic's metaclass, with the field paths of base classes hidden while it builds a class.
 
