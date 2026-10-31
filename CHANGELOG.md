@@ -422,7 +422,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   names another model of the table (entity names no model declares still decode); upserts set the
   type attribute only on items without one, so they no longer re-type another model's item. A
   field typed as a native document refuses instances of the document's subclasses, whose fields it
-  dropped.  ### Security
+  dropped.
+
+### Security
+
 - The native extension bundles rustls 0.23.46 and rustls-webpki 0.103.16. rustls 0.23.46 fixes
   GHSA-h2v8-394m-p7vv, GHSA-c8m5-c952-6cm4, GHSA-w44r-93j7-qv28 and GHSA-vp88-798v-h67f. The
   extension no longer contains the AWS SDK's legacy HTTP client, which dynamoxy never used, or
