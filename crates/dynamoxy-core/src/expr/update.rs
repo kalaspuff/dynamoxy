@@ -345,10 +345,16 @@ fn element_charge(element: &PathElement) -> usize {
     }
 }
 
-/// What a path counts for as the target of an update, or in a condition: its first element, plus
-/// 4 and the element for each later one.
+/// What a path counts for as the target of an update: its first element, plus 4 and the element
+/// for each later one.
 fn target_charge(path: &Path) -> usize {
     path.0.iter().enumerate().map(|(i, part)| element_charge(part) + if i == 0 { 0 } else { 4 }).sum()
+}
+
+/// What a path counts for where it is read (an update's operand, a condition): 1, plus 14 and the
+/// element for each element.
+fn read_charge(path: &Path) -> usize {
+    1 + path.0.iter().map(|part| 14 + element_charge(part)).sum::<usize>()
 }
 
 impl UpdateExpression {
@@ -362,14 +368,11 @@ impl UpdateExpression {
     /// `if_not_exists(p, v)` 39 and `list_append(a, b)` 37 more than their operands.
     pub fn request_charge(&self) -> usize {
         let target = target_charge;
-        fn read(path: &Path) -> usize {
-            1 + path.0.iter().map(|part| 14 + element_charge(part)).sum::<usize>()
-        }
         fn operand(value: &UpdateOperand) -> usize {
             match value {
-                UpdateOperand::Path(path) => read(path),
+                UpdateOperand::Path(path) => read_charge(path),
                 UpdateOperand::Value(value) => value_size(value),
-                UpdateOperand::IfNotExists(path, fallback) => 39 + read(path) + operand(fallback),
+                UpdateOperand::IfNotExists(path, fallback) => 39 + read_charge(path) + operand(fallback),
                 UpdateOperand::ListAppend(a, b) => 37 + operand(a) + operand(b),
             }
         }
@@ -388,31 +391,32 @@ impl UpdateExpression {
 }
 
 /// What DynamoDB counts a condition for in the payload size of `TransactWriteItems`, from the
-/// request alone (measured in eu-north-1 on 2026-10-31 through dynamoxy's own probe, whose run is
-/// docs/parity/probe-aws-eu-north-1-2026-10-31.json): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
-/// a comparison 57 more than its operands; a path counts like an update's target, a value its
-/// size, `size(p)` its path. The other forms were not measured and count like a comparison, and
-/// `AND`, `OR` and `NOT` their parts.
+/// request alone (measured in eu-north-1 on 2026-10-31 through dynamoxy's own probe, whose runs are
+/// in docs/parity, one form at a time): a path counts as where it is read (1, plus 14 and the
+/// element for each element), a value its size, `size(p)` 22 more than its path; on top of its
+/// operands, `attribute_exists` counts 48, `attribute_not_exists` 52, a comparison 42,
+/// `BETWEEN` 55, `IN` 50, `begins_with` 51, `contains` 48, `attribute_type` 54, and `AND` 15, `OR`
+/// 14 and `NOT` 21 on top of their parts.
 pub fn condition_charge(condition: &Condition) -> usize {
-    let path = target_charge;
     fn operand(operand: &Operand) -> usize {
         match operand {
-            Operand::Path(p) | Operand::Size(p) => target_charge(p),
+            Operand::Path(p) => read_charge(p),
+            Operand::Size(p) => 22 + read_charge(p),
             Operand::Value(value) => value_size(value),
         }
     }
-    const COMPARISON: usize = 57;
     match condition {
-        Condition::AttributeExists(p) => 63 + path(p),
-        Condition::AttributeNotExists(p) => 67 + path(p),
-        Condition::Compare(a, _, b) => COMPARISON + operand(a) + operand(b),
-        Condition::Between(a, low, high) => COMPARISON + operand(a) + operand(low) + operand(high),
-        Condition::In(a, candidates) => COMPARISON + operand(a) + candidates.iter().map(operand).sum::<usize>(),
-        Condition::AttributeType(p, b) | Condition::BeginsWith(p, b) | Condition::Contains(p, b) => {
-            COMPARISON + path(p) + operand(b)
-        }
-        Condition::And(a, b) | Condition::Or(a, b) => condition_charge(a) + condition_charge(b),
-        Condition::Not(inner) => condition_charge(inner),
+        Condition::AttributeExists(p) => 48 + read_charge(p),
+        Condition::AttributeNotExists(p) => 52 + read_charge(p),
+        Condition::Compare(a, _, b) => 42 + operand(a) + operand(b),
+        Condition::Between(a, low, high) => 55 + operand(a) + operand(low) + operand(high),
+        Condition::In(a, candidates) => 50 + operand(a) + candidates.iter().map(operand).sum::<usize>(),
+        Condition::BeginsWith(p, b) => 51 + read_charge(p) + operand(b),
+        Condition::Contains(p, b) => 48 + read_charge(p) + operand(b),
+        Condition::AttributeType(p, b) => 54 + read_charge(p) + operand(b),
+        Condition::And(a, b) => 15 + condition_charge(a) + condition_charge(b),
+        Condition::Or(a, b) => 14 + condition_charge(a) + condition_charge(b),
+        Condition::Not(inner) => 21 + condition_charge(inner),
     }
 }
 
@@ -509,35 +513,45 @@ mod tests {
 
     #[test]
     fn condition_charges_follow_what_dynamodb_counts() {
-        // attribute_exists, attribute_not_exists and a comparison were measured against DynamoDB
-        // (docs/parity); the other forms are pinned as assumed: like a comparison, AND/OR/NOT as
-        // their parts.
+        // Every form measured against DynamoDB (docs/parity, dynamoxy's probe on AWS): the bytes
+        // each condition added to the payload of an update.
         let charge = |expression: &str| {
             let names = BTreeMap::new();
-            let values: BTreeMap<String, AttributeValue> =
-                [(":w".to_owned(), AttributeValue::S("w".into())), (":t".to_owned(), AttributeValue::S("S".into()))]
-                    .into_iter()
-                    .filter(|(key, _)| expression.contains(key.as_str()))
-                    .collect();
+            let values: BTreeMap<String, AttributeValue> = [
+                (":w".to_owned(), AttributeValue::S("w".into())),
+                (":ww".to_owned(), AttributeValue::S("ww".into())),
+                (":t".to_owned(), AttributeValue::S("S".into())),
+            ]
+            .into_iter()
+            .filter(|(key, _)| expression.split(|c: char| !(c.is_alphanumeric() || c == ':')).any(|word| word == key))
+            .collect();
             let mut placeholders = Placeholders::new(&names, &values);
             condition_charge(
                 &crate::expr::parse_condition(ExpressionKind::Condition, expression, &mut placeholders).unwrap(),
             )
         };
-        assert_eq!(charge("attribute_exists(pk)"), 63 + 2);
-        assert_eq!(charge("attribute_exists(ab.cd)"), 63 + (2 + 4 + 2));
-        assert_eq!(charge("attribute_not_exists(absent)"), 67 + 6);
-        assert_eq!(charge("note = :w"), 57 + 4 + 1);
-        assert_eq!(charge("note = alt"), 57 + 4 + 3);
-        assert_eq!(charge("size(note) > :w"), 57 + 4 + 1);
-        assert_eq!(charge("note BETWEEN :w AND :w"), 57 + 4 + 1 + 1);
-        assert_eq!(charge("note IN (:w, :w)"), 57 + 4 + 1 + 1);
-        assert_eq!(charge("begins_with(note, :w)"), 57 + 4 + 1);
-        assert_eq!(charge("contains(note, :w)"), 57 + 4 + 1);
-        assert_eq!(charge("attribute_type(note, :t)"), 57 + 4 + 1);
-        assert_eq!(charge("attribute_exists(pk) AND attribute_exists(pk)"), 2 * (63 + 2));
-        assert_eq!(charge("attribute_exists(pk) OR attribute_exists(pk)"), 2 * (63 + 2));
-        assert_eq!(charge("NOT attribute_exists(pk)"), 63 + 2);
+        for (expression, measured) in [
+            ("attribute_exists(pk)", 65),
+            ("attribute_exists(abcdefghij)", 73),
+            ("attribute_exists(ab.cd)", 81),
+            ("attribute_not_exists(absent)", 73),
+            ("attribute_not_exists(pk)", 69),
+            ("note = :w", 62),
+            ("note = :ww", 63),
+            ("note <> :w", 62),
+            ("note = alt", 79),
+            ("size(note) > :w", 84),
+            ("note BETWEEN :w AND :w", 76),
+            ("note IN (:w, :w)", 71),
+            ("begins_with(note, :w)", 71),
+            ("contains(note, :w)", 68),
+            ("attribute_type(note, :t)", 74),
+            ("attribute_exists(pk) AND attribute_exists(pk)", 145),
+            ("attribute_exists(pk) OR attribute_exists(pk)", 144),
+            ("NOT attribute_exists(pk)", 86),
+        ] {
+            assert_eq!(charge(expression), measured, "{expression}");
+        }
     }
 
     #[test]
