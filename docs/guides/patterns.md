@@ -100,7 +100,10 @@ summary item in the same transaction as the write keeps them consistent and make
 
 ## Evolving data
 
-- Adding a field: give it a default; old items decode with it.
+- Adding a field: give it a default; old items decode with it. `X | None` and set fields read
+  old items as `None` and an empty set instead, which is how they store those values: to give
+  old items the default, backfill it with a scan job
+  (`await item.update(Model.field.set_if_not_exists(default))` for each item).
 - Renaming a field: keep the stored name with `attribute_name=`.
 - Changing a field's type: items stored with the old type raise `ItemDecodeError` (reading is
   exact). Rewrite them first (a scan of `repository.table` returns dicts), or declare both types

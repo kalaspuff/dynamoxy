@@ -87,7 +87,9 @@ class Codec[T]:
     Subclass it (or duck-type it) for custom types. ``validate`` checks (and may normalize) values
     assigned to attributes; ``encode``/``decode`` convert to and from the stored representation,
     which must be a DynamoDB-compatible Python value (str, int, Decimal, bytes, bool, None, list,
-    dict or set).
+    dict or set). ``encode`` returns ``None`` for a value that is stored as no attribute; codecs
+    of sets (``dynamo_type`` ``"SS"``, ``"NS"`` or ``"BS"``) do so for an empty set, and decode
+    ``None`` (a missing attribute) as one.
 
     Attributes:
         dynamo_type: The DynamoDB type written (``"S"``, ``"N"``, ``"B"`` for key attributes;
@@ -832,7 +834,8 @@ class ListCodec[T](Codec[list[T]]):
 class SetCodec[T](Codec[set[T]]):
     """``set[X]`` as ``SS``, ``NS`` or ``BS``.
 
-    An empty set is not stored (DynamoDB forbids it) and reads back as an empty set.
+    An empty set is not stored (DynamoDB forbids it), and a missing attribute reads back as an
+    empty set (as ``None`` in a ``set[X] | None`` field, which stores ``None`` the same way).
     """
 
     def __init__(self, inner: Codec[T], *, frozen: bool = False) -> None:

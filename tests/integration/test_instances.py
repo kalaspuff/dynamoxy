@@ -410,6 +410,50 @@ async def test_atomic_changes_check_versions_and_fail_before_io(client: dynamoxy
     assert usage.calls == 0, "refused before any I/O"
 
 
+class Counted(dynamoxy.Model, abstract=True):
+    """A field that the sibling models ``Page`` and ``Post`` inherit."""
+
+    views: Attr[int] = field(default=0)
+
+
+class Page(Counted, table="pages"):
+    page_id: Attr[str] = partition_key()
+
+
+class Post(Counted, table="posts"):
+    post_id: Attr[str] = partition_key()
+
+
+class CountedRecord(dynamoxy.PydanticModel, abstract=True):
+    views: int
+
+
+class PageRecord(CountedRecord, table="page_records"):
+    page_id: Annotated[str, PartitionKey()]
+
+
+class PostRecord(CountedRecord, table="post_records"):
+    post_id: Annotated[str, PartitionKey()]
+
+
+async def test_atomic_changes_take_the_paths_of_the_model_or_its_bases(client: dynamoxy.Client) -> None:
+    await client.create_tables(Post, PostRecord)
+    post = await Post.create(client, post_id="p1")
+    record = await PostRecord.create(client, post_id="p1", views=0)
+    await post.increment(Post.views)
+    await post.increment(Counted.views)
+    await record.increment(dynamoxy.attr(PostRecord.views))
+    await record.increment(dynamoxy.attr(CountedRecord.views))
+    assert (post.views, record.views) == (2, 2)
+    # Each class has paths of its own, so a sibling's path is another model's, as for any model.
+    with dynamoxy.collect() as usage:
+        with pytest.raises(TypeError, match=r"^Page\.views is not a field of Post: use Post\.views$"):
+            await post.increment(Page.views)
+        with pytest.raises(TypeError, match=r"^PageRecord\.views is not a field of PostRecord: use PostRecord\.views$"):
+            await record.increment(dynamoxy.attr(PageRecord.views))
+    assert usage.calls == 0, "refused before any I/O"
+
+
 async def test_reads_and_writes_bind_instances(client: dynamoxy.Client) -> None:
     await client.create_tables(Player, Customer, Order, Event)
     players = client.model(Player)

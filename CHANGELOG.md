@@ -22,6 +22,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `AttributeName(...)` (and its name in pydantic's input and output with an alias).
 - `client.model(User)` returns the same repository on every call (built on first use), so the
   model's classmethods and inline `client.model(User).get(...)` calls cost a dictionary lookup.
+- [**breaking**] `None` and empty sets read back as written, not as the field's default
+  ([ADR 0019](docs/adr/0019-missing-attributes-read-as-none-or-empty-sets.md)). dynamoxy stores
+  both as no attribute, and read a missing attribute as the default: a
+  `nickname: Attr[str | None] = field(default="anon")` written as `None` came back as `"anon"`,
+  and a set field whose default is `{"member"}`, written empty or emptied by deleting its last
+  element, came back as `{"member"}`, so a revoked role was granted again and the next `save()`
+  stored it (in pydantic models and documents too). A missing attribute now reads as `None` in
+  an `X | None` field and as an empty set in a set field, also in items written before the
+  field existed: backfill the default (`await item.update(Model.field.set_if_not_exists(...))`)
+  where they need it. A `set[X] | None` field reads an empty set back as `None`. `set(set())` of
+  a model field removes the attribute like `set(None)` (it stored a `NULL`, on which later
+  `add()` failed), `remove()` and `set(set())` of a set field empty it (they raised
+  `ValidationError`), and `== set()` and `!= set()` compare like `== None` and `!= None`.
+  Upserts by key no longer give `X | None` and set fields their defaults, which
+  `if_not_exists` wrote over an existing item's `None` or empty set: an item they create reads
+  `None` or an empty set there unless the actions set it.
 
 ### Deprecated
 
@@ -143,6 +159,19 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
   they are, and conditions compare with the value as given. Pydantic models still check key
   values against the field's type only.
+- Fields that a subclass inherits encoded expression values in the `datetime_format` of the
+  class that declared them, while the subclass stored them in its own. With an abstract
+  `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,
+  `filter(Article.seen_at == at)` compared `...+00:00` with the stored `...Z` and found nothing,
+  conditions on writes failed, and `update(Article.seen_at.set(at))` stored `...+00:00` among
+  `...Z` values (text among numbers with an epoch format). Transactions took the declaring class
+  as the model of updates by key (`TypeError: Timestamped is not stored in a table`), and
+  assigning or comparing such a field raised `TypeError` when the base class's key template
+  names a field of the subclass. A subclass now has attributes of its own for the fields it
+  inherits; those of the base class keep its format. So `add()`, `increment()` and `decrement()`
+  of an instance refuse the attribute of a sibling class, as they did for pydantic models: with
+  `Page` and `Post` both inheriting `views`, `post.increment(Page.views)` raises `TypeError`,
+  which now names the attribute to use (`Post.views`).
 - Deletes of models with unique attributes ignored their `condition=` when no item was stored:
   `delete(key, condition=...)` returned `None`, and `tx.delete(...)` was left out of the
   transaction, so a delete used as the guard of a transaction let the rest commit. As for other

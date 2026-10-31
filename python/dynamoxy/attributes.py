@@ -59,6 +59,9 @@ __all__ = [
 class FieldPath[T](Path[T]):
     """The class attribute of a model field: an expression path whose values use the field's codec.
 
+    Every model class has paths of its own, also for the fields it inherits: a path encodes values
+    with the schema of its class, and a subclass may store them differently (``datetime_format``).
+
     On pydantic models the instance value lives in the instance ``__dict__``, so this
     non-data descriptor only answers class-level access.
     """
@@ -84,7 +87,7 @@ class FieldPath[T](Path[T]):
 
     @property
     def model(self) -> type:
-        """The model class the field belongs to."""
+        """The model class the path belongs to (for an inherited field, the subclass)."""
         if self._owner is None:
             raise TypeError("this attribute is not declared on a model class")
         return self._owner

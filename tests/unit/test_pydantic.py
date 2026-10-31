@@ -50,6 +50,27 @@ def test_mutable_defaults_of_decoded_items_are_copies() -> None:
     assert (Mailbox(mailbox_id="c").address.city, Mailbox(mailbox_id="c").folders) == ("Oslo", ["inbox"])
 
 
+class Preferences(pydantic.BaseModel):
+    theme: str | None = "light"
+
+
+class Settings(dynamoxy.PydanticModel, table="settings"):
+    settings_id: Annotated[str, dynamoxy.PartitionKey()]
+    nickname: str | None = "anon"
+    roles: set[str] = pydantic.Field(default_factory=lambda: {"member"})
+    preferences: Preferences = Preferences()
+
+
+def test_none_and_empty_sets_read_back_as_written() -> None:
+    settings = Settings(settings_id="s1", nickname=None, roles=set(), preferences=Preferences(theme=None))
+    item = settings.to_item()
+    assert item == {"settings_id": "s1", "preferences": {}}, "None and empty sets are stored as nothing"
+    assert Settings.from_item(item) == settings, "and nothing reads as them, not as the defaults"
+    # Items without the attributes read the same; a required field reads its default.
+    old = Settings.from_item({"settings_id": "s2"})
+    assert (old.nickname, old.roles, old.preferences.theme) == (None, set(), "light")
+
+
 def test_markers_configure_the_schema() -> None:
     schema = schema_of(Profile)
     assert schema.partition_key is not None
@@ -246,3 +267,24 @@ def test_fields_with_a_codec_of_their_own_may_be_optional() -> None:
     item = filled.to_item()
     assert item == {"reminder_id": "r1", "due": "2026-10-13T08:48:47.000000Z", "data": '{"a":[1]}', "state": "on"}
     assert Reminder.from_item(item) == filled
+
+
+class Sighted(dynamoxy.PydanticModel, abstract=True):
+    seen_at: datetime | None = None
+
+
+class Bird(Sighted, table="pydantic-birds", datetime_format="iso_z"):
+    bird_id: Annotated[str, dynamoxy.PartitionKey()]
+
+
+def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    builder = ExpressionBuilder()
+    builder.condition(dynamoxy.attr(Bird.seen_at) == moment)
+    builder.update([dynamoxy.attr(Bird.seen_at).set(moment)])
+    builder.condition(dynamoxy.attr(Sighted.seen_at) == moment)
+    assert builder.values == {
+        ":v0": "2026-01-01T00:00:00.000000Z",
+        ":v1": "2026-01-01T00:00:00.000000Z",
+        ":v2": "2026-01-01T00:00:00.000000+00:00",  # the base class keeps its format
+    }

@@ -77,6 +77,45 @@ def test_mutable_defaults_are_copied_for_each_instance() -> None:
     assert schema_of(Shelf).fields["line"].default.quantity == 1, "the declared default is unchanged"
 
 
+class Badge(Document):
+    label: Attr[str | None] = field(default="new")
+    levels: Attr[set[int]] = field(default_factory=lambda: {1})
+
+
+class Card(Model, table="cards"):
+    """Fields that can be ``None`` or an empty set, with defaults that are neither."""
+
+    card_id: Attr[str] = partition_key()
+    nickname: Attr[str | None] = field(default="anon")
+    roles: Attr[frozenset[str]] = field(default=frozenset({"member"}))
+    labels: Attr[set[str] | None] = field(default_factory=lambda: {"x"})
+    expires_at: Attr[datetime | None] = ttl(default=datetime(2030, 1, 1, tzinfo=UTC))
+    visits: Attr[int] = field(default=3)
+    badge: Attr[Badge] = field(default_factory=Badge)
+
+
+def test_none_and_empty_sets_read_back_as_written() -> None:
+    card = Card(
+        card_id="c1",
+        nickname=None,
+        roles=frozenset(),
+        labels=None,
+        expires_at=None,
+        badge=Badge(label=None, levels=set()),
+    )
+    item = card.to_item()
+    assert item == {"card_id": "c1", "visits": 3, "badge": {}}, "None and empty sets are stored as nothing"
+    assert Card.from_item(item) == card, "and nothing reads as them, not as the defaults"
+    assert (Card(card_id="c2").nickname, Card(card_id="c2").badge.label) == ("anon", "new"), "new instances get them"
+    # Items without the attributes (written before the fields existed) read the same; fields that
+    # can be neither None nor an empty set read their default.
+    old = Card.from_item({"card_id": "c3"})
+    assert (old.nickname, old.roles, old.labels, old.expires_at, old.visits) == (None, frozenset(), None, None, 3)
+    assert old.badge == Badge()
+    # A set field that can be None stores None and an empty set alike: both read back as None.
+    assert Card.from_item(Card(card_id="c4", labels=set()).to_item()).labels is None
+
+
 def test_validation_collects_every_field_error() -> None:
     with pytest.raises(dynamoxy.ValidationError) as caught:
         User(user_id="u1", email="not-an-email", name="", age=-1)  # type: ignore[call-arg]
@@ -639,6 +678,58 @@ def test_datetime_format_is_inherited_and_overridable() -> None:
     assert explicit.fields["created_at"].codec.encode(moment) == 1767225600000
     assert explicit.fields["updated_at"].codec.encode(moment) == "2026-01-01T00:00:00.000000Z"
     assert schema_of(Order).fields["placed_at"].codec.encode(moment) == "2026-01-01T00:00:00.000000+00:00"
+
+
+class Sighted(Model, abstract=True):
+    seen_at: Attr[datetime | None] = field(default=None)
+    history: Attr[list[datetime]] = field(default_factory=list)
+
+
+class Bird(Sighted, table="birds", datetime_format="iso_z"):
+    bird_id: Attr[str] = partition_key()
+
+
+class Owl(Bird, table="owls"):
+    """Inherits the fields and the format of ``Bird``."""
+
+
+def test_inherited_fields_encode_values_in_the_format_of_the_subclass() -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    zulu = "2026-01-01T00:00:00.000000Z"
+    for model in (Bird, Owl):
+        # Each class has paths of its own, resolved with its own schema.
+        assert model.seen_at is not Sighted.seen_at
+        assert (model.seen_at.model, model.seen_at.spec) == (model, schema_of(model).fields["seen_at"])
+        assert repr(model.history) == f"<attribute {model.__name__}.history>"
+        builder = ExpressionBuilder()
+        builder.condition(
+            (model.seen_at == moment) & model.seen_at.between(moment, moment) & (model.history[0] == moment)
+        )
+        builder.update([model.seen_at.set(moment), model.history.append([moment])])
+        assert list(builder.values.values()) == [zulu, zulu, zulu, zulu, zulu, [zulu]]
+    builder = ExpressionBuilder()
+    builder.condition(Sighted.seen_at == moment)
+    assert builder.values == {":v0": "2026-01-01T00:00:00.000000+00:00"}, "the base class keeps its format"
+    with pytest.raises(dynamoxy.ValidationError, match=r"^Bird\.seen_at: expected datetime"):
+        Bird.seen_at.set("yesterday")  # pyrefly: ignore[no-matching-overload]
+
+
+def test_inherited_fields_do_not_need_the_schema_of_the_base_class() -> None:
+    class Keyed(Model, abstract=True):
+        pk: Attr[str] = partition_key(template="ITEM#{item_id}")
+        status: Attr[str] = field(default="new")
+
+    class Item(Keyed, table="items"):
+        item_id: Attr[str]
+
+    with pytest.raises(TypeError, match="refers to 'item_id', which is not a field"):
+        schema_of(Keyed)
+    item = Item(item_id="i1")
+    item.status = "done"
+    assert item.to_item() == {"pk": "ITEM#i1", "status": "done", "item_id": "i1"}
+    builder = ExpressionBuilder()
+    builder.condition(Item.status == "done")
+    assert builder.values == {":v0": "done"}
 
 
 def test_invalid_datetime_formats_fail_on_declaration() -> None:

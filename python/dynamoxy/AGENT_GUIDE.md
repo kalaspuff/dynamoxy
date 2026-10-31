@@ -109,14 +109,18 @@ values are stored (see `dynamoxy.codecs`):
 | `timedelta` | `N` (seconds) |
 | `Enum`, `Literal[...]` | the member value |
 | `list[X]`, `tuple[X, ...]` | `L` |
-| `set[X]`, `frozenset[X]` | `SS` / `NS` / `BS` (empty sets are not stored) |
+| `set[X]`, `frozenset[X]` | `SS` / `NS` / `BS` (empty sets are not stored, and read back empty) |
 | `dict[str, X]` | `M` |
 | a `dynamoxy.Document` or pydantic model | `M` |
-| `X \| None`, `Literal[..., None]` | `X`, or nothing when `None` (also with a `codec=` of its own) |
+| `X \| None`, `Literal[..., None]` | `X`, or nothing when `None`, which reads back as `None` (also with a `codec=` of its own) |
 | `Any` | as given |
 
 Reading is exact: a stored value of another type, or one the field's type cannot hold (`2.5` in an
 `int` field, `"false"` in a `bool` field), raises `ItemDecodeError` instead of being converted.
+A missing attribute reads as `None` in an `X | None` field and as an empty set in a set field,
+whatever the field's default, since that is how they are stored; a `set[X] | None` field reads an
+empty set back as `None`. Other fields read a missing attribute (an item written before the field
+existed) as their default.
 
 Field specifiers configure fields. Fields without a default are required by the constructor
 (type checkers know this too). Give defaults with `field(default=...)`, not a bare value
@@ -190,9 +194,12 @@ class Reading(Base, table="readings"):
 ```
 
 A field overrides it with `created_at(format=...)` or `codec=dynamoxy.codecs.DateTimeCodec(...)`.
-Nested `Document`s declare their own (`class Address(Document, datetime_format="iso_z")`);
-`PydanticModel` takes the same keyword and `CreatedAt("iso_z")`. Both ISO styles are always
-read, but keys, templates and conditions compare stored text: keep one format per attribute.
+A subclass that sets another format stores the fields it inherits in it too: build its conditions
+and updates from its own attributes (`Reading.created_at`), as those of the base class encode
+values in the base's format. Nested `Document`s declare their own
+(`class Address(Document, datetime_format="iso_z")`); `PydanticModel` takes the same keyword and
+`CreatedAt("iso_z")`. Both ISO styles are always read, but keys, templates and conditions compare
+stored text: keep one format per attribute.
 
 Rules that are easy to miss:
 
@@ -424,10 +431,10 @@ Model attributes are typed paths: `User.visits > 3`, `User.name.begins_with("A")
 `User.email.exists()`, `User.age.not_exists()`, `User.tags.size() > 2`,
 `User.address["city"] == "Lund"`. Combine with `&`, `|` and `~` (or `dynamoxy.and_`, `or_`,
 `not_`). Like in DynamoDB, a comparison with a missing attribute is false (except `!=`): items
-whose `tags` set is empty store no `tags` attribute, so select them with `User.tags.not_exists()`,
-not `User.tags.size() == 0`. `None` is no attribute for model fields: `User.age == None` matches
-items without `age`, or with a `NULL` (which reads as `None` too). `dynamoxy.F("raw", "path")`
-builds untyped paths for dict-level code.
+whose `tags` set is empty store no `tags` attribute, so select them with `User.tags.not_exists()`
+or `User.tags == set()`, not `User.tags.size() == 0`. `None` is no attribute for model fields:
+`User.age == None` matches items without `age`, or with a `NULL` (which reads as `None` too).
+`dynamoxy.F("raw", "path")` builds untyped paths for dict-level code.
 `dynamoxy.condition("#s = :s", names={"#s": "status"}, values={":s": "x"})` is the escape
 hatch for hand-written expressions.
 
@@ -452,12 +459,13 @@ await users.delete("u2", condition=User.visits == 0)  # the condition fails for 
 Update actions: `set(value or path or arithmetic)`, `set_if_not_exists(value)`, `add(n or set)`,
 `increment(n)`, `decrement(n)`, `remove()`, `delete(set)` (alias `discard`), `append(list)`,
 `append_or_create(list)`, `prepend(list)`. Nested paths work: `User.address["city"].set("Lund")`.
-`User.nickname.set(None)` removes the attribute (as `put()` stores nothing for `None`). Numbers
-are checked against the field (`User.visits.increment(0.5)` raises `ValidationError`). Updates
-refresh the instance in place with the stored result, and re-render templated attributes whose
-fields change, `updated_at` and `version` included. Key, derived (templated) and immutable
-attributes cannot be updated, nor the fields a key template uses. Keys can be stored keys or
-field values (`devices.update({"device_id": uuid}, ...)`).
+`User.nickname.set(None)` and `User.tags.set(set())` remove the attribute (as `put()` stores
+nothing for `None` and empty sets). Numbers are checked against the field
+(`User.visits.increment(0.5)` raises `ValidationError`). Updates refresh the instance in place
+with the stored result, and re-render templated attributes whose fields change, `updated_at` and
+`version` included. Key, derived (templated) and immutable attributes cannot be updated, nor the
+fields a key template uses. Keys can be stored keys or field values
+(`devices.update({"device_id": uuid}, ...)`).
 
 `User.create(client, ...)` validates its values like the constructor (type checkers check
 them too) and writes through `client.model(User)`, a plain repository: code that relies on the
@@ -471,7 +479,9 @@ Every write of a repository takes `condition=`; when it does not hold,
 the actions leave alone get their defaults (and existing items keep their values), derived keys
 and the entity type are filled in, and every required field without a default must be set by the
 actions, typically with `set_if_not_exists(...)`. Otherwise dynamoxy raises `ValueError` before
-any I/O. For templated keys, pass the key as field values
+any I/O. `X | None` and set fields of key targets get no default, since `if_not_exists` would
+replace an existing item's `None` or empty set: a created item reads those unless the actions set
+them. For templated keys, pass the key as field values
 (`orders.update({"customer_id": "c1", "order_id": "o1"}, ..., upsert=True)`).
 
 ### Writing through an instance
@@ -777,10 +787,12 @@ For queue consumers that may see a message twice, make the write conditional on 
 
 ### Migrations of stored data
 
-Add new fields with defaults (old items decode with the default). Upgrade old shapes in
-`@dynamoxy.after_load`, and rewrite items in the background with a scan and `save()`. `save()`
-keeps attributes no field declares, so instances of an older version of the application do not
-erase what a newer one wrote; drop a retired attribute with `update(item, F("old").remove())`.
+Add new fields with defaults (old items decode with the default; `X | None` and set fields read
+them as `None` and an empty set, so backfill the default with `set_if_not_exists()` if they need
+it). Upgrade old shapes in `@dynamoxy.after_load`, and rewrite items in the background with a scan
+and `save()`. `save()` keeps attributes no field declares, so instances of an older version of the
+application do not erase what a newer one wrote; drop a retired attribute with
+`update(item, F("old").remove())`.
 Changing a field's type: items stored with the old type raise `ItemDecodeError`, so rewrite them
 first (`repository.table.scan()` returns dicts), or declare both types (`Attr[int | str]`) until
 every item is rewritten. Changing a key or a key template is a new table.

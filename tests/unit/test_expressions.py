@@ -160,6 +160,26 @@ def test_none_means_no_attribute_for_model_fields() -> None:
     assert compile_condition(F("x") == None)[0] == "#a0 = :v0"  # noqa: E711
 
 
+def test_empty_sets_mean_no_attribute_for_model_fields() -> None:
+    # DynamoDB has no empty sets: a NULL would make later ADD and DELETE actions fail.
+    builder = ExpressionBuilder()
+    assert builder.update([User.tags.set(set())]) == "REMOVE #a0", "as put() and save() store nothing"
+    # Compared like None: no attribute, or a NULL that another writer stored.
+    text, names, values = compile_condition(User.tags == set())
+    assert (text, names, values) == (
+        "(attribute_not_exists(#a0)) OR (attribute_type(#a0, :v0))",
+        {"#a0": "tags"},
+        {":v0": "NULL"},
+    )
+    text = compile_condition(User.tags != set())[0]
+    assert text == "(attribute_exists(#a0)) AND (NOT (attribute_type(#a0, :v0)))"
+    with pytest.raises(ValueError, match="would store nothing"):
+        User.tags.set_if_not_exists(set())
+    builder = ExpressionBuilder()
+    assert builder.update([User.tags.set({"a"})]) == "SET #a0 = :v0"
+    assert builder.values == {":v0": {"a"}}
+
+
 def test_increments_of_model_fields_check_their_amount() -> None:
     builder = ExpressionBuilder()
     assert builder.update([User.visits.increment(2), Timer.spent.decrement(timedelta(seconds=1.5))]) == (

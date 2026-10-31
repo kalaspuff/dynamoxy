@@ -129,6 +129,9 @@ the key), of derived (templated) and `immutable` fields, and of unique fields wi
 removes the attribute (it never stores DynamoDB's `NULL`). A `NULL` that another writer stored
 reads as `None` too, so `User.nickname == None` matches items without the attribute or with a
 `NULL`, and `!= None` matches the others. Untyped paths (`F("x")`) keep DynamoDB's `NULL`.
+Empty sets are no attribute too (DynamoDB has none, and a `NULL` would make later `add()` and
+`delete()` of the set fail): `User.tags.set(set())` and `User.tags.remove()` empty a set field,
+and `User.tags == set()` compares like `== None`.
 
 `increment()`, `decrement()` and arithmetic (`User.score + 5`) check their operand against the
 field: an `int` field takes integers (`User.visits.increment(0.5)` raises `ValidationError`), a
@@ -165,7 +168,11 @@ created item must be a complete model item, so dynamoxy:
 
 - writes the entity type (single-table models) and `created_at`, `updated_at` and `version`;
 - gives every field the actions leave alone its value with `if_not_exists`: the field's default
-  for key targets, the instance's value for instance targets (existing items keep theirs);
+  for key targets, the instance's value for instance targets (existing items keep theirs).
+  `X | None` and set fields of key targets get no default: they store `None` and empty sets as
+  no attribute, which `if_not_exists` cannot tell from a new item, so it would replace an
+  existing item's. A created item reads `None` or an empty set there unless the actions set it
+  (an instance's value fills an existing item's `None` or empty set the same way);
 - renders derived (templated) attributes from those values, also only where missing;
 - refuses, before any I/O, an upsert that leaves a required field without a value. Provide it in
   the actions, usually with `set_if_not_exists(...)`, which never overwrites an existing value:
