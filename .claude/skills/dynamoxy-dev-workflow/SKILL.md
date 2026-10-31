@@ -33,7 +33,7 @@ description: Default workflow for any change to the dynamoxy library (Rust core,
    ```bash
    cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings
    uv run ruff format --check python tests examples scripts && uv run ruff check python tests examples scripts
-   uvx --from actionlint-py actionlint && uv run pyrefly check
+   uvx --from actionlint-py actionlint && uv run pyrefly check && uv run python scripts/check_typing.py
    uv run python scripts/check_consistency.py
    cargo test --workspace && uv run pytest
    ```

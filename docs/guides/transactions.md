@@ -109,5 +109,6 @@ user, order, missing = await client.transact_get(
 )
 ```
 
-Up to 100 items read as one consistent snapshot (`None` for missing ones), at twice the cost of
-consistent reads.
+Up to 100 items read as one consistent snapshot, returned as a tuple in the order of the reads
+(`None` for missing ones), at twice the cost of consistent reads. Type checkers know the model of
+each item for up to six reads (`User | None`, `Order | None`, ...).
