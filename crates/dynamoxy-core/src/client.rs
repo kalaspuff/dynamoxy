@@ -189,7 +189,6 @@ struct Inner {
 /// or the error, with the chunk's stats.
 type ChunkOutcome<T> = (Result<(T, Vec<ConsumedCapacity>)>, OperationStats);
 
-/// Items found by a chunk of a managed `BatchGetItem`, and the keys still unprocessed.
 /// Splits `BatchGetItem` keys into requests of at most `size` keys, in order, each table keeping
 /// its read settings. Keys are moved, and only the settings are cloned for each chunk.
 fn chunk_keys(
@@ -226,6 +225,7 @@ fn chunk_keys(
     chunks
 }
 
+/// Items found by a chunk of a managed `BatchGetItem`, and the keys still unprocessed.
 type GotChunk = (BTreeMap<String, Vec<Item>>, BTreeMap<String, KeysAndAttributes>);
 
 /// Generates a client request token (idempotent retries of transactions).
