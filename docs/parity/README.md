@@ -13,7 +13,7 @@ creates tables named `dynamoxy-probe-<random>-*`, logs every request and answer 
 masked), and deletes the tables at the end. A maintainer with a test account runs it:
 
 ```bash
-AWS_PROFILE=<test-account-profile> AWS_REGION=eu-north-1 bash scripts/probe_dynamodb.sh 1   # or 2
+AWS_PROFILE=<test-account-profile> AWS_REGION=eu-north-1 bash scripts/probe_dynamodb.sh 1   # or 2, 3
 ```
 
 `DYNAMODB_PROBE_ENDPOINT=<url>` sends the same requests to an emulator. Round 1 asks the
@@ -42,7 +42,7 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | `Query` or `Scan` of a local index, `ProjectionExpression` naming `secret` | returns `secret`, read from the table | returns what the index holds | same as DynamoDB |
 | `Scan` of a local or global index, `FilterExpression` on `secret` | matches nothing (filters the entries) | returns the item | returns the item |
 | `Scan` of a local index that fetches the items (`ALL_ATTRIBUTES`, or a projection of `secret`), `FilterExpression` on `secret` | matches: the filter sees the fetched item | returns the item | returns the item |
-| `Query` filter on several attributes the index does not hold (`secret = :s AND note = :o`, a nested `m.x`, `size(secret)`, a held `pk` next to `gk`) | each named by its top-level name, in the order of the expression: `[secret, note]`, `[m]`, `[secret]`, `[gk, secret]` | returns the item | sorted: `[note, secret]` |
+| `Query` filter on several attributes the index does not hold (`secret = :s AND note = :o`, a nested `m.x`, `size(secret)`, the global index's key `gk` next to `secret`) | each named by its top-level name, in the order of the expression: `[secret, note]`, `[m]`, `[secret]`, `[gk, secret]` (a filter that also names a held attribute was not probed) | returns the item | sorted: `[note, secret]` |
 | `ProjectionExpression` of a global index naming `note, m.x, pk, secret` | `Global secondary index gsi does not project [note, m, secret]` (in order, held ones left out) | returns `pk` | `[note, secret, m]` |
 | a `Scan` of a global index with both | the projection is refused first | returns an empty item | same as DynamoDB |
 
@@ -56,8 +56,8 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | attribute name of 65,535 bytes, in an item or through a placeholder | accepted | accepted | `InternalFailure` in an item |
 | attribute name of 65,536 bytes in a `PutItem` item | `1 validation error detected: Attribute name is too large, must be less than 65536 bytes` | accepted | `InternalFailure` |
 | the same through a placeholder of a `GetItem` | `Attribute name is too large, must be less than 65536 bytes for key #n` | accepted | prefixed `ExpressionAttributeNames contains invalid value: ` |
-| the same as a map key in a `PutItem` item, or through a placeholder of an `UpdateItem` `SET` | `1 validation error detected: Attribute name is too large, must be less than 65536 bytes` (`... for key #n`) | accepted | `InternalFailure` for the map key |
-| a 256-byte or `#a-b` placeholder, or `attribute_type(a, b)`, in a `PutItem` condition | the same messages as in reads, inside `1 validation error detected: ` | `#a` undefined; `attribute_type` evaluated | |
+| the same as a map key in a `PutItem` item, or through a placeholder of an `UpdateItem` `SET` | `1 validation error detected: Attribute name is too large, must be less than 65536 bytes` (`... for key #n`) | accepted | `InternalFailure` for the map key; the placeholder prefixed `ExpressionAttributeNames contains invalid value: `, without the envelope |
+| a 256-byte or `#a-b` placeholder, or `attribute_type(a, b)`, in a `PutItem` condition | the same messages as in reads, inside `1 validation error detected: ` | the 256-byte one accepted; `#a` undefined (in the envelope); `attribute_type` evaluated | the same messages, without the envelope |
 | `attribute_type(a, b)`, a path as the type, in a filter | `Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {S,SS,N,NS,B,BS,BOOL,NULL,L,M,HD,DOUBLE,FLOAT,HDS,FS,DOUBLESET,DICT,DECIMAL,INT,DECIMALSET,INTSET}` | evaluated (matches) | refused, the types in another order |
 | the same in an `UpdateItem` condition | prefixed `1 validation error detected: ` (`Invalid ConditionExpression: ...`) | evaluated | refused without the prefix |
 | `ExecuteTransaction` of `SELECT`s, one of a missing table | `TransactionCanceledException`, reasons `[None, ResourceNotFound]` (`Requested resource not found` on the missing one, no message on the others) | `ResourceNotFoundException` | `ResourceNotFoundException` |
@@ -76,7 +76,7 @@ here. The emulator logs were taken with AWS CLI 1.46.2.
 | the same for a `KEYS_ONLY` local index (18 bytes of keys) | 409,580 bytes taken, 409,588 refused: the entry counts as the keys it holds | accepted | 409,589 taken, 409,600 refused |
 | `TransactGetItems` of ten 390 KB items (3.9 MB) | accepted | accepted | accepted |
 | `TransactGetItems` of eleven (4.3 MB) | `Payload in response is too large.` | accepted | the same message with the size appended (`too large.4393159`) |
-| `TransactGetItems` of eleven 300 KB binary items (4.4 MB as base64), or of 4,000,900 bytes of items | accepted: the limit counts the items, and is 4 MiB | accepted | accepted |
+| `TransactGetItems` of eleven 300 KB binary items (4.4 MB as base64), or of 4,000,900 bytes of items | accepted: the limit counts the items, and lies above 4,000,900 bytes and at most at the 4,393,159 refused in round 1 (presumably 4 MiB, 4,194,304, which was not probed) | accepted | accepted |
 | `TransactWriteItems` of ten `Update`s writing 390 KB each | accepted | accepted | accepted |
 | the same with eleven | `Transaction payload size cannot exceed 4MB. Payload Size: 4393445` | `Transaction request exceeds the 4MB transaction size limit` | `... Payload Size: 4393214` |
 
@@ -87,7 +87,7 @@ that read 4,393,455): a `Put` counts its item's size (eleven puts of the same it
 removes), and 8 bytes more: a second `SET note = :w` of `"x"` added 24 bytes per update, three more
 bytes of key 3. The table's name and placeholder names count nothing, and an
 `attribute_not_exists(absent)` condition added 73 bytes per update. Eleven updates of 363,700
-bytes (over 4,000,000, under 4 MiB) were taken.
+bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 MiB; not probed).
 
 ### Table updates (#87)
 
