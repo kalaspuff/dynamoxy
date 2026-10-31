@@ -620,6 +620,9 @@ class Table:
                 )
             missing.append(index)
         if definition.ttl_attribute is not None:
+            if description.status == "CREATING":
+                # DynamoDB describes no Time to Live of a table it is still creating.
+                description = await self.wait_until_active()
             ttl = await self.time_to_live()
             if not ttl.enabled:
                 # Before the indexes, so that it does not wait for their backfills.

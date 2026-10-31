@@ -534,6 +534,12 @@ pub fn update_time_to_live(state: &mut State, input: &UpdateTimeToLiveInput) -> 
 /// `DescribeTimeToLive`.
 pub fn describe_time_to_live(state: &State, table_name: &str) -> Result<TimeToLiveDescription> {
     let table = state.tables.get(table_name).ok_or_else(|| not_found(table_name))?;
+    if table.describes_until_active > 0 {
+        // Measured through dynamoxy's probe in eu-north-1 on 2026-10-31 (docs/parity).
+        return Err(invalid(
+            "Cannot describe time to live while table is in CREATING state: Current table state is CREATING",
+        ));
+    }
     Ok(match &table.ttl_attribute {
         Some(attribute) => {
             TimeToLiveDescription { status: TimeToLiveStatus::Enabled, attribute_name: Some(attribute.clone()) }
