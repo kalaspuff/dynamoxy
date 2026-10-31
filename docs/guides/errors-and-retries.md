@@ -34,7 +34,10 @@ tracebacks name, and derive from `DynamoxyError`. They say whether retrying may 
 support cases). Errors pickle with their attributes, so they reach the caller of a worker process
 or task queue as themselves. An attribute value that does not pickle is left out (`None` in the
 unpickled error): a `FieldError.value` such as a function, or the `.model` of a model class
-defined inside a function. Copies (`copy.copy`, `copy.deepcopy`) keep every attribute.
+defined inside a function. The check uses the standard `pickle` module, also when the error is
+sent by cloudpickle (Ray, Dask, PySpark), which could send such values: an error never fails to
+pickle because of an attribute, whichever pickler sends it. Copies (`copy.copy`,
+`copy.deepcopy`) keep every attribute.
 
 Messages are safe to log: they name models, fields and types, never keys or values, which may be
 personal data. The errors carry those as attributes, and the messages say where: `User does not

@@ -361,7 +361,10 @@ def _picklable(value: Any) -> Any:
 def _reduce_error(error: BaseException) -> tuple[Any, ...]:
     # An error crosses process boundaries (multiprocessing, task queues) as itself also when one of
     # its attributes does not pickle (the model class of a model defined in a function, a unique
-    # value of a type that does not pickle): the pickle leaves such a value out. Unpickling calls
+    # value of a type that does not pickle): the pickle leaves such a value out. ``__reduce__`` does
+    # not know which pickler calls it, so the check uses the standard one; values that only
+    # cloudpickle sends (lambdas, classes defined in functions) are left out under it too, so that
+    # a process that has cloudpickle loaded still sends errors through ``pickle``. Unpickling calls
     # the class with the arguments of the message, then restores the attributes.
     state = vars(error)
     try:
