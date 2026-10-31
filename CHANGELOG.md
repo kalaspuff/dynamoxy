@@ -315,6 +315,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   read back could not be written: the plan compared the stored `Decimal("0.1")` with `0.1` and
   deleted and put the same guard item, which DynamoDB refuses, so `save()`, `put()` and
   `update(latitude.set(0.1))` failed with the value unchanged.
+- `commit()` could raise after DynamoDB had applied the transaction. Updated instances are
+  refreshed by evaluating the update on the item as it was loaded, and for an unversioned item
+  that another writer changed since (a `list_append` to a list the instance read as missing)
+  that evaluation failed, so `commit()` raised the `ValidationError` that normally means "not
+  applied", and a caller who retried applied the change twice. Such instances are now refreshed
+  from the item as stored now, and if it cannot be read, forget their stored copy, without an
+  error. The guides now say what a `client.batch_writer()` block that raises does: it writes
+  nothing more, and keeps what is queued in the writer for `flush()`.
 
 ### Security
 

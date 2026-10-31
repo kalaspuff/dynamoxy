@@ -13,7 +13,10 @@ Batches are not atomic and have no conditions. Requests for the same key are de-
 round is raised as :class:`dynamoxy.UnprocessedItemsError`, and only the writes that were made
 update their instances and run ``after_*`` hooks. A flush that fails before anything is sent
 (a ``before_*`` hook or a validation raised) or whose request fails keeps the writes queued:
-nothing is dropped. Models with unique attributes cannot be written in batches.
+nothing is dropped. When the ``async with`` block raises (also with the error of such a flush),
+the writer writes nothing more, as a transaction: what is queued stays in it (``len(batch)``),
+and ``await batch.flush()`` writes it. Models with unique attributes cannot be written in
+batches.
 """
 
 from __future__ import annotations
@@ -39,7 +42,8 @@ __all__ = ["BatchWriter"]
 class BatchWriter:
     """Buffers writes and sends them with managed batches.
 
-    Flushes when ``flush_size`` writes are buffered and when the ``async with`` block ends.
+    Flushes when ``flush_size`` writes are buffered and when the ``async with`` block ends
+    without an exception; a block that raises leaves what is queued in the writer.
     """
 
     def __init__(self, client: Client, *, flush_size: int = 100) -> None:

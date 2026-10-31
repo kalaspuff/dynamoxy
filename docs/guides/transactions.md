@@ -38,7 +38,11 @@ Instances you wrote are updated: created and saved instances get their automatic
 updated instances are refreshed by applying the update to the item as it was loaded (with the
 same evaluator the in-memory DynamoDB uses), so `account.balance` is the new balance without
 another read. This is exact for versioned models; for others, writes made by other clients
-between your read and the commit are not reflected (call `refresh()` if that matters).
+between your read and the commit are not reflected (call `refresh()` if that matters). When the
+update does not apply to the item as loaded (another client stored the list that an
+`append()` extends since your read), dynamoxy reads the item as stored now instead. The commit
+succeeded either way, so `commit()` does not raise for this: if that read fails or the item is
+gone, the instance forgets its stored copy, as if it had not been loaded.
 
 A transaction writes each instance through the repository it is bound to (when it uses the
 transaction's client), so instances stay bound to the repository that read them:

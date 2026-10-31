@@ -531,7 +531,8 @@ refused for models with unique attributes (guard items need transactions). If it
 unprocessed after every retry round, `UnprocessedItemsError.unprocessed` lists them; only the
 writes that were made update their instances and run `after_*` hooks. A batch writer flush that
 fails before its request (a hook or validation raised), or whose request fails, keeps the other
-writes queued.
+writes queued. A block that raises writes nothing more; `await batch.flush()` writes what is still
+queued.
 
 A write of a loaded instance (`save()`, `put()`, batch puts) keeps the stored attributes that no
 field declares (written by a newer version of the application during a rolling deploy, or by

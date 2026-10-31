@@ -365,3 +365,37 @@ async def test_failed_flushes_keep_the_other_writes() -> None:
         await batch.flush()
         assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "c"]
         assert batch.written == 2
+
+
+async def test_blocks_that_raise_keep_their_writes_queued() -> None:
+    async with testing.memory_client() as client:
+        await client.create_tables(Note)
+        # The block ends with the exception of a failed automatic flush: nothing more is written,
+        # and what that flush and the block queued stays in the writer.
+        batch = client.batch_writer(flush_size=2)
+
+        async def flushing_block() -> None:
+            async with batch:
+                await batch.put(Note(note_id="a"))
+                await batch.put(Note(note_id="b"))  # flushes, and fails
+
+        testing.inject_fault(client, operation="BatchWriteItem", error="internal", times=10)
+        with pytest.raises(dynamoxy.InternalServerError):
+            await flushing_block()
+        assert len(batch) == 2
+        client.store.clear_faults()  # type: ignore[union-attr]
+        other = client.batch_writer()
+
+        async def raising_block() -> None:
+            async with other:
+                await other.put(Note(note_id="c"))
+                raise RuntimeError("stop")
+
+        with pytest.raises(RuntimeError, match="stop"):
+            await raising_block()
+        assert len(other) == 1
+        assert await client.table("notes").scan().all() == [], "a block that raises writes nothing"
+        await batch.flush()  # written on request
+        await other.flush()
+        assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "b", "c"]
+        assert (len(batch), len(other)) == (0, 0)

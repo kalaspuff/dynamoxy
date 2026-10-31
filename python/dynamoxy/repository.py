@@ -1115,8 +1115,9 @@ class Repository[M]:
             if instance is None:
                 return
             if attributes is None:  # in a transaction, which returns nothing
-                attributes = self._updated_locally(stored_old, instance, actions_list)
-            self._assign(instance, self._load_written(attributes, "update"), attributes)
+                attributes = await self._refreshed_after_commit(stored_old, instance, actions_list, key)
+            if attributes is not None:
+                self._assign(instance, self._load_written(attributes, "update"), attributes)
             if hooks.has("after_update", type(instance)):
                 await hooks.run("after_update", instance, self._context("update"))
 
@@ -1238,6 +1239,31 @@ class Repository[M]:
         Instances that were never loaded start from their own values.
         """
         return self._evaluate(stored if stored is not None else self.schema.encode(instance), actions)
+
+    async def _refreshed_after_commit(
+        self, stored: dict[str, Any] | None, instance: M, actions: Sequence[UpdateAction], key: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The item an update in a committed transaction left, to refresh ``instance`` with.
+
+        The update evaluated on the item as last read; when it does not apply to that item
+        (another writer changed an unversioned item since it was read: a ``list_append`` to an
+        attribute the instance read as missing), the item as stored now. The transaction was
+        applied, so nothing here raises: when the item cannot be read (or is gone), the instance
+        forgets its stored copy, as if it had not been loaded, and ``None`` is returned.
+        """
+        try:
+            return self._updated_locally(stored, instance, actions)
+        except DynamoxyError:
+            pass
+        try:
+            current = await self._get_raw(key)
+        except Exception:  # noqa: BLE001 - the commit succeeded: the refresh may not fail it
+            current = None
+        if current is None:
+            state = self.schema.state(instance)
+            if state is not None:
+                state.stored = None
+        return current
 
     def _evaluate(self, item: dict[str, Any], actions: Sequence[UpdateAction]) -> dict[str, Any]:
         """``item`` (stored form) after ``actions``, evaluated by the core's evaluator like DynamoDB does.
