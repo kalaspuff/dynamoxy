@@ -31,7 +31,26 @@ from __future__ import annotations
 import importlib.util
 from typing import TYPE_CHECKING, Any
 
+# Public submodules: `from x import m as m` (or `__all__`) makes type checkers see `dynamoxy.errors`
+# and the others after `import dynamoxy`; `from dynamoxy.errors import ...` alone does not.
+from dynamoxy import attributes as attributes
+from dynamoxy import batch as batch
+from dynamoxy import client as client
 from dynamoxy import codecs, testing
+from dynamoxy import collection as collection
+from dynamoxy import constraints as constraints
+from dynamoxy import errors as errors
+from dynamoxy import events as events
+from dynamoxy import expressions as expressions
+from dynamoxy import middleware as middleware
+from dynamoxy import models as models
+from dynamoxy import query as query
+from dynamoxy import repository as repository
+from dynamoxy import results as results
+from dynamoxy import schema as schema
+from dynamoxy import table as table
+from dynamoxy import telemetry as telemetry
+from dynamoxy import transactions as transactions
 from dynamoxy._core import MemoryStore, from_wire, to_wire
 from dynamoxy._core import __version__ as __version__
 from dynamoxy.attributes import (
@@ -257,12 +276,15 @@ if importlib.util.find_spec("pydantic") is not None:  # pragma: no branch - depe
     __all__ += ["PydanticModel"]
 
 
-def __getattr__(name: str) -> Any:
-    # PydanticModel imports pydantic: load it only when used (pip install dynamoxy[pydantic]).
-    if name == "PydanticModel":
-        try:
-            from dynamoxy._pydantic import PydanticModel
-        except ImportError as error:  # pragma: no cover - depends on the environment
-            raise ImportError("dynamoxy.PydanticModel needs pydantic: pip install 'dynamoxy[pydantic]'") from error
-        return PydanticModel
-    raise AttributeError(f"module 'dynamoxy' has no attribute {name!r}")
+if not TYPE_CHECKING:
+    # Hidden from type checkers, which would type every unknown name of the package as `Any`.
+
+    def __getattr__(name: str) -> Any:
+        # PydanticModel imports pydantic: load it only when used (pip install dynamoxy[pydantic]).
+        if name == "PydanticModel":
+            try:
+                from dynamoxy._pydantic import PydanticModel
+            except ImportError as error:  # pragma: no cover - depends on the environment
+                raise ImportError("dynamoxy.PydanticModel needs pydantic: pip install 'dynamoxy[pydantic]'") from error
+            return PydanticModel
+        raise AttributeError(f"module 'dynamoxy' has no attribute {name!r}")
