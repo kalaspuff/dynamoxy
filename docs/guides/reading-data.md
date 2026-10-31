@@ -148,9 +148,10 @@ Entries of an index with a `KEYS_ONLY` or `INCLUDE` projection hold only some at
   read for the keys and the attributes come from the full items.
 - A filter on an attribute an index does not hold raises `ValueError` in a query, global or local
   (DynamoDB refuses it, also when the query reads the items from the table), and in a scan of a
-  global index (it filters the entries and would never match). A scan of a local index reads the
-  items from the table, and its filter sees them. Otherwise filter the hydrated items in Python,
-  or project the attribute into the index.
+  global index (it filters the entries and would never match). A scan of a local index that
+  returns the items it reads from the table filters them; one that counts, hydrates or projects
+  only what the index holds filters the entries, and raises `ValueError` too. Otherwise filter the
+  hydrated items in Python, or project the attribute into the index.
 - For models with an entity type (single-table design), dynamoxy projects the type attribute
   into such indexes when it creates them, and their reads filter on it. DynamoDB refuses queries
   of an index that does not hold it (created by other tools, or by dynamoxy 0.2) with a
