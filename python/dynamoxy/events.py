@@ -122,6 +122,9 @@ class LoggingConfig:
     Attributes:
         enabled: Log events at all.
         levels: Level overrides by kind or glob (``{"request.retry": "debug", "operation.*": "info"}``).
+            An exact kind wins over globs, and of the globs that match a kind the longest wins
+            (``"request.gave_*"`` over ``"request.*"``, which wins over ``"*"``); of globs as long,
+            the first in the mapping.
         disabled: Kinds or globs never logged.
         include_fields: Append ``key=value`` fields to the message.
     """
@@ -140,10 +143,16 @@ class LoggingConfig:
         """The level to log ``kind`` at, or ``None`` when it is not logged."""
         if not self.enabled or any(fnmatch.fnmatchcase(kind.value, pattern) for pattern in self.disabled):
             return None
-        for pattern, level in self.levels.items():
-            if fnmatch.fnmatchcase(kind.value, pattern):
-                return level
-        return default
+        levels = self.levels
+        exact = levels.get(kind.value)
+        if exact is not None:
+            return exact
+        chosen: str | None = None
+        longest = -1
+        for pattern, level in levels.items():
+            if len(pattern) > longest and fnmatch.fnmatchcase(kind.value, pattern):
+                chosen, longest = level, len(pattern)
+        return default if chosen is None else chosen
 
 
 def _default_levels() -> dict[EventKind, str]:

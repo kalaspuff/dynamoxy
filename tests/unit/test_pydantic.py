@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
@@ -324,3 +327,28 @@ def test_contains_encodes_list_elements_as_stored() -> None:
     builder = ExpressionBuilder()
     builder.condition(dynamoxy.attr(Flock.seen).contains(datetime(2026, 1, 1, tzinfo=UTC)))
     assert builder.values == {":v0": "2026-01-01T00:00:00.000000+00:00"}
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_star_imports_work_with_and_without_pydantic(installed: bool) -> None:
+    script = textwrap.dedent(
+        f"""
+        import sys
+        if not {installed}:
+            sys.modules["pydantic"] = None  # as if it were not installed
+        from dynamoxy import *
+        import dynamoxy
+        assert ("PydanticModel" in dir()) is {installed}
+        assert ("PydanticModel" in dynamoxy.__all__) is {installed}
+        assert Model is dynamoxy.Model
+        if not {installed}:
+            try:
+                dynamoxy.PydanticModel
+            except ImportError as error:
+                assert "pip install 'dynamoxy[pydantic]'" in str(error)
+            else:
+                raise AssertionError("PydanticModel without pydantic")
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
