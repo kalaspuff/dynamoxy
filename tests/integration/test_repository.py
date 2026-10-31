@@ -1207,8 +1207,11 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     for never in (scanned.project("kind").all(), scanned.hydrate().all(), scanned.count(), scanned.exists()):
         with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
             await never
+    for hydrated in (scanned.project("kind").hydrate(), scanned.project("expires_at").hydrate()):
+        with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+            await hydrated.all()
     with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
-        await scanned.project("kind").hydrate().all()
+        await scanned.hydrate().project("expires_at").all()
 
 
 async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client: dynamoxy.Client) -> None:
