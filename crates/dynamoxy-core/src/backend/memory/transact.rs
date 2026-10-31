@@ -222,6 +222,10 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         };
         match result {
             Ok(write) => {
+                // An update's item counts toward the transaction's size as it will be stored.
+                if matches!(operation, TransactWriteItem::Update { .. }) {
+                    total_size += write.new.as_ref().map_or(0, item_size);
+                }
                 reasons.push(CancellationReason::none());
                 prepared.push(write);
             }
@@ -245,6 +249,9 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
     }
     if canceled {
         return Err(ServiceError::transaction_canceled(reasons).into());
+    }
+    if total_size > TRANSACTION_SIZE_LIMIT {
+        return Err(invalid("Transaction size has exceeded the maximum allowed size"));
     }
     let mut meter = CapacityMeter::default();
     let mut output = TransactWriteItemsOutput::default();

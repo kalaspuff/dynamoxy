@@ -19,6 +19,13 @@ const MAX_PARTITION_KEY_SIZE: usize = 2048;
 /// Largest sort key value (bytes).
 const MAX_SORT_KEY_SIZE: usize = 1024;
 
+/// DynamoDB's refusal of a partition key value over [`MAX_PARTITION_KEY_SIZE`].
+const HASH_KEY_TOO_LARGE: &str =
+    "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes";
+
+/// DynamoDB's refusal of a sort key value over [`MAX_SORT_KEY_SIZE`].
+const RANGE_KEY_TOO_LARGE: &str = "One or more parameter values were invalid: Aggregated size of all range keys has exceeded the size limit of 1024 bytes";
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
 }
@@ -174,7 +181,7 @@ impl KeyInfo {
         self.partition.name == name || self.sort.as_ref().is_some_and(|sort| sort.name == name)
     }
 
-    fn attributes(&self) -> impl Iterator<Item = &KeyAttribute> {
+    pub(crate) fn attributes(&self) -> impl Iterator<Item = &KeyAttribute> {
         std::iter::once(&self.partition).chain(&self.sort)
     }
 
@@ -296,6 +303,14 @@ impl Index {
                     "One or more parameter values are not valid. A value specified for a secondary index key is not supported. The AttributeValue for a key attribute cannot contain an empty string value. IndexName: {}, IndexKey: {}",
                     self.name, attribute.name
                 )));
+            }
+            // Index keys have the limits of table keys, with the same messages.
+            if attribute.name == self.key.partition.name {
+                if value_size(value) > MAX_PARTITION_KEY_SIZE {
+                    return Err(invalid(HASH_KEY_TOO_LARGE));
+                }
+            } else if value_size(value) > MAX_SORT_KEY_SIZE {
+                return Err(invalid(RANGE_KEY_TOO_LARGE));
             }
         }
         Ok(())
@@ -430,16 +445,12 @@ impl Table {
         if let Some(partition) = item.get(&self.key.partition.name)
             && value_size(partition) > MAX_PARTITION_KEY_SIZE
         {
-            return Err(invalid(
-                "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes",
-            ));
+            return Err(invalid(HASH_KEY_TOO_LARGE));
         }
         if let Some(sort) = self.key.sort.as_ref().and_then(|sort| item.get(&sort.name))
             && value_size(sort) > MAX_SORT_KEY_SIZE
         {
-            return Err(invalid(
-                "One or more parameter values were invalid: Aggregated size of all range keys has exceeded the size limit of 1024 bytes",
-            ));
+            return Err(invalid(RANGE_KEY_TOO_LARGE));
         }
         for value in item.values() {
             value.validate().map_err(invalid)?;

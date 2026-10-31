@@ -1715,3 +1715,223 @@ async fn queries_and_scans_match_a_reference_model() {
         assert_eq!(found.iter().collect::<Vec<_>>(), expected, "scan round {round}: {input:?}");
     }
 }
+
+fn key_query(condition: &str, values_: &[(&str, AttributeValue)]) -> QueryInput {
+    QueryInput {
+        table_name: "items".into(),
+        key_condition_expression: Some(condition.into()),
+        expression_attribute_values: values(values_),
+        scan_index_forward: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn key_conditions_refuse_empty_key_values() {
+    // "One or more parameter values are not valid. The AttributeValue for a key attribute cannot
+    // contain an empty string value. Key: PK" (reported against DynamoDB in getmoto/moto#7062).
+    let backend = backend_with_table().await;
+    let error = backend.query(key_query("pk = :p", &[(":p", s(""))])).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain an empty string value. Key: pk"
+    );
+    let index = |condition: &str, values_: &[(&str, AttributeValue)]| QueryInput {
+        index_name: Some("by_status".into()),
+        ..key_query(condition, values_)
+    };
+    let error = backend.query(index("#s = :s", &[(":s", s(""))]).with_names(&[("#s", "status")])).await.unwrap_err();
+    assert!(message(&error).ends_with("cannot contain an empty string value. Key: status"), "{}", message(&error));
+    backend.create_table(binary_table("blobs")).await.unwrap();
+    let error = backend
+        .query(QueryInput {
+            table_name: "blobs".into(),
+            key_condition_expression: Some("pk = :p AND begins_with(sk, :b)".into()),
+            expression_attribute_values: values(&[(":p", s("a")), (":b", AttributeValue::B(Vec::new()))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(message(&error).ends_with("cannot contain an empty binary value. Key: sk"), "{}", message(&error));
+}
+
+fn binary_table(name: &str) -> CreateTableInput {
+    CreateTableInput {
+        attribute_definitions: vec![definition("pk", ScalarType::S), definition("sk", ScalarType::B)],
+        key_schema: keys("pk", Some("sk")),
+        local_secondary_indexes: vec![],
+        global_secondary_indexes: vec![],
+        ..table_input(name)
+    }
+}
+
+trait WithNames {
+    fn with_names(self, pairs: &[(&str, &str)]) -> Self;
+}
+
+impl WithNames for QueryInput {
+    fn with_names(self, pairs: &[(&str, &str)]) -> Self {
+        QueryInput { expression_attribute_names: names(pairs), ..self }
+    }
+}
+
+#[tokio::test]
+async fn start_keys_must_fit_the_target_and_the_key_condition() {
+    // Captured against DynamoDB by dynoxide-rs (tests/query_start_key_and_key_conditions.rs).
+    let backend = backend_with_table().await;
+    for sk in 1..=3 {
+        put(&backend, item([("pk", s("a")), ("sk", n(sk)), ("status", s("open")), ("rank", n(sk))])).await;
+    }
+    let from = |start: Item| QueryInput { exclusive_start_key: Some(start), ..key_query("pk = :p", &[(":p", s("a"))]) };
+    let refused = async |input: QueryInput| message(&backend.query(input).await.unwrap_err());
+    const INVALID: &str = "The provided starting key is invalid";
+    assert_eq!(refused(from(item([("pk", n(1)), ("sk", n(1))]))).await, INVALID, "a number partition key");
+    assert_eq!(refused(from(item([("pk", s("a"))]))).await, INVALID, "no sort key");
+    assert_eq!(refused(from(item([("pk", s("a")), ("sk", n(1)), ("extra", s("x"))]))).await, INVALID);
+    assert_eq!(
+        refused(from(item([("pk", s("")), ("sk", n(1))]))).await,
+        "One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain an empty string value. Key: pk"
+    );
+    // On an index: the table key and the index key, each of its type, and nothing else.
+    let on_index = |start: Item| QueryInput {
+        index_name: Some("by_status".into()),
+        exclusive_start_key: Some(start),
+        ..key_query("#s = :s", &[(":s", s("open"))]).with_names(&[("#s", "status")])
+    };
+    assert_eq!(refused(on_index(item([("pk", s("a")), ("sk", n(1)), ("status", n(5))]))).await, INVALID);
+    assert_eq!(refused(on_index(item([("pk", s("a")), ("sk", n(1))]))).await, INVALID, "the table's keys only");
+    assert_eq!(
+        refused(on_index(item([("pk", s("a")), ("sk", n(1)), ("status", s("open")), ("rank", n(1))]))).await,
+        INVALID,
+        "another index's key"
+    );
+    let page = backend.query(on_index(item([("pk", s("a")), ("sk", n(1)), ("status", s("open"))]))).await.unwrap();
+    assert_eq!(page.count, 2, "a fitting start key continues");
+    // Outside the key condition.
+    assert_eq!(
+        refused(from(item([("pk", s("b")), ("sk", n(1))]))).await,
+        "The provided starting key is outside query boundaries based on provided conditions"
+    );
+    let bounded = |start: Item| QueryInput {
+        exclusive_start_key: Some(start),
+        ..key_query("pk = :p AND sk >= :low", &[(":p", s("a")), (":low", n(3))])
+    };
+    assert_eq!(
+        refused(bounded(item([("pk", s("a")), ("sk", n(1))]))).await,
+        "The provided starting key does not match the range key predicate"
+    );
+    assert_eq!(
+        refused(bounded(item([("pk", s("b")), ("sk", n(5))]))).await,
+        "The query can return at most one row and cannot be restarted"
+    );
+    assert_eq!(backend.query(bounded(item([("pk", s("a")), ("sk", n(3))]))).await.unwrap().count, 0);
+    assert_eq!(
+        refused(on_index(item([("pk", s("a")), ("sk", n(1)), ("status", s("closed"))]))).await,
+        "The provided starting key is outside query boundaries based on provided conditions"
+    );
+    let hash_only = CreateTableInput {
+        attribute_definitions: vec![definition("pk", ScalarType::S)],
+        key_schema: keys("pk", None),
+        local_secondary_indexes: vec![],
+        global_secondary_indexes: vec![],
+        ..table_input("hash")
+    };
+    backend.create_table(hash_only).await.unwrap();
+    let error = backend
+        .query(QueryInput {
+            table_name: "hash".into(),
+            exclusive_start_key: Some(item([("pk", s("b"))])),
+            ..key_query("pk = :p", &[(":p", s("a"))])
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "The provided exclusive start key is invalid");
+    // A scan of an index names the index when an index key has another type.
+    let error = backend
+        .scan(ScanInput {
+            table_name: "items".into(),
+            index_name: Some("by_status".into()),
+            exclusive_start_key: Some(item([("pk", s("a")), ("sk", n(1)), ("status", n(5))])),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Type mismatch for Index Key status Expected: S Actual: N IndexName: by_status"
+    );
+}
+
+#[tokio::test]
+async fn secondary_index_keys_have_the_size_limits_of_table_keys() {
+    let backend = backend_with_table().await;
+    let write = |extra: (&str, AttributeValue)| PutItemInput {
+        table_name: "items".into(),
+        item: item([("pk", s("a")), ("sk", n(1)), extra]),
+        ..Default::default()
+    };
+    let error = backend.put_item(write(("status", s(&"x".repeat(3000))))).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes"
+    );
+    backend.put_item(write(("status", s(&"x".repeat(2048))))).await.unwrap();
+    let sorted = CreateTableInput {
+        attribute_definitions: vec![
+            definition("pk", ScalarType::S),
+            definition("sk", ScalarType::N),
+            definition("tag", ScalarType::S),
+        ],
+        local_secondary_indexes: vec![LocalSecondaryIndex {
+            index_name: "by_tag".into(),
+            key_schema: keys("pk", Some("tag")),
+            projection: Projection { projection_type: ProjectionType::KeysOnly, non_key_attributes: vec![] },
+        }],
+        global_secondary_indexes: vec![],
+        ..table_input("tagged")
+    };
+    backend.create_table(sorted).await.unwrap();
+    let error = backend
+        .put_item(PutItemInput { table_name: "tagged".into(), ..write(("tag", s(&"x".repeat(1025)))) })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Aggregated size of all range keys has exceeded the size limit of 1024 bytes"
+    );
+    let update = UpdateItemInput {
+        table_name: "items".into(),
+        key: item([("pk", s("a")), ("sk", n(1))]),
+        update_expression: Some("SET #s = :s".into()),
+        expression_attribute_names: names(&[("#s", "status")]),
+        expression_attribute_values: values(&[(":s", s(&"y".repeat(2049)))]),
+        ..Default::default()
+    };
+    let error = backend.update_item(update).await.unwrap_err();
+    assert!(message(&error).contains("Size of hashkey has exceeded"), "{}", message(&error));
+}
+
+#[tokio::test]
+async fn updates_count_toward_the_size_of_a_transaction() {
+    let backend = backend_with_table().await;
+    let blob = "x".repeat(390 * 1024);
+    let updates = (0..11)
+        .map(|sk| TransactWriteItem::Update {
+            target: TransactTarget {
+                table_name: "items".into(),
+                expression_attribute_names: names(&[("#b", "blob")]),
+                expression_attribute_values: values(&[(":b", s(&blob))]),
+                ..Default::default()
+            },
+            key: item([("pk", s("a")), ("sk", n(sk))]),
+            update_expression: "SET #b = :b".into(),
+        })
+        .collect();
+    let error = backend
+        .transact_write_items(TransactWriteItemsInput { transact_items: updates, ..Default::default() })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Transaction size has exceeded the maximum allowed size");
+    let left = backend.scan(ScanInput { table_name: "items".into(), ..Default::default() }).await.unwrap();
+    assert_eq!(left.count, 0, "nothing is written");
+}
