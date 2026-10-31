@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 
 import pytest
 
@@ -227,3 +228,12 @@ async def test_fixes_that_share_an_item_never_run_at_once(client: dynamoxy.Clien
     assert concurrent > 1, "fixes of different items still run at once"
     assert overlaps == []
     assert (await client.model(Contact).verify_unique()).ok
+
+
+def test_lock_names_do_not_depend_on_the_order_of_key_attributes() -> None:
+    from dynamoxy.repository import _lock_name
+
+    owner = {"member_id": "m1", "org_id": "o1", "seq": Decimal("1.0")}  # as a stored _owner map may order it
+    key = {"org_id": "o1", "member_id": "m1", "seq": 1}  # schema order
+    assert _lock_name(owner) == _lock_name(key)
+    assert _lock_name(key) != _lock_name({"org_id": "o1", "member_id": "m2", "seq": 1})

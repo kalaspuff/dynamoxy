@@ -1769,7 +1769,7 @@ class Repository[M]:
             locks: dict[str, asyncio.Lock] = {}
 
             async def run(index: int, fix: MissingGuard | OrphanedGuard) -> None:
-                names = sorted({repr(stored_identity(key)) for key in self._unique_fix_keys(fix)})
+                names = sorted({_lock_name(key) for key in self._unique_fix_keys(fix)})
                 async with contextlib.AsyncExitStack() as held:
                     for name in names:
                         await held.enter_async_context(locks.setdefault(name, asyncio.Lock()))
@@ -1996,6 +1996,11 @@ def index_key_attributes(schema: ModelSchema, spec: IndexSpec | None) -> tuple[s
             if field is not None and field.attribute not in names:
                 names.append(field.attribute)
     return tuple(names)
+
+
+def _lock_name(key: Mapping[str, Any]) -> str:
+    """One name per item key, whatever the order of its attributes (keys hold strings, numbers, binary)."""
+    return repr(sorted((name, stored_identity(value)) for name, value in key.items()))
 
 
 def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool) -> dict[str, Any]:
