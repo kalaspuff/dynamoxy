@@ -61,14 +61,15 @@ an index added to a provisioned table the table's capacity too, unless its defin
 `billing=` gives another.
 
 DynamoDB changes a table one step at a time: it refuses to change a table it is still creating
-(`ResourceInUseError`, and `ResourceNotFoundError` for Time to Live) and to add an index while
-another is being created (`LimitExceededError`, "Only 1 online index can be created or deleted
-simultaneously per table"), also during the minutes of its backfill when the table reads `ACTIVE`
-again. The in-memory backend refuses a deletion then too, as the message says (not measured). `create_tables()` and `ensure_tables()` wait for each step
-before the next; with `wait=False` on your own calls, call `table.wait_until_active()` before the
-next change. On the in-memory backend a new table or index reads `CREATING` in the first
-`DescribeTable` and `ACTIVE` from the next on (as when polling until it is active), so tests
-catch a missing wait.
+(`ResourceInUseError`; for Time to Live, `enable_time_to_live()` raises `ValidationError`, as it
+describes it first, and a native `UpdateTimeToLive` `ResourceNotFoundError`) and to add an index
+while another is being created (`LimitExceededError`, "Only 1 online index can be created or
+deleted simultaneously per table"), also during the minutes of its backfill when the table reads
+`ACTIVE` again. The in-memory backend refuses a deletion then too, as the message says (not
+measured). `create_tables()` and `ensure_tables()` wait for each step before the next; with
+`wait=False` on your own calls, call `table.wait_until_active()` before the next change. On the
+in-memory backend a new table or index reads `CREATING` in the first `DescribeTable` and `ACTIVE`
+from the next on (as when polling until it is active), so tests catch a missing wait.
 
 ## Time to Live
 
