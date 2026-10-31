@@ -497,14 +497,14 @@ def test_copy_starts_automatic_fields_empty() -> None:
             "name": "Ada",
             "created_at": "2026-01-01T00:00:00.000000+00:00",
             "updated_at": "2026-01-02T00:00:00.000000+00:00",
-            "version": 3,
+            "version": "3f2a",
         }
     )
     clone = stored.copy(name="Bob")
     assert (clone.created_at, clone.updated_at, clone.version) == (None, None, None)
     assert (clone.user_id, clone.name) == ("u1", "Bob")
-    assert (stored.version, stored.name) == (3, "Ada"), "the original keeps its values"
-    assert stored.copy(version=3).version == 3, "unless they are given"
+    assert (stored.version, stored.name) == ("3f2a", "Ada"), "the original keeps its values"
+    assert stored.copy(version="5e1b").version == "5e1b", "unless they are given"
 
 
 def test_copy_refuses_unknown_fields() -> None:
@@ -579,7 +579,7 @@ def test_repository_subclasses_inherit_their_model() -> None:
 
 
 def test_python_copies_have_their_own_persistence_state() -> None:
-    stored = User.from_item({"user_id": "u1", "email": "ada@example.com", "name": "Ada", "version": 3})
+    stored = User.from_item({"user_id": "u1", "email": "ada@example.com", "name": "Ada", "version": "3f2a"})
     for duplicate in (copy.copy(stored), copy.deepcopy(stored)):
         assert duplicate == stored
         assert duplicate.is_loaded, "an exact duplicate, loaded like the original"

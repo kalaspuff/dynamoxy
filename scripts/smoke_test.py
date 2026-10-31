@@ -23,7 +23,7 @@ class Account(dynamoxy.Model, table="smoke-accounts"):
     email: Attr[str] = field(unique=True)
     balance: Attr[Decimal] = field(default=Decimal(0), ge=0)
     tags: Attr[set[str]] = field(default_factory=set)
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class Entry(dynamoxy.Model, table="smoke-entries"):
@@ -43,6 +43,7 @@ async def main() -> None:
         await client.create_tables(Account, Entry)
         accounts, entries = client.model(Account), client.model(Entry)
         account = await accounts.create(Account(account_id="a1", email="smoke@example.com"))
+        created_version = account.version
         try:
             await accounts.create(Account(account_id="a2", email="smoke@example.com"))
         except dynamoxy.UniqueConstraintError:
@@ -52,7 +53,8 @@ async def main() -> None:
         async with client.transaction() as tx:
             tx.update(account, Account.balance.add(10), Account.tags.add({"smoke"}))
             tx.create(Entry(account_id="a1", seq=1, amount=Decimal(10)))
-        assert (account.balance, account.version) == (Decimal(10), 2), account
+        assert account.balance == Decimal(10), account
+        assert account.version not in (None, created_version), account
         await entries.batch_put(Entry(account_id="a1", seq=seq, amount=Decimal(seq)) for seq in range(2, 60))
         page = await entries.query(account_id="a1").where(Entry.seq > 10).page_size(20).page()
         assert len(page.items) == 20, page

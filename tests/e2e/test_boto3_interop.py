@@ -93,14 +93,14 @@ async def test_dynamoxy_reads_what_boto3_writes(client: dynamoxy.Client, boto: A
         "status": "suspended",
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-02T00:00:00+00:00",
-        "version": 4,
+        "version": "a1b2c3d4e5f60718",
         "extra": {"nested": [1, "two", b"\x03", None, True]},
     }
     boto.put_item(
         TableName=client.table_name("users"), Item={key: serializer.serialize(value) for key, value in item.items()}
     )
     user = await client.model(User).get_or_raise("u1")
-    assert (user.age, user.visits, user.tags, user.version) == (36, 3, {"admin", "ops"}, 4)
+    assert (user.age, user.visits, user.tags, user.version) == (36, 3, {"admin", "ops"}, "a1b2c3d4e5f60718")
     assert user.status.value == "suspended"
     assert user.created_at == datetime(2026, 1, 1, tzinfo=UTC)
     raw = await client.table("users").get({"user_id": "u1"})
@@ -113,18 +113,19 @@ async def test_updates_from_both_sides(client: dynamoxy.Client, boto: Any) -> No
     boto.update_item(
         TableName=client.table_name("users"),
         Key={"user_id": {"S": "u2"}},
-        UpdateExpression="ADD visits :one, #v :one SET #n = :name",
+        # Another writer that follows the contract: a new version token on every write.
+        UpdateExpression="ADD visits :one SET #n = :name, #v = :version",
         ExpressionAttributeNames={"#v": "version", "#n": "name"},
-        ExpressionAttributeValues={":one": {"N": "1"}, ":name": {"S": "Robert"}},
+        ExpressionAttributeValues={":one": {"N": "1"}, ":name": {"S": "Robert"}, ":version": {"S": "from-boto3"}},
     )
     with pytest.raises(dynamoxy.VersionConflictError):
         await users.update(user, User.visits.add(1))
     await users.refresh(user)
-    assert (user.name, user.visits, user.version) == ("Robert", 1, 2)
+    assert (user.name, user.visits, user.version) == ("Robert", 1, "from-boto3")
     await users.update(user, User.tags.add({"x"}))
     stored = boto.get_item(TableName=client.table_name("users"), Key={"user_id": {"S": "u2"}})["Item"]
     assert stored["tags"] == {"SS": ["x"]}
-    assert stored["version"] == {"N": "3"}
+    assert stored["version"] == {"S": user.version}
 
 
 async def test_transaction_cancellations_look_the_same(client: dynamoxy.Client, boto: Any) -> None:

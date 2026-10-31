@@ -28,7 +28,7 @@ class Customer(dynamoxy.PydanticModel, table="crm-customers"):
     credit: Decimal = Decimal(0)
     address: Address | None = None
     created_at: Annotated[datetime | None, dynamoxy.CreatedAt()] = None
-    version: Annotated[int | None, dynamoxy.Version()] = None
+    version: Annotated[str | None, dynamoxy.Version()] = None
 
     by_email = dynamoxy.GlobalIndex(partition_key="email")
 

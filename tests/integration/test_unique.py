@@ -58,9 +58,10 @@ async def test_values_are_unique_across_items(users: dynamoxy.Repository[User]) 
 
 async def test_changing_a_value_frees_the_old_one(users: dynamoxy.Repository[User]) -> None:
     ada = await users.create(make_user("u1", "ada@example.com"))
+    created_version = ada.version
     await users.update(ada, User.email.set("ada@new.example.com"))
     assert ada.email == "ada@new.example.com"
-    assert ada.version == 2
+    assert ada.version not in (None, created_version)
     await users.create(make_user("u2", "ada@example.com"))
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await users.update(ada, User.email.set("ada@example.com"))
@@ -114,14 +115,15 @@ async def test_batches_refuse_unique_models(users: dynamoxy.Repository[User]) ->
 async def test_pydantic_unique_and_versions(client: dynamoxy.Client, users: dynamoxy.Repository[User]) -> None:
     accounts = client.model(Account)
     account = await accounts.create(Account(account_id="a1", owner="Ada", handle="ada"))
-    assert account.version == 1
+    created_version = account.version
+    assert created_version is not None
     assert account.is_loaded
     with pytest.raises(dynamoxy.UniqueConstraintError):
         await accounts.create(Account(account_id="a2", owner="Bob", handle="ada"))
     stale = await accounts.get_or_raise("a1")
     await accounts.update(account, Account.balance.add(10))  # type: ignore[arg-type]
     assert account.balance == 10
-    assert account.version == 2
+    assert account.version not in (None, created_version)
     with pytest.raises(dynamoxy.VersionConflictError):
         await accounts.save(stale)
 

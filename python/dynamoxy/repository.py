@@ -39,6 +39,7 @@ subclasses included.
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import types
 import typing
@@ -90,6 +91,20 @@ _SINGLE_OPERATIONS = {
 def utcnow() -> datetime:
     """The current time in UTC (what ``created_at``/``updated_at`` fields receive)."""
     return datetime.now(UTC)
+
+
+def new_version(seed: str | None = None) -> str:
+    """A version token (64 bits as hex text) for a model's ``version()`` field.
+
+    A new one on every write: unlike a counter, it never repeats, so an instance loaded before an
+    item was overwritten (also by a ``put()`` of an instance that was not loaded) or deleted and
+    created again never passes its version check (ADR 0022). Random, unless a ``seed`` derives it:
+    the operations of a transaction with an idempotency token derive theirs from the token, so
+    that the transaction planned again with the token sends the same request.
+    """
+    if seed is None:
+        return os.urandom(8).hex()
+    return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
 def new_write_id() -> str:
@@ -147,7 +162,7 @@ class _WritePlan:
         upsert: bool = False,
         instance: Any = None,
         old: dict[str, Any] | None = None,
-        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+        prepared: tuple[dict[str, Any], dict[str, Any], str | None] | None = None,
         stale: bool = False,
         absent: bool = False,
         write_id: str | None = None,
@@ -681,8 +696,8 @@ class Repository[M]:
     # Transactions (`client.transaction()`) execute the plans of several writes together.
 
     def _prepare(
-        self, instance: M, mode: str, *, standalone: bool = False
-    ) -> tuple[dict[str, Any], dict[str, Any], int | None]:
+        self, instance: M, mode: str, *, standalone: bool = False, version_seed: str | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
         """Validates and computes the stored item. Returns (item, changes to apply, expected version).
 
         Except for creates, the item keeps the attributes of the loaded item that no field declares.
@@ -700,11 +715,10 @@ class Repository[M]:
                 changes[schema.created_at_field.name] = now
             if schema.updated_at_field is not None:
                 changes[schema.updated_at_field.name] = now
-        expected: int | None = None
+        expected: str | None = None
         if schema.version_field is not None:
-            current = values.get(schema.version_field.name) or 0
-            changes[schema.version_field.name] = current + 1
-            expected = current
+            expected = values.get(schema.version_field.name)
+            changes[schema.version_field.name] = new_version(version_seed)
         values.update(changes)
         if schema._derived:
             derived = schema.render_derived(values)
@@ -852,8 +866,9 @@ class Repository[M]:
         mode: WriteMode,
         condition: Condition | bool | None,
         *,
-        prepared: tuple[dict[str, Any], dict[str, Any], int | None] | None = None,
+        prepared: tuple[dict[str, Any], dict[str, Any], str | None] | None = None,
         standalone: bool = False,
+        version_seed: str | None = None,
     ) -> _WritePlan:
         """Plans a put; ``prepared`` (a plan's) plans it again with the item as stored now.
 
@@ -867,7 +882,7 @@ class Repository[M]:
         if prepared is None:
             if hooks.has("before_save", type(instance)):
                 await hooks.run("before_save", instance, self._context(mode))
-            prepared = self._prepare(instance, mode, standalone=standalone)
+            prepared = self._prepare(instance, mode, standalone=standalone, version_seed=version_seed)
         item, changes, expected = prepared
         key = schema.key_values(item)
         state = schema.state(instance)
@@ -990,6 +1005,7 @@ class Repository[M]:
         *,
         standalone: bool = False,
         fresh: bool = False,
+        version_seed: str | None = None,
     ) -> _WritePlan:
         """Plans an update; a ``standalone`` one (not part of a transaction) stores a write id.
 
@@ -1062,8 +1078,10 @@ class Repository[M]:
         # Automatic fields the update changes: their new value, or MISSING when DynamoDB computes it.
         automatic: dict[str, Any] = {}
         if schema.version_field is not None:
-            actions_list.append(UpdateAction("ADD", schema._path(schema.version_field.attribute), Value(1)))
-            automatic[schema.version_field.name] = MISSING
+            version = new_version(version_seed)
+            field = schema.version_field
+            actions_list.append(UpdateAction("SET", schema._path(field.attribute), Value(field.codec.encode(version))))
+            automatic[field.name] = version
             if instance is not None:
                 expected = schema.adapter.get(instance, schema.version_field.name)
                 if expected is not None:

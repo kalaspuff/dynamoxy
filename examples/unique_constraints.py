@@ -16,7 +16,7 @@ class Member(dynamoxy.Model, table="members"):
     email: Attr[str] = field(unique=True)
     handle: Attr[str] = field(unique=True, pattern=r"[a-z0-9_]{3,20}")
     display_name: Attr[str]
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 async def rename(members: dynamoxy.Repository[Member], member_id: str, display_name: str) -> Member:

@@ -74,10 +74,14 @@ validator too: with `by_email = GlobalIndex(partition_key=email)`,
 
 ## Optimistic locking
 
-Add `version: Attr[int] = dynamoxy.version()`. The version starts at 1 and increases on every
-write. When an instance was loaded (read, or written by dynamoxy), `save()`, `update()` and
-`delete()` of that instance add the condition `version = <loaded version>`. If someone else
-wrote the item meanwhile, `VersionConflictError` is raised and nothing changes:
+Add `version: Attr[str] = dynamoxy.version()`. The version is a random token (16 hex digits),
+new on every write. When an instance was loaded (read, or written by dynamoxy), `save()`,
+`update()` and `delete()` of that instance add the condition `version = <loaded version>`. If
+someone else wrote the item meanwhile, `VersionConflictError` is raised and nothing changes.
+Since a token never repeats, this also holds when the item was replaced by a `put()` of an
+instance that was not loaded, or deleted and created again: a counter would start over there,
+and a stale instance would match it again
+([ADR 0022](../adr/0022-versions-are-random-tokens.md)).
 
 ```python
 async def add_tag(users: dynamoxy.Repository[User], user_id: str, tag: str) -> User:
@@ -102,8 +106,13 @@ Prefer atomic updates when the change does not depend on the current value:
 if the key exists. Use `put()` to overwrite unconditionally.
 
 Items stored before the model had a `version()` field load with `version` `None`. `save()` of
-such an instance requires that the item still exists without a version, and stores version 1;
-`VersionConflictError` says that another writer saved it first, or deleted it.
+such an instance requires that the item still exists without a version, and stores its first
+version; `VersionConflictError` says that another writer saved it first, or deleted it.
+
+Versions are not counters: to count writes, keep a counter of your own
+(`User.edits.increment()`). The operations of a transaction with an idempotency token
+(`client.transaction(token=...)`) derive their version tokens from the token, so that the same
+transaction planned again sends the same request (see [Transactions](transactions.md)).
 
 ## Conditions as business rules
 

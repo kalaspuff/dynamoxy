@@ -17,7 +17,7 @@ class Account(Model, table="bank-accounts"):
     account_id: Attr[str] = partition_key()
     owner: Attr[str]
     balance: Attr[Decimal] = field(default=Decimal(0), ge=0)
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class Transfer(Model, table="bank-transfers"):

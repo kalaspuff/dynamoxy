@@ -21,7 +21,7 @@ SAVED: list[str] = []
 class Note(Model, table="notes"):
     note_id: Attr[str] = partition_key()
     text: Attr[str] = field(default="")
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
     @dynamoxy.before_save
     def refuse(self) -> None:
@@ -176,10 +176,12 @@ async def test_model_writes_recognise_their_own_earlier_attempt(client: dynamoxy
 
     # save() of a versioned model: applied once, not a VersionConflictError.
     note = await notes.create(Note(note_id="n1", text="a"))
+    created_version = note.version
     note.text = "b"
     testing.inject_fault(client, operation="PutItem", lose_response=True)
     await notes.save(note)
-    assert (note.version, (await notes.get_or_raise("n1")).version) == (2, 2)
+    assert note.version not in (None, created_version)
+    assert (await notes.get_or_raise("n1")).version == note.version
 
     # An increment is not sent again: a consistent read finds its id.
     await users.create(User(user_id="u1", email="ada@example.com", name="Ada"))

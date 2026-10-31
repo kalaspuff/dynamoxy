@@ -72,7 +72,7 @@ class User(dynamoxy.Model, table="users"):
     tags: Attr[set[str]] = field(default_factory=set)
     created_at: Attr[datetime] = dynamoxy.created_at()
     updated_at: Attr[datetime] = dynamoxy.updated_at()
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 class Entry(dynamoxy.Model, table="entries"):
@@ -346,7 +346,7 @@ class User(dynamoxy.Model, table="users"):
     tags: Attr[set[str]] = field(default_factory=set)
     created_at: Attr[datetime] = dynamoxy.created_at()
     updated_at: Attr[datetime] = dynamoxy.updated_at()
-    version: Attr[int] = dynamoxy.version()
+    version: Attr[str] = dynamoxy.version()
 
 
 async def main() -> None:

@@ -163,6 +163,8 @@ every write.
 
 ## `version(...)`
 
+A random token (`Attr[str]`), new on every write, for optimistic locking.
+
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `init` | `False` | For type checkers only: not a constructor argument |

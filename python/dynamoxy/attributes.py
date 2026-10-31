@@ -10,7 +10,7 @@ specifier::
         age: dynamoxy.Attr[int | None] = dynamoxy.field(default=None, ge=0)
         tags: dynamoxy.Attr[set[str]] = dynamoxy.field(default_factory=set)
         created_at: dynamoxy.Attr[datetime] = dynamoxy.created_at()
-        version: dynamoxy.Attr[int] = dynamoxy.version()
+        version: dynamoxy.Attr[str] = dynamoxy.version()
 
 Type checkers then know the constructor (``User(user_id=..., email=...)``), instance values
 (``user.age`` is ``int | None``) and class attributes, which are typed paths for expressions
@@ -498,10 +498,12 @@ def updated_at(
 
 
 def version(*, init: Literal[False] = False, attribute_name: str | None = None, description: str | None = None) -> Any:
-    """An ``int`` version for optimistic locking, starting at 1 and incremented on every write.
+    """A version for optimistic locking: a random token (``str``), new on every write.
 
     ``save()``, ``update()`` and ``delete()`` of a loaded instance only succeed if the stored
     version is still the one it was loaded with; otherwise :class:`dynamoxy.VersionConflictError`.
+    A token never repeats, so an instance loaded before the item was overwritten, or deleted and
+    created again, never matches it. Declare the field ``Attr[str]``.
     """
     del init
     return _auto("version", attribute_name, None, description=description)
@@ -598,7 +600,7 @@ class UpdatedAt:
 
 
 class Version:
-    """``Annotated`` marker: optimistic locking version."""
+    """``Annotated`` marker: optimistic locking version, a random token (``str | None``)."""
 
     __slots__ = ()
 

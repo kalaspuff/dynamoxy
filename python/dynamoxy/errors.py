@@ -223,7 +223,7 @@ class VersionConflictError(ConditionalCheckFailedError):
     Attributes:
         model: The model class.
         key: The primary key.
-        expected_version: The version the write expected.
+        expected_version: The version token the write expected.
         item: The stored item when DynamoDB returned it, else ``None``.
     """
 
@@ -233,7 +233,7 @@ class VersionConflictError(ConditionalCheckFailedError):
         *,
         model: type | None = None,
         key: dict[str, Any] | None = None,
-        expected_version: int | None = None,
+        expected_version: str | None = None,
         item: dict[str, Any] | None = None,
         cause: BaseException | None = None,
     ) -> None:
