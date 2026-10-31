@@ -988,7 +988,8 @@ async def test_signup(client: dynamoxy.Client) -> None:
   `BatchWriteItem`, `ConditionCheckItem` and `TransactWriteItems`/`TransactGetItems` (unique
   attributes and transactions), `PartiQL*` for statements, `DescribeTable` and the table
   management operations for `ensure_tables()`.
-- **Limits** (DynamoDB's): items up to 400 KB; transactions up to 100 operations and 4 MB;
+- **Limits** (DynamoDB's): items up to 400 KB, together with their entries in local indexes;
+  transactions up to 100 operations and 4 MB;
   queries and scans read up to 1 MB per page; batch writes 25 and batch gets 100 per request
   (dynamoxy chunks them); keys up to 2048 (partition) / 1024 (sort) bytes; numbers up to 38
   significant digits; lists and maps nested up to 32 levels; no empty sets.

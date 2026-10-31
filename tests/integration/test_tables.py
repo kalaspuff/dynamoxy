@@ -278,8 +278,8 @@ async def test_writes_return_item_collection_metrics(client: dynamoxy.Client, ba
     name = client.table_name("events")
 
     def collections(metrics: list[dict[str, Any]]) -> list[Any]:
-        """The keys of item collection metrics (their size estimates differ between backends)."""
-        assert all(len(entry["size_estimate_range_gb"]) == 2 for entry in metrics)
+        """The keys of item collection metrics, whose size estimates are whole gigabytes."""
+        assert all(entry["size_estimate_range_gb"] == [0.0, 1.0] for entry in metrics), metrics
         return [entry["item_collection_key"] for entry in metrics]
 
     put = await client.call(

@@ -8,10 +8,10 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use super::ast::{Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
+use super::ast::{Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
 use super::eval::resolve;
 use crate::error::{Error, Result};
-use crate::value::{AttributeValue, Item, Number};
+use crate::value::{AttributeValue, Item, Number, value_size};
 
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::validation_exception(format!("Invalid UpdateExpression: {message}"))
@@ -336,12 +336,96 @@ pub fn apply_update(update: &UpdateExpression, item: &Item) -> Result<Item> {
     Ok(result)
 }
 
+/// What a path element counts for in DynamoDB's charges: the bytes of its name, or the digits of
+/// a list index.
+fn element_charge(element: &PathElement) -> usize {
+    match element {
+        PathElement::Name(name) => name.len(),
+        PathElement::Index(index) => index.to_string().len(),
+    }
+}
+
+/// What a path counts for as the target of an update: its first element, plus 4 and the element
+/// for each later one.
+fn target_charge(path: &Path) -> usize {
+    path.0.iter().enumerate().map(|(i, part)| element_charge(part) + if i == 0 { 0 } else { 4 }).sum()
+}
+
+/// What a path counts for where it is read (an update's operand, a condition): 1, plus 14 and the
+/// element for each element.
+fn read_charge(path: &Path) -> usize {
+    1 + path.0.iter().map(|part| 14 + element_charge(part)).sum::<usize>()
+}
+
+impl UpdateExpression {
+    /// What DynamoDB charges an update for what its request carries, from the request alone
+    /// (captured by dynoxide-rs against eu-west-2 on 2026-10-09 across 86 statements, and
+    /// matching the payload size of `TransactWriteItems` measured in eu-north-1 on 2026-10-31,
+    /// docs/parity): 3, plus 19 + target + value for each `SET` and `ADD`, and 1 + target for each
+    /// `REMOVE` and `DELETE`. A target is its first element, plus 4 + element for each later one;
+    /// a path read as an operand 1, plus 14 + element for each element; an element the bytes of
+    /// its name or the digits of a list index; a value its size; `a + b` 34, `a - b` 37,
+    /// `if_not_exists(p, v)` 39 and `list_append(a, b)` 37 more than their operands.
+    pub fn request_charge(&self) -> usize {
+        let target = target_charge;
+        fn operand(value: &UpdateOperand) -> usize {
+            match value {
+                UpdateOperand::Path(path) => read_charge(path),
+                UpdateOperand::Value(value) => value_size(value),
+                UpdateOperand::IfNotExists(path, fallback) => 39 + read_charge(path) + operand(fallback),
+                UpdateOperand::ListAppend(a, b) => 37 + operand(a) + operand(b),
+            }
+        }
+        let set = self.set.iter().map(|(path, value)| {
+            19 + target(path)
+                + match value {
+                    SetValue::Operand(single) => operand(single),
+                    SetValue::Plus(a, b) => 34 + operand(a) + operand(b),
+                    SetValue::Minus(a, b) => 37 + operand(a) + operand(b),
+                }
+        });
+        let add = self.add.iter().map(|(path, value)| 19 + target(path) + value_size(value));
+        let removes = self.remove.iter().chain(self.delete.iter().map(|(path, _)| path)).map(|path| 1 + target(path));
+        3 + set.sum::<usize>() + add.sum::<usize>() + removes.sum::<usize>()
+    }
+}
+
+/// What DynamoDB counts a condition for in the payload size of `TransactWriteItems`, from the
+/// request alone (measured in eu-north-1 on 2026-10-31 through dynamoxy's own probe, whose runs are
+/// in docs/parity, one form at a time): a path counts as where it is read (1, plus 14 and the
+/// element for each element), a value its size, `size(p)` 22 more than its path; on top of its
+/// operands, `attribute_exists` counts 48, `attribute_not_exists` 52, a comparison 42,
+/// `BETWEEN` 55, `IN` 50, `begins_with` 51, `contains` 48, `attribute_type` 54, and `AND` 15, `OR`
+/// 14 and `NOT` 21 on top of their parts.
+pub fn condition_charge(condition: &Condition) -> usize {
+    fn operand(operand: &Operand) -> usize {
+        match operand {
+            Operand::Path(p) => read_charge(p),
+            Operand::Size(p) => 22 + read_charge(p),
+            Operand::Value(value) => value_size(value),
+        }
+    }
+    match condition {
+        Condition::AttributeExists(p) => 48 + read_charge(p),
+        Condition::AttributeNotExists(p) => 52 + read_charge(p),
+        Condition::Compare(a, _, b) => 42 + operand(a) + operand(b),
+        Condition::Between(a, low, high) => 55 + operand(a) + operand(low) + operand(high),
+        Condition::In(a, candidates) => 50 + operand(a) + candidates.iter().map(operand).sum::<usize>(),
+        Condition::BeginsWith(p, b) => 51 + read_charge(p) + operand(b),
+        Condition::Contains(p, b) => 48 + read_charge(p) + operand(b),
+        Condition::AttributeType(p, b) => 54 + read_charge(p) + operand(b),
+        Condition::And(a, b) => 15 + condition_charge(a) + condition_charge(b),
+        Condition::Or(a, b) => 14 + condition_charge(a) + condition_charge(b),
+        Condition::Not(inner) => 21 + condition_charge(inner),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::expr::{Placeholders, parse_update};
+    use crate::expr::{ExpressionKind, Placeholders, parse_update};
     use crate::value::item;
 
     #[test]
@@ -390,6 +474,84 @@ mod tests {
         let update = parse_update(expression, &mut placeholders)?;
         validate_update(&update, &["pk"])?;
         apply_update(&update, &before)
+    }
+
+    #[test]
+    fn request_charges_follow_what_dynamodb_charges() {
+        // Each rule dynoxide-rs measured against DynamoDB (eu-west-2, 2026-10-09), one at a time.
+        let charge = |expression: &str| {
+            let names = BTreeMap::from([("#n".to_owned(), "name".to_owned())]);
+            let values: BTreeMap<String, AttributeValue> = [
+                (":s".to_owned(), AttributeValue::S("abcde".into())),
+                (":n".to_owned(), AttributeValue::N(Number::parse("12").unwrap())),
+                (":l".to_owned(), AttributeValue::L(vec![AttributeValue::S("x".into())])),
+                (":ss".to_owned(), AttributeValue::Ss(vec!["a".into()])),
+            ]
+            .into_iter()
+            .filter(|(key, _)| expression.contains(key.as_str()))
+            .collect();
+            let mut placeholders = Placeholders::new(&names, &values);
+            parse_update(expression, &mut placeholders).unwrap().request_charge()
+        };
+        let size = |value: AttributeValue| crate::value::value_size(&value);
+        let (s, n, ss) = (5, size(AttributeValue::N(Number::parse("12").unwrap())), 1);
+        let l = size(AttributeValue::L(vec![AttributeValue::S("x".into())]));
+        assert_eq!(charge("SET a = :s"), 3 + 19 + 1 + s, "a statement, a SET, its target and value");
+        assert_eq!(charge("SET #n = :s"), 3 + 19 + 4 + s, "a placeholder costs its name");
+        assert_eq!(charge("SET a.bc = :s"), 3 + 19 + (1 + 4 + 2) + s, "4 per later target element");
+        assert_eq!(charge("SET a[10] = :s"), 3 + 19 + (1 + 4 + 2) + s, "an index costs its digits");
+        assert_eq!(charge("SET a = bc"), 3 + 19 + 1 + (1 + 14 + 2), "a path read: 1, then 14 per element");
+        assert_eq!(charge("SET a = :n + :n"), 3 + 19 + 1 + 34 + n + n, "a + b");
+        assert_eq!(charge("SET a = :n - :n"), 3 + 19 + 1 + 37 + n + n, "a - b");
+        assert_eq!(charge("SET a = if_not_exists(b, :s)"), 3 + 19 + 1 + 39 + (1 + 14 + 1) + s, "if_not_exists");
+        assert_eq!(charge("SET a = list_append(a, :l)"), 3 + 19 + 1 + 37 + (1 + 14 + 1) + l, "list_append");
+        assert_eq!(charge("ADD a :n"), 3 + 19 + 1 + n, "ADD: like SET");
+        assert_eq!(charge("REMOVE a.b"), 3 + 1 + (1 + 4 + 1), "REMOVE: 1 and the target");
+        assert_eq!(charge("DELETE a :ss"), 3 + 1 + 1, "DELETE: the members removed are free ({ss} bytes)");
+        assert_eq!(charge("SET a = :s, b = :s REMOVE c"), 3 + (19 + 1 + s) * 2 + (1 + 1), "clauses add up");
+    }
+
+    #[test]
+    fn condition_charges_follow_what_dynamodb_counts() {
+        // Every form measured against DynamoDB (docs/parity, dynamoxy's probe on AWS): the bytes
+        // each condition added to the payload of an update.
+        let charge = |expression: &str| {
+            let names = BTreeMap::new();
+            let values: BTreeMap<String, AttributeValue> = [
+                (":w".to_owned(), AttributeValue::S("w".into())),
+                (":ww".to_owned(), AttributeValue::S("ww".into())),
+                (":t".to_owned(), AttributeValue::S("S".into())),
+            ]
+            .into_iter()
+            .filter(|(key, _)| expression.split(|c: char| !(c.is_alphanumeric() || c == ':')).any(|word| word == key))
+            .collect();
+            let mut placeholders = Placeholders::new(&names, &values);
+            condition_charge(
+                &crate::expr::parse_condition(ExpressionKind::Condition, expression, &mut placeholders).unwrap(),
+            )
+        };
+        for (expression, measured) in [
+            ("attribute_exists(pk)", 65),
+            ("attribute_exists(abcdefghij)", 73),
+            ("attribute_exists(ab.cd)", 81),
+            ("attribute_not_exists(absent)", 73),
+            ("attribute_not_exists(pk)", 69),
+            ("note = :w", 62),
+            ("note = :ww", 63),
+            ("note <> :w", 62),
+            ("note = alt", 79),
+            ("size(note) > :w", 84),
+            ("note BETWEEN :w AND :w", 76),
+            ("note IN (:w, :w)", 71),
+            ("begins_with(note, :w)", 71),
+            ("contains(note, :w)", 68),
+            ("attribute_type(note, :t)", 74),
+            ("attribute_exists(pk) AND attribute_exists(pk)", 145),
+            ("attribute_exists(pk) OR attribute_exists(pk)", 144),
+            ("NOT attribute_exists(pk)", 86),
+        ] {
+            assert_eq!(charge(expression), measured, "{expression}");
+        }
     }
 
     #[test]

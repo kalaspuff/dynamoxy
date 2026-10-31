@@ -2261,9 +2261,249 @@ async fn updates_count_toward_the_size_of_a_transaction() {
         .transact_write_items(TransactWriteItemsInput { transact_items: updates, ..Default::default() })
         .await
         .unwrap_err();
-    assert_eq!(message(&error), "Transaction size has exceeded the maximum allowed size");
+    // DynamoDB's message (measured, docs/parity), with the size counted from the items written.
+    assert!(
+        message(&error).starts_with("Transaction payload size cannot exceed 4MB. Payload Size: 439"),
+        "{}",
+        message(&error)
+    );
     let left = backend.scan(ScanInput { table_name: "items".into(), ..Default::default() }).await.unwrap();
     assert_eq!(left.count, 0, "nothing is written");
+}
+
+#[tokio::test]
+async fn the_payload_size_of_a_transaction_is_counted_like_dynamodb() {
+    // Round 2 against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): eleven 390 KB updates,
+    // one change at a time, and the payload size each was refused with.
+    let backend = MemoryBackend::default();
+    backend
+        .create_table(CreateTableInput {
+            attribute_definitions: vec![definition("pk", ScalarType::S), definition("sk", ScalarType::S)],
+            key_schema: keys("pk", Some("sk")),
+            local_secondary_indexes: vec![],
+            global_secondary_indexes: vec![],
+            ..table_input("big")
+        })
+        .await
+        .unwrap();
+    let filler = s(&"c".repeat(390 * 1024));
+    let update = |pk: &str, sk: usize, expression: &str, names: Names, vals: Values| TransactWriteItem::Update {
+        target: TransactTarget {
+            table_name: "big".into(),
+            expression_attribute_names: names,
+            expression_attribute_values: vals,
+            ..Default::default()
+        },
+        key: item([("pk", s(pk)), ("sk", s(&format!("{sk:02}")))]),
+        update_expression: expression.into(),
+    };
+    let variants: Vec<(&str, Vec<TransactWriteItem>, usize)> = vec![
+        (
+            "base",
+            (0..11)
+                .map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])))
+                .collect(),
+            4_393_455,
+        ),
+        (
+            "a second value",
+            (0..11)
+                .map(|sk| {
+                    update(
+                        "upd",
+                        sk,
+                        "SET filler = :v, note = :w",
+                        Names::new(),
+                        values(&[(":v", filler.clone()), (":w", s("x"))]),
+                    )
+                })
+                .collect(),
+            4_393_719,
+        ),
+        (
+            "a longer key",
+            (0..11)
+                .map(|sk| update("updupd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])))
+                .collect(),
+            4_393_488,
+        ),
+        (
+            "a placeholder",
+            (0..11)
+                .map(|sk| {
+                    update("upd", sk, "SET #f = :v", names(&[("#f", "filler")]), values(&[(":v", filler.clone())]))
+                })
+                .collect(),
+            4_393_455,
+        ),
+        (
+            "puts",
+            (0..11)
+                .map(|sk| TransactWriteItem::Put {
+                    target: TransactTarget { table_name: "big".into(), ..Default::default() },
+                    item: item([("pk", s("upd")), ("sk", s(&format!("{sk:02}"))), ("filler", filler.clone())]),
+                })
+                .collect(),
+            4_393_125,
+        ),
+    ];
+    // Conditions, deletes and checks (dynamoxy's probe on AWS, and round 2 for `absent`).
+    let conditioned = |condition: &str, vals: Values| {
+        (0..11)
+            .map(|sk| match update("upd", sk, "SET filler = :v", Names::new(), vals.clone()) {
+                TransactWriteItem::Update { mut target, key, update_expression } => {
+                    target.condition_expression = Some(condition.into());
+                    TransactWriteItem::Update { target, key, update_expression }
+                }
+                other => other,
+            })
+            .collect::<Vec<_>>()
+    };
+    let filler_only = values(&[(":v", filler.clone())]);
+    let base =
+        || (0..11).map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])));
+    let other = || item([("pk", s("other")), ("sk", s("00"))]);
+    let target = |condition: Option<&str>| TransactTarget {
+        table_name: "big".into(),
+        condition_expression: condition.map(Into::into),
+        ..Default::default()
+    };
+    let mut variants = variants;
+    variants.extend([
+        ("attribute_exists(pk)", conditioned("attribute_exists(pk)", filler_only.clone()), 4_394_170),
+        ("attribute_exists(abcdefghij)", conditioned("attribute_exists(abcdefghij)", filler_only.clone()), 4_394_258),
+        ("attribute_not_exists(absent)", conditioned("attribute_not_exists(absent)", filler_only.clone()), 4_394_258),
+        ("note = :w", conditioned("note = :w", values(&[(":v", filler.clone()), (":w", s("w"))])), 4_394_137),
+        (
+            "a delete",
+            base().chain([TransactWriteItem::Delete { target: target(None), key: other() }]).collect(),
+            4_393_466,
+        ),
+        (
+            "a check",
+            base()
+                .chain([TransactWriteItem::ConditionCheck {
+                    target: target(Some("attribute_not_exists(pk)")),
+                    key: other(),
+                }])
+                .collect(),
+            4_393_535,
+        ),
+        (
+            "a put with a condition",
+            base()
+                .chain([TransactWriteItem::Put { target: target(Some("attribute_not_exists(pk)")), item: other() }])
+                .collect(),
+            4_393_535,
+        ),
+    ]);
+    for (variant, transact_items, size) in variants {
+        let error = backend
+            .transact_write_items(TransactWriteItemsInput { transact_items, ..Default::default() })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            message(&error),
+            format!("Transaction payload size cannot exceed 4MB. Payload Size: {size}"),
+            "{variant}"
+        );
+    }
+    let ten = (0..10).map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])));
+    backend
+        .transact_write_items(TransactWriteItemsInput { transact_items: ten.collect(), ..Default::default() })
+        .await
+        .unwrap();
+    // A standalone update is held to 400 KB by what its request carries, before the item is read
+    // (captured by dynoxide-rs): 3 + 19 + 6 + 409,580 bytes.
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "big".into(),
+            key: item([("pk", s("new")), ("sk", s("00"))]),
+            update_expression: Some("SET filler = :v".into()),
+            expression_attribute_values: values(&[(":v", s(&"c".repeat(409_580)))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Item size to update has exceeded the maximum allowed size");
+}
+
+#[tokio::test]
+async fn local_index_entries_count_toward_the_size_of_an_item() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): an item and its
+    // entries in the local indexes that hold it share the 400 KB limit; a transaction cancels
+    // with it as the reason. by_rank (KEYS_ONLY) holds items with a rank; "all" holds them all.
+    let backend = MemoryBackend::default();
+    let mut input = table_input("items");
+    input.local_secondary_indexes.push(LocalSecondaryIndex {
+        index_name: "all".into(),
+        key_schema: keys("pk", Some("rank")),
+        projection: Projection::all(),
+    });
+    backend.create_table(input).await.unwrap();
+    wait_until_active(&backend, "items").await;
+    let sized = |sk: i64, kb: usize, rank: bool| {
+        let mut item = item([("pk", s("a")), ("sk", n(sk)), ("filler", s(&"f".repeat(kb * 1024)))]);
+        if rank {
+            item.insert("rank".into(), n(1));
+        }
+        item
+    };
+    put(&backend, sized(1, 190, true)).await;
+    put(&backend, sized(2, 300, false)).await; // in no local index
+    let put_input = |item: Item| PutItemInput { table_name: "items".into(), item, ..Default::default() };
+    let error = backend.put_item(put_input(sized(3, 210, true))).await.unwrap_err();
+    assert_eq!(message(&error), "Item size has exceeded the maximum allowed size");
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "items".into(),
+            key: item([("pk", s("a")), ("sk", n(1))]),
+            update_expression: Some("SET more = :v".into()),
+            expression_attribute_values: values(&[(":v", s(&"m".repeat(20 * 1024)))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Item size to update has exceeded the maximum allowed size");
+    let error = backend
+        .transact_write_items(TransactWriteItemsInput {
+            transact_items: vec![TransactWriteItem::Put {
+                target: TransactTarget { table_name: "items".into(), ..Default::default() },
+                item: sized(3, 210, true),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    let service = error.as_service().unwrap();
+    assert_eq!(service.code, "TransactionCanceledException");
+    let reason = &service.cancellation_reasons[0];
+    assert_eq!(
+        (reason.code.as_str(), reason.message.as_deref()),
+        ("ValidationError", Some("Item size has exceeded the maximum allowed size"))
+    );
+}
+
+#[tokio::test]
+async fn transactional_reads_return_at_most_4_mb() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
+    let backend = backend_with_table().await;
+    for sk in 0..11 {
+        put(&backend, item([("pk", s("big")), ("sk", n(sk)), ("filler", s(&"f".repeat(390 * 1024)))])).await;
+    }
+    let get = |count: i64| TransactGetItemsInput {
+        transact_items: (0..count)
+            .map(|sk| TransactGet {
+                table_name: "items".into(),
+                key: item([("pk", s("big")), ("sk", n(sk))]),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(backend.transact_get_items(get(10)).await.unwrap().responses.len(), 10);
+    let error = backend.transact_get_items(get(11)).await.unwrap_err();
+    assert_eq!((code(&error), message(&error)), ("ValidationException", "Payload in response is too large.".into()));
 }
 
 fn statement(text: &str) -> ParameterizedStatement {

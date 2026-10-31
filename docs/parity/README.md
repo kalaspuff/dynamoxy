@@ -89,6 +89,14 @@ measured in rounds 1 and 2; an update of a key attribute stays bare), and refuse
 | `TransactWriteItems` of ten `Update`s writing 390 KB each | accepted | accepted | accepted |
 | the same with eleven | `Transaction payload size cannot exceed 4MB. Payload Size: 4393445` | `Transaction request exceeds the 4MB transaction size limit` | `... Payload Size: 4393214` |
 
+The in-memory backend refuses these with DynamoDB's messages and kinds, counts a local index entry
+as the attributes it holds, the 4 MB of a read as the items returned (4 MiB), and the payload
+size of a write transaction as DynamoDB does, from the request: a put's item, an update's key,
+request charge and 8 bytes, a delete's and a check's key, and each one's condition, by the rule
+below (measured for every condition form by dynamoxy's probe on AWS). It holds a standalone
+`UpdateItem` to 400 KB by the same update charge before it reads the item (dynoxide-rs), and
+reports item collection sizes as whole gigabytes, `[0.0, 1.0]` for a small collection.
+
 How DynamoDB counts that payload size (round 2, one change at a time to eleven 390 KB updates
 that read 4,393,455): a `Put` counts its item's size (eleven puts of the same items: 4,393,125). An
 `Update` counts its key, the update's charge as dynoxide-rs measured it for `UpdateItem` (3 bytes,
@@ -97,6 +105,41 @@ removes), and 8 bytes more: a second `SET note = :w` of `"x"` added 24 bytes per
 bytes of key 3. The table's name and placeholder names count nothing, and an
 `attribute_not_exists(absent)` condition added 73 bytes per update. Eleven updates of 363,700
 bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 MiB; not probed).
+
+| Eleven 390 KB updates (`SET filler = :v`, keys `upd`/`00`..`10`), changed in one way | Payload Size | Source |
+| --- | --- | --- |
+| none | 4,393,455 | round 2, `93-tx-base`; probe `sizes.payload_updates_11` |
+| a second `SET note = :w` of `"x"` | 4,393,719 | round 2, `93-tx-expression` |
+| a longer table name, or `#f` for `filler` | 4,393,455 | round 2, `93-tx-long-table`, `93-tx-names` |
+| a key `updupd` | 4,393,488 | round 2, `93-tx-long-key`; probe `sizes.payload_updates_longer_key` |
+| eleven puts of the same items instead | 4,393,125 | round 2, `93-tx-puts`; probe `sizes.payload_puts_11` |
+| `attribute_not_exists(absent)` on each | 4,394,258 | round 2, `93-tx-condition` |
+| `attribute_exists(pk)` on each | 4,394,170 | probe `sizes.payload_updates_condition_exists_pk` |
+| `attribute_exists(abcdefghij)` on each | 4,394,258 | probe `sizes.payload_updates_condition_exists_long` |
+| `note = :w` on each | 4,394,137 | probe `sizes.payload_updates_condition_compare` |
+| a delete of a 11-byte key added | 4,393,466 | probe `sizes.payload_updates_plus_delete` |
+| a check `attribute_not_exists(pk)` of that key added | 4,393,535 | probe `sizes.payload_updates_plus_check` |
+| a put of that key with `attribute_not_exists(pk)` added | 4,393,535 | probe `sizes.payload_updates_plus_put_with_condition` |
+| `attribute_exists(ab.cd)` on each | 4,394,346 | probe run 3 `sizes.payload_updates_condition_exists_nested` |
+| `note = alt` (two paths) on each | 4,394,324 | probe run 3 `sizes.payload_updates_condition_compare_paths` |
+| `size(note) > :w` on each | 4,394,379 | probe run 3 `sizes.payload_updates_condition_compare_size` |
+| `note BETWEEN :w AND :w` on each | 4,394,291 | probe run 3 `sizes.payload_updates_condition_between` |
+| `note IN (:w, :w)` on each | 4,394,236 | probe run 3 `sizes.payload_updates_condition_in` |
+| `begins_with(note, :w)` on each | 4,394,236 | probe run 3 `sizes.payload_updates_condition_begins_with` |
+| `contains(note, :w)` on each | 4,394,203 | probe run 3 `sizes.payload_updates_condition_contains` |
+| `attribute_type(note, :t)` on each | 4,394,269 | probe run 3 `sizes.payload_updates_condition_attribute_type` |
+| `attribute_exists(pk) AND attribute_exists(pk)` on each | 4,395,050 | probe run 3 `sizes.payload_updates_condition_and` |
+| `attribute_exists(pk) OR attribute_exists(pk)` on each | 4,395,039 | probe run 3 `sizes.payload_updates_condition_or` |
+| `NOT attribute_exists(pk)` on each | 4,394,401 | probe run 3 `sizes.payload_updates_condition_not` |
+
+The probe facts come from dynamoxy's own probe runs on DynamoDB, kept here as
+[probe-aws-eu-north-1-2026-10-31.json](probe-aws-eu-north-1-2026-10-31.json) and
+[run 3](probe-aws-eu-north-1-2026-10-31-run3.json) (their script, `scripts/probe_backends.py`,
+comes with the probe's pull request). They fit one rule, which the in-memory backend follows: a
+path in a condition counts as where it is read (1, plus 14 and the element for each element), a
+value its size, `size(p)` 22 more than its path, and on top of its operands `attribute_exists`
+48, `attribute_not_exists` 52, a comparison 42, `BETWEEN` 55, `IN` 50, `begins_with` 51,
+`contains` 48, `attribute_type` 54, `AND` 15, `OR` 14 and `NOT` 21.
 
 ### Table updates (#87)
 

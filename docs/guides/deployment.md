@@ -90,10 +90,10 @@ note that unique guard items live under `_unique#...` partition keys.
 
 | Limit | Value |
 | --- | --- |
-| Item size | 400 KB (attribute names count) |
+| Item size | 400 KB (attribute names count), together with its entries in the table's local indexes |
 | Partition key / sort key | 2048 / 1024 bytes |
 | Query/Scan page | 1 MB read before filtering |
-| Transaction | 100 operations, 4 MB, each item once |
+| Transaction | 100 operations, 4 MB written (or read), each item once |
 | BatchWriteItem / BatchGetItem | 25 / 100 per request (dynamoxy chunks) |
 | Numbers | 38 significant digits, magnitude 1E-130 to 1E+126 |
 | Nested values (lists and maps) | 32 levels (deeper values raise `ValidationError` before any request) |

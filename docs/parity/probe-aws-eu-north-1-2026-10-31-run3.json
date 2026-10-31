@@ -1,0 +1,200 @@
+{
+  "dynamoxy": "0.3.0",
+  "facts": {
+    "sizes": {
+      "local_index_put_204800": {
+        "ok": true
+      },
+      "local_index_put_204801": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size has exceeded the maximum allowed size"
+      },
+      "local_index_transaction_put": {
+        "code": "TransactionCanceledException",
+        "error": "TransactionCanceledError",
+        "message": "Transaction cancelled, please refer cancellation reasons for specific reasons [ValidationError]",
+        "reasons": [
+          [
+            "ValidationError",
+            "Item size has exceeded the maximum allowed size"
+          ]
+        ]
+      },
+      "local_index_update": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size to update has exceeded the maximum allowed size"
+      },
+      "payload_puts_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393125"
+      },
+      "payload_updates_10": {
+        "ok": true
+      },
+      "payload_updates_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393455"
+      },
+      "payload_updates_condition_and": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4395050"
+      },
+      "payload_updates_condition_attribute_type": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394269"
+      },
+      "payload_updates_condition_begins_with": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394236"
+      },
+      "payload_updates_condition_between": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394291"
+      },
+      "payload_updates_condition_compare": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394137"
+      },
+      "payload_updates_condition_compare_longer_value": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394148"
+      },
+      "payload_updates_condition_compare_paths": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394324"
+      },
+      "payload_updates_condition_compare_size": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394379"
+      },
+      "payload_updates_condition_contains": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394203"
+      },
+      "payload_updates_condition_exists_long": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394258"
+      },
+      "payload_updates_condition_exists_nested": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394346"
+      },
+      "payload_updates_condition_exists_pk": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394170"
+      },
+      "payload_updates_condition_in": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394236"
+      },
+      "payload_updates_condition_not": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394401"
+      },
+      "payload_updates_condition_not_equal": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4394137"
+      },
+      "payload_updates_condition_or": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4395039"
+      },
+      "payload_updates_longer_key": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393488"
+      },
+      "payload_updates_plus_check": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393535"
+      },
+      "payload_updates_plus_delete": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393466"
+      },
+      "payload_updates_plus_put_with_condition": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393535"
+      },
+      "transact_get_10": {
+        "ok": 10
+      },
+      "transact_get_11": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Payload in response is too large."
+      },
+      "update_charge_over_400kb": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Item size to update has exceeded the maximum allowed size"
+      }
+    },
+    "tables": {
+      "index_capacity_on_demand": [
+        0,
+        0
+      ],
+      "index_capacity_on_on_demand": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput"
+      },
+      "index_while_creating": {
+        "code": "ResourceInUseException",
+        "error": "ResourceInUseError",
+        "message": "Attempt to change a resource which is still in use: Table is being created: creating"
+      },
+      "index_without_capacity_on_provisioned": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2"
+      },
+      "on_demand_again": {
+        "ok": true
+      },
+      "provisioned": {
+        "ok": true
+      },
+      "provisioned_without_index_capacity": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1"
+      },
+      "second_index_while_creating": {
+        "code": "LimitExceededException",
+        "error": "LimitExceededError",
+        "message": "Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table"
+      },
+      "ttl_while_creating": {
+        "code": "ValidationException",
+        "error": "ValidationError",
+        "message": "Cannot describe time to live while table is in CREATING state: Current table state is CREATING"
+      }
+    }
+  },
+  "target": "aws"
+}
