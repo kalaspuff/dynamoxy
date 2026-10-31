@@ -2,14 +2,14 @@
 
 use std::time::Duration;
 
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, duration};
 
 /// The delay before retry number `retry` (1 for the first retry): a random duration between zero
 /// and `min(max_delay, base_delay * 2^(retry - 1))`.
 pub fn backoff(config: &RetryConfig, retry: u32) -> Duration {
     let exponent = retry.saturating_sub(1).min(30);
     let ceiling = (config.base_delay * f64::from(1u32 << exponent)).min(config.max_delay);
-    Duration::from_secs_f64(ceiling * fastrand::f64())
+    duration(ceiling * fastrand::f64())
 }
 
 /// Like [`backoff`], but never zero (for polling loops and unprocessed batch items, where an
@@ -33,5 +33,10 @@ mod tests {
         assert!(backoff_at_least(&config, 1, Duration::from_millis(5)) >= Duration::from_millis(5));
         let zero = RetryConfig { base_delay: 0.0, max_delay: 0.0, ..config };
         assert_eq!(backoff(&zero, 3), Duration::ZERO);
+        // Delays past what a Duration holds are capped instead of panicking.
+        let huge = RetryConfig { base_delay: 1e300, max_delay: 1e300, ..config };
+        for retry in 1..=40 {
+            assert!(backoff(&huge, retry) <= crate::config::MAX_DURATION);
+        }
     }
 }

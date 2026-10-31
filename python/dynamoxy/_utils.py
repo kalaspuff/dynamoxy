@@ -10,15 +10,17 @@ import warnings
 import weakref
 from datetime import timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, overload
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 __all__ = [
+    "MAX_COUNT",
     "MISSING",
     "LoopLocal",
     "Missing",
+    "count",
     "deprecated",
     "deprecated_backport",
     "maybe_await",
@@ -99,6 +101,10 @@ class LoopLocal[T]:
             return value
 
 
+@overload
+def seconds(value: float | timedelta, name: str, *, allow_zero: bool = False) -> float: ...
+@overload
+def seconds(value: float | timedelta | None, name: str, *, allow_zero: bool = False) -> float | None: ...
 def seconds(value: float | timedelta | None, name: str, *, allow_zero: bool = False) -> float | None:
     """Validates a duration given as seconds or ``timedelta`` and returns float seconds.
 
@@ -114,6 +120,27 @@ def seconds(value: float | timedelta | None, name: str, *, allow_zero: bool = Fa
         bound = "non-negative" if allow_zero else "positive"
         raise ValueError(f"{name} must be a {bound} number of seconds, got {value!r}")
     return result
+
+
+#: The largest count the core takes (its counts are 32-bit on every platform).
+MAX_COUNT = 2**32 - 1
+
+
+def count(value: int, name: str, *, minimum: int = 1, hint: str = "") -> int:
+    """Validates a count: an ``int`` (not a ``bool`` or a ``float``) of at least ``minimum``.
+
+    Raises:
+        TypeError: The value is not an ``int``.
+        ValueError: The count is below ``minimum`` (``hint`` follows the message) or above
+            :data:`MAX_COUNT`.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__} {value!r}")
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}{hint}, got {value}")
+    if value > MAX_COUNT:
+        raise ValueError(f"{name} must be at most {MAX_COUNT}, got {value}")
+    return value
 
 
 async def maybe_await[T](value: T | Awaitable[T]) -> T:

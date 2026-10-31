@@ -13,6 +13,7 @@ import functools
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from dynamoxy._utils import seconds
 from dynamoxy.errors import ResourceNotFoundError, UnprocessedItemsError
 from dynamoxy.expressions import Condition, ExpressionBuilder, UpdateAction, as_condition
 from dynamoxy.query import Query, Scan
@@ -21,7 +22,7 @@ from dynamoxy.schema import Projection, Throughput, schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     from dynamoxy.client import Client
     from dynamoxy.expressions import Path
@@ -631,17 +632,19 @@ class Table:
         if wait:
             await self.wait_until_deleted()
 
-    async def wait_until_active(self, *, timeout: float = 300.0) -> TableDescription:
-        """Waits until the table and its global indexes are ``ACTIVE``."""
+    async def wait_until_active(self, *, timeout: float | timedelta = 300.0) -> TableDescription:
+        """Waits until the table and its global indexes are ``ACTIVE`` (``timeout`` in seconds)."""
+        limit = seconds(timeout, "timeout", allow_zero=True)
         core = await self.client._core()
-        raw = await core.wait_for_table(self.physical_name, exists=True, timeout=timeout)
+        raw = await core.wait_for_table(self.physical_name, exists=True, timeout=limit)
         assert raw is not None
         return TableDescription.from_core(raw)
 
-    async def wait_until_deleted(self, *, timeout: float = 300.0) -> None:
-        """Waits until the table no longer exists."""
+    async def wait_until_deleted(self, *, timeout: float | timedelta = 300.0) -> None:
+        """Waits until the table no longer exists (``timeout`` in seconds)."""
+        limit = seconds(timeout, "timeout", allow_zero=True)
         core = await self.client._core()
-        await core.wait_for_table(self.physical_name, exists=False, timeout=timeout)
+        await core.wait_for_table(self.physical_name, exists=False, timeout=limit)
 
     async def update_settings(
         self,

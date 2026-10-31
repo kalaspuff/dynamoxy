@@ -2,7 +2,9 @@
 
 Every option of the public configuration surface. `scripts/check_consistency.py` verifies that
 each parameter listed here exists in the code and that every parameter in the code is listed.
-Durations accept seconds (`float`) or `timedelta`.
+Durations accept seconds (`float`) or `timedelta`; durations longer than about 31 years
+(1e9 seconds) mean no limit and are capped there. Counts are `int`s (not `float`s or `bool`s) of
+at most 4,294,967,295; other types raise `TypeError` when the object is created.
 
 ## `Client(...)`
 
@@ -31,7 +33,7 @@ Durations accept seconds (`float`) or `timedelta`.
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `max_attempts` | `4` | Attempts per request, the first included; `1` disables retries (`RetryPolicy.none()`) |
-| `base_delay` | `0.05` | Seconds before the first retry; doubles with every attempt, with full jitter |
+| `base_delay` | `0.05` | Seconds before the first retry; doubles with every attempt, with full jitter (a `timedelta` is stored as float seconds) |
 | `max_delay` | `5.0` | Longest delay between attempts, in seconds |
 | `retry_timeouts` | `True` | Retry requests that timed out or lost their connection. Such a write may have been applied: writes that would apply twice are not sent again, and an answer the earlier attempt may have caused raises `WriteOutcomeUnknownError` (see [writes with unknown outcome](../guides/errors-and-retries.md#writes-with-unknown-outcome)) |
 

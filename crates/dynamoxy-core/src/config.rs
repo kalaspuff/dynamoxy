@@ -102,6 +102,19 @@ impl fmt::Debug for ClientConfig {
     }
 }
 
+/// The longest duration dynamoxy waits for anything (about 31 years): longer ones, such as a
+/// `timeout` of `1e20` seconds, mean no limit in practice and are capped, since `Duration` and
+/// `Instant` arithmetic panics past their range.
+pub const MAX_DURATION: Duration = Duration::from_secs(1_000_000_000);
+
+/// `seconds` as a duration: capped at [`MAX_DURATION`], and zero for negative or NaN values.
+pub fn duration(seconds: f64) -> Duration {
+    if seconds.is_nan() || seconds <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(seconds).map_or(MAX_DURATION, |duration| duration.min(MAX_DURATION))
+}
+
 fn positive(name: &str, value: f64) -> Result<()> {
     if value.is_finite() && value > 0.0 {
         Ok(())
@@ -159,9 +172,14 @@ impl ClientConfig {
         Ok(())
     }
 
-    /// [`Self::timeout`] as a duration.
+    /// [`Self::timeout`] as a duration (capped at [`MAX_DURATION`]).
     pub fn timeout(&self) -> Duration {
-        Duration::from_secs_f64(self.timeout)
+        duration(self.timeout)
+    }
+
+    /// [`Self::connect_timeout`] as a duration (capped at [`MAX_DURATION`]).
+    pub fn connect_timeout(&self) -> Duration {
+        duration(self.connect_timeout)
     }
 }
 
@@ -178,6 +196,21 @@ mod tests {
         assert!(config.validate().unwrap_err().to_string().contains("given together"));
         let config = ClientConfig { endpoint_url: Some("localhost:4566".into()), ..ClientConfig::default() };
         assert!(config.validate().unwrap_err().to_string().contains("http://"));
+    }
+
+    #[test]
+    fn durations_are_capped() {
+        assert_eq!(duration(1.5), Duration::from_millis(1500));
+        assert_eq!(duration(0.0), Duration::ZERO);
+        assert_eq!(duration(-1.0), Duration::ZERO);
+        assert_eq!(duration(f64::NAN), Duration::ZERO);
+        for huge in [2e9, 1e19, 1e20, 1e300, f64::INFINITY] {
+            assert_eq!(duration(huge), MAX_DURATION, "{huge}");
+        }
+        let config = ClientConfig { timeout: 1e20, connect_timeout: 1e300, ..ClientConfig::default() };
+        assert_eq!(config.validate(), Ok(()));
+        assert_eq!((config.timeout(), config.connect_timeout()), (MAX_DURATION, MAX_DURATION));
+        assert!(std::time::Instant::now().checked_add(MAX_DURATION).is_some());
     }
 
     #[test]

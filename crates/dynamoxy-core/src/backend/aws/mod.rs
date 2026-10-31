@@ -8,7 +8,6 @@ mod convert;
 mod errors;
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
@@ -75,10 +74,9 @@ impl AwsBackend {
             ));
         }
         let shared = loader.load().await;
-        let mut builder =
-            aws_sdk_dynamodb::config::Builder::from(&shared).retry_config(RetryConfig::disabled()).timeout_config(
-                TimeoutConfig::builder().connect_timeout(Duration::from_secs_f64(config.connect_timeout)).build(),
-            );
+        let mut builder = aws_sdk_dynamodb::config::Builder::from(&shared)
+            .retry_config(RetryConfig::disabled())
+            .timeout_config(TimeoutConfig::builder().connect_timeout(config.connect_timeout()).build());
         if shared.region().is_none() {
             if config.endpoint_url.is_some() {
                 builder = builder.region(aws_config::Region::new("us-east-1"));

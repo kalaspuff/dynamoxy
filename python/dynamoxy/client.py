@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
-from dynamoxy._utils import LoopLocal, deprecated, seconds
+from dynamoxy._utils import LoopLocal, count, deprecated, seconds
 from dynamoxy.errors import DynamoxyError
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
@@ -88,8 +88,9 @@ class RetryPolicy:
 
     Attributes:
         max_attempts: Attempts per request, the first included (1 disables retries).
-        base_delay: Seconds before the first retry; doubles each time, with full jitter.
-        max_delay: Longest delay between attempts, in seconds.
+        base_delay: Seconds (or a ``timedelta``) before the first retry; doubles each time, with
+            full jitter. Stored as float seconds.
+        max_delay: Longest delay between attempts, in seconds (or a ``timedelta``).
         retry_timeouts: Retry requests that timed out or lost their connection. Such a write may
             have been applied already: transactions (with their idempotency token) and writes
             that apply once even when sent twice are sent again; other writes, and answers that
@@ -98,17 +99,19 @@ class RetryPolicy:
     """
 
     max_attempts: int = 4
-    base_delay: float = 0.05
-    max_delay: float = 5.0
+    base_delay: float | timedelta = 0.05
+    max_delay: float | timedelta = 5.0
     retry_timeouts: bool = True
 
     def __post_init__(self) -> None:
-        if self.max_attempts < 1:
-            raise ValueError(f"max_attempts must be at least 1 (1 disables retries), got {self.max_attempts}")
-        seconds(self.base_delay, "base_delay", allow_zero=True)
-        seconds(self.max_delay, "max_delay", allow_zero=True)
-        if self.max_delay < self.base_delay:
-            raise ValueError(f"max_delay ({self.max_delay}) must be >= base_delay ({self.base_delay})")
+        count(self.max_attempts, "max_attempts", hint=" (1 disables retries)")
+        # Durations are kept as float seconds, as the core takes them.
+        base_delay = seconds(self.base_delay, "base_delay", allow_zero=True)
+        max_delay = seconds(self.max_delay, "max_delay", allow_zero=True)
+        object.__setattr__(self, "base_delay", base_delay)
+        object.__setattr__(self, "max_delay", max_delay)
+        if max_delay < base_delay:
+            raise ValueError(f"max_delay ({max_delay}) must be >= base_delay ({base_delay})")
 
     @classmethod
     def none(cls) -> RetryPolicy:
@@ -220,12 +223,11 @@ class Client:
             raise ValueError(f"endpoint_url must start with http:// or https://, got {endpoint_url!r}")
         if consumed_capacity not in ("NONE", "TOTAL", "INDEXES"):
             raise ValueError(f"consumed_capacity must be 'NONE', 'TOTAL' or 'INDEXES', got {consumed_capacity!r}")
-        if batch_concurrency < 1:
-            raise ValueError(f"batch_concurrency must be at least 1, got {batch_concurrency}")
-        if batch_max_rounds < 1:
-            raise ValueError(f"batch_max_rounds must be at least 1, got {batch_max_rounds}")
-        if event_buffer < 1:
-            raise ValueError(f"event_buffer must be at least 1, got {event_buffer}")
+        if retry is not None and not isinstance(retry, RetryPolicy):
+            raise TypeError(f"retry must be a RetryPolicy, got {type(retry).__name__}")
+        count(batch_concurrency, "batch_concurrency")
+        count(batch_max_rounds, "batch_max_rounds")
+        count(event_buffer, "event_buffer")
         if store is not None and endpoint_url is not None:
             raise ValueError("pass either store= (in-memory DynamoDB) or endpoint_url=, not both")
         _register_fork_hook()
