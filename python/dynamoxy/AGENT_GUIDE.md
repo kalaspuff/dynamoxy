@@ -566,6 +566,10 @@ keep the guards consistent; a taken value raises `UniqueConstraintError` (`.fiel
   raises `ConditionalCheckFailedError` instead: `refresh()` the instance and retry.
 - Guard items are hidden from repository queries, scans and counts; dict-level scans see them.
 - Writing such items with other tools bypasses the guards: route writes through dynamoxy.
+  Items stored before a field became `unique=True` have no guards either. A guard is only
+  deleted by a write of the item that owns it: when two items hold one value, writes that would
+  remove the value of the other one raise `UniqueConstraintError` ("belongs to another item");
+  when the owner (`.item["_owner"]`) is gone or holds another value, delete the stale guard.
 
 ## 7. Optimistic locking
 
