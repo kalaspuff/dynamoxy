@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -219,3 +220,43 @@ async def test_dict_level_consistent_reads(client: dynamoxy.Client) -> None:
         await table.query(F("kind") == "k", index="by_kind", consistent=True).all()
     with pytest.raises(dynamoxy.ValidationError, match="Consistent reads are not supported on global secondary"):
         await table.scan(index="by_kind", consistent=True).all()
+
+
+async def test_writes_return_item_collection_metrics(client: dynamoxy.Client, backend: str) -> None:
+    # Tables with a local index have item collections; Event has one (by_kind_local).
+    await client.create_tables(Event)
+    name = client.table_name("events")
+
+    def collections(metrics: list[dict[str, Any]]) -> list[Any]:
+        """The keys of item collection metrics (their size estimates differ between backends)."""
+        assert all(len(entry["size_estimate_range_gb"]) == 2 for entry in metrics)
+        return [entry["item_collection_key"] for entry in metrics]
+
+    put = await client.call(
+        "put_item",
+        "PutItem",
+        table=name,
+        table_name=name,
+        item={"stream": "s", "seq": 1, "kind": "k"},
+        return_item_collection_metrics=True,
+    )
+    assert collections([put["item_collection_metrics"]]) == [{"stream": "s"}]
+    writes = [("put", {"stream": "t", "seq": 1, "kind": "k"}), ("delete", {"stream": "s", "seq": 1})]
+    batch = await client.call(
+        "batch_write_item", "BatchWriteItem", request_items={name: writes}, return_item_collection_metrics=True
+    )
+    transaction = await client.call(
+        "transact_write_items",
+        "TransactWriteItems",
+        transact_items=[{"kind": "put", "table_name": name, "item": {"stream": "u", "seq": 1, "kind": "k"}}],
+        return_item_collection_metrics=True,
+    )
+    unasked = await client.call("batch_write_item", "BatchWriteItem", request_items={name: writes[:1]})
+    assert unasked["item_collection_metrics"] == {}
+    if backend == "memory":  # MiniStack returns metrics for single-item writes only
+        assert {table: collections(metrics) for table, metrics in batch["item_collection_metrics"].items()} == {
+            name: [{"stream": "t"}, {"stream": "s"}]
+        }
+        assert {table: collections(metrics) for table, metrics in transaction["item_collection_metrics"].items()} == {
+            name: [{"stream": "u"}]
+        }
