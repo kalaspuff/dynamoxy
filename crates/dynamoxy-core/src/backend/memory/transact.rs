@@ -19,6 +19,14 @@ use crate::value::{AttributeValue, Item, item_size};
 /// Largest total item size of one transaction (4 MB).
 const TRANSACTION_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 
+/// DynamoDB's refusal of a `TransactWriteItems` over 4 MB (measured in eu-north-1 on 2026-10-31,
+/// docs/parity: eleven updates writing 390 KB each). DynamoDB's payload size counts what the
+/// request carries; this counts the items the transaction writes, which comes within bytes of it
+/// (4,393,445 there) but is not its exact count.
+fn payload_too_large(size: usize) -> Error {
+    invalid(format!("Transaction payload size cannot exceed 4MB. Payload Size: {size}"))
+}
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::validation_exception(message)
 }
@@ -53,13 +61,22 @@ pub fn transact_get_items(state: &State, input: &TransactGetItemsInput) -> Resul
     }
     let mut meter = CapacityMeter::default();
     let mut responses = Vec::with_capacity(parsed.len());
+    let mut returned = 0;
     for (table, key, projection) in parsed {
         let found = table.items.get(&key);
         meter.read(&table.name, None, 2.0 * read_units(found.map_or(0, item_size), true));
-        responses.push(found.map(|item| match &projection {
+        let response = found.map(|item| match &projection {
             Some(paths) => project(item, paths),
             None => item.clone(),
-        }));
+        });
+        returned += response.as_ref().map_or(0, item_size);
+        responses.push(response);
+    }
+    // DynamoDB refuses to return more than 4 MB (measured in eu-north-1 on 2026-10-31,
+    // docs/parity: eleven 390 KB items). Counted here as the size of the items returned; whether
+    // DynamoDB counts those or the response, and 4 MB as 2^22 bytes, round 2 of the probes asks.
+    if returned > TRANSACTION_SIZE_LIMIT {
+        return Err(invalid("Payload in response is too large."));
     }
     Ok(TransactGetItemsOutput { responses, consumed_capacity: meter.reports(input.return_consumed_capacity) })
 }
@@ -200,7 +217,7 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         parsed.push(expressions);
     }
     if total_size > TRANSACTION_SIZE_LIMIT {
-        return Err(invalid("Transaction size has exceeded the maximum allowed size"));
+        return Err(payload_too_large(total_size));
     }
 
     // Prepare every operation; any failure cancels the whole transaction.
@@ -251,7 +268,7 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
         return Err(ServiceError::transaction_canceled(reasons).into());
     }
     if total_size > TRANSACTION_SIZE_LIMIT {
-        return Err(invalid("Transaction size has exceeded the maximum allowed size"));
+        return Err(payload_too_large(total_size));
     }
     let mut meter = CapacityMeter::default();
     let mut output = TransactWriteItemsOutput::default();

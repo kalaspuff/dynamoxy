@@ -491,6 +491,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   missing table with reason `ResourceNotFound` (it raised `ResourceNotFoundException`), and puts
   the expression errors of `PutItem`, `UpdateItem` and `DeleteItem` and the attribute names they
   refuse in DynamoDB's `1 validation error detected: ` envelope.
+- The in-memory backend accepted an item that fits 400 KB alone but not together with its
+  entries in the table's local indexes, which DynamoDB refuses (measured against DynamoDB):
+  `PutItem` and `UpdateItem` raise its `ValidationError`, and a transaction cancels with it as
+  the reason. It also refuses a `TransactGetItems` that would return more than 4 MB ("Payload in
+  response is too large."), and refuses a `TransactWriteItems` over 4 MB with DynamoDB's message
+  ("Transaction payload size cannot exceed 4MB. Payload Size: ...").
 
 ### Security
 

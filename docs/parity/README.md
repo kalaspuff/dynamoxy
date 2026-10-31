@@ -82,6 +82,12 @@ name, which round 2 asks DynamoDB about.
 | `TransactWriteItems` of ten `Update`s writing 390 KB each | accepted | accepted | accepted |
 | the same with eleven | `Transaction payload size cannot exceed 4MB. Payload Size: 4393445` | `Transaction request exceeds the 4MB transaction size limit` | `... Payload Size: 4393214` |
 
+The in-memory backend refuses these with DynamoDB's messages and kinds. Until round 2 measures
+them, it counts a local index entry as the attributes the index holds (without the 100 bytes of
+overhead the documentation mentions for storage; DynamoDB Local does the same), counts the
+4 MB of a read as the items returned, and reports its own count of the items written as the
+payload size (4,393,081 for the request above, where DynamoDB says 4,393,445).
+
 ### Table updates (#87)
 
 | Request | DynamoDB | MiniStack | LocalStack |

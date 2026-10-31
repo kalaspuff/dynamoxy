@@ -88,6 +88,7 @@ pub fn prepare_put(
     return_on_failure: ReturnValuesOnConditionCheckFailure,
 ) -> Result<Prepared, Failure> {
     let key = table.validate_item(&item)?;
+    table.check_local_index_size(&item, false)?;
     check_condition(condition, table.items.get(&key), return_on_failure)?;
     Ok(Prepared::write(table, key, Some(item), Vec::new()))
 }
@@ -147,6 +148,7 @@ pub fn prepare_update(
     } else {
         table.validate_item(&new)?
     };
+    table.check_local_index_size(&new, update.is_some())?;
     Ok(Prepared::write(table, stored, Some(new), updated_paths))
 }
 

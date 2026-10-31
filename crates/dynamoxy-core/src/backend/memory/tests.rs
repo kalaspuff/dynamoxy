@@ -2253,9 +2253,92 @@ async fn updates_count_toward_the_size_of_a_transaction() {
         .transact_write_items(TransactWriteItemsInput { transact_items: updates, ..Default::default() })
         .await
         .unwrap_err();
-    assert_eq!(message(&error), "Transaction size has exceeded the maximum allowed size");
+    // DynamoDB's message (measured, docs/parity), with the size counted from the items written.
+    assert!(
+        message(&error).starts_with("Transaction payload size cannot exceed 4MB. Payload Size: 439"),
+        "{}",
+        message(&error)
+    );
     let left = backend.scan(ScanInput { table_name: "items".into(), ..Default::default() }).await.unwrap();
     assert_eq!(left.count, 0, "nothing is written");
+}
+
+#[tokio::test]
+async fn local_index_entries_count_toward_the_size_of_an_item() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): an item and its
+    // entries in the local indexes that hold it share the 400 KB limit; a transaction cancels
+    // with it as the reason. by_rank (KEYS_ONLY) holds items with a rank; "all" holds them all.
+    let backend = MemoryBackend::default();
+    let mut input = table_input("items");
+    input.local_secondary_indexes.push(LocalSecondaryIndex {
+        index_name: "all".into(),
+        key_schema: keys("pk", Some("rank")),
+        projection: Projection::all(),
+    });
+    backend.create_table(input).await.unwrap();
+    wait_until_active(&backend, "items").await;
+    let sized = |sk: i64, kb: usize, rank: bool| {
+        let mut item = item([("pk", s("a")), ("sk", n(sk)), ("filler", s(&"f".repeat(kb * 1024)))]);
+        if rank {
+            item.insert("rank".into(), n(1));
+        }
+        item
+    };
+    put(&backend, sized(1, 190, true)).await;
+    put(&backend, sized(2, 300, false)).await; // in no local index
+    let put_input = |item: Item| PutItemInput { table_name: "items".into(), item, ..Default::default() };
+    let error = backend.put_item(put_input(sized(3, 210, true))).await.unwrap_err();
+    assert_eq!(message(&error), "Item size has exceeded the maximum allowed size");
+    let error = backend
+        .update_item(UpdateItemInput {
+            table_name: "items".into(),
+            key: item([("pk", s("a")), ("sk", n(1))]),
+            update_expression: Some("SET more = :v".into()),
+            expression_attribute_values: values(&[(":v", s(&"m".repeat(20 * 1024)))]),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(message(&error), "Item size to update has exceeded the maximum allowed size");
+    let error = backend
+        .transact_write_items(TransactWriteItemsInput {
+            transact_items: vec![TransactWriteItem::Put {
+                target: TransactTarget { table_name: "items".into(), ..Default::default() },
+                item: sized(3, 210, true),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    let service = error.as_service().unwrap();
+    assert_eq!(service.code, "TransactionCanceledException");
+    let reason = &service.cancellation_reasons[0];
+    assert_eq!(
+        (reason.code.as_str(), reason.message.as_deref()),
+        ("ValidationError", Some("Item size has exceeded the maximum allowed size"))
+    );
+}
+
+#[tokio::test]
+async fn transactional_reads_return_at_most_4_mb() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
+    let backend = backend_with_table().await;
+    for sk in 0..11 {
+        put(&backend, item([("pk", s("big")), ("sk", n(sk)), ("filler", s(&"f".repeat(390 * 1024)))])).await;
+    }
+    let get = |count: i64| TransactGetItemsInput {
+        transact_items: (0..count)
+            .map(|sk| TransactGet {
+                table_name: "items".into(),
+                key: item([("pk", s("big")), ("sk", n(sk))]),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(backend.transact_get_items(get(10)).await.unwrap().responses.len(), 10);
+    let error = backend.transact_get_items(get(11)).await.unwrap_err();
+    assert_eq!((code(&error), message(&error)), ("ValidationException", "Payload in response is too large.".into()));
 }
 
 fn statement(text: &str) -> ParameterizedStatement {

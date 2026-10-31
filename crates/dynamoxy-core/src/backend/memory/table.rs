@@ -455,6 +455,26 @@ impl Table {
     }
 
     /// Validates a full item for a write and returns its key.
+    /// DynamoDB's 400 KB limit of an item together with its entries in the table's local
+    /// indexes (measured in eu-north-1 on 2026-10-31, docs/parity: a 190 KB item an `ALL` local
+    /// index holds is taken, a 210 KB one refused; DynamoDB Local refuses it from 204,801 bytes, an
+    /// entry counting as the attributes it holds). Unlike the item's own size, which a request
+    /// shows, it depends on the table: a transaction cancels with it as the reason.
+    pub fn check_local_index_size(&self, item: &Item, update: bool) -> Result<()> {
+        let mut total = 0;
+        for index in self.indexes.iter().filter(|index| !index.global && index.entry_key(item).is_some()) {
+            total += item_size(&index.projected(item, &self.key));
+        }
+        if total > 0 && item_size(item) + total > MAX_ITEM_SIZE {
+            return Err(invalid(if update {
+                "Item size to update has exceeded the maximum allowed size"
+            } else {
+                "Item size has exceeded the maximum allowed size"
+            }));
+        }
+        Ok(())
+    }
+
     pub fn validate_item(&self, item: &Item) -> Result<StoredKey> {
         self.validate_written(item, false)
     }
