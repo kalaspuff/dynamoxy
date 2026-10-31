@@ -732,8 +732,13 @@ fn restore(
     table.stream_specification = None;
     table.stream_label = None;
     table.deletion_protection = false;
+    // The restored table and its global indexes (also one the source was still creating) become
+    // ACTIVE together.
     table.describes_until_active = CREATING_DESCRIBES;
-    table.index_describes_until_active = 0;
+    table.index_describes_until_active = CREATING_DESCRIBES;
+    for index in table.indexes.iter_mut().filter(|index| index.global) {
+        index.status = IndexStatus::Creating;
+    }
     if let Some(mode) = overrides.billing_mode {
         table.billing_mode = mode;
     }

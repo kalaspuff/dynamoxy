@@ -1058,6 +1058,37 @@ async fn tables_and_indexes_being_created_refuse_changes_like_dynamodb() {
 }
 
 #[tokio::test]
+async fn a_table_restored_while_its_source_was_creating_an_index_becomes_active() {
+    let backend = backend_with_table().await;
+    backend
+        .update_table(UpdateTableInput {
+            table_name: "items".into(),
+            attribute_definitions: vec![definition("email", ScalarType::S)],
+            global_secondary_index_updates: vec![GlobalSecondaryIndexUpdate::Create(GlobalSecondaryIndex {
+                index_name: "by_email".into(),
+                key_schema: keys("email", None),
+                projection: Projection::all(),
+                provisioned_throughput: None,
+                on_demand_throughput: None,
+            })],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let backup = backend.create_backup("items", "while-creating").await.unwrap();
+    backend
+        .restore_table_from_backup(RestoreTableFromBackupInput {
+            target_table_name: "restored".into(),
+            backup_arn: backup.backup_arn,
+            overrides: RestoreOverrides::default(),
+        })
+        .await
+        .unwrap();
+    let restored = wait_until_active(&backend, "restored").await;
+    assert!(restored.global_secondary_indexes.iter().all(|index| index.index_status == Some(IndexStatus::Active)));
+}
+
+#[tokio::test]
 async fn global_indexes_have_capacity_on_provisioned_tables_only() {
     // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity).
     let backend = backend_with_table().await;
