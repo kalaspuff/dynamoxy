@@ -131,8 +131,11 @@ def test_number_sets_deduplicate_equal_numbers() -> None:
     # Equal as DynamoDB numbers, not in Python (0.1 is not exactly a tenth).
     assert dynamoxy.to_wire({"ns": {0.1, Decimal("0.1"), Decimal("0.10")}})["ns"] == {"NS": ["0.1"]}
     # A set of 60,000 numbers (about 210 KB, an item DynamoDB accepts) took seconds to deduplicate.
-    numbers = _core.value_to_wire({*range(60_000), 59_999.0, Decimal(0)})["NS"]
-    assert sorted(numbers, key=int) == [str(number) for number in range(60_000)]
+    # Python keeps a float and a Decimal of each tenth apart; DynamoDB stores one number for both.
+    tenths = [f"{index}.1" for index in range(30_000)]
+    numbers = {*map(float, tenths), *map(Decimal, tenths)}
+    assert len(numbers) == 60_000
+    assert sorted(_core.value_to_wire(numbers)["NS"], key=Decimal) == tenths
 
 
 def test_base64_binary_for_json() -> None:
