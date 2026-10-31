@@ -270,6 +270,38 @@ async def test_updates_that_would_apply_twice_are_not_sent_again(client: dynamox
     assert client.metrics().operations["UpdateItem"].attempts == 3
 
 
+async def test_writes_that_were_never_sent_are_sent_again(client: dynamoxy.Client) -> None:
+    # A refused connection (or a DNS, TLS or file descriptor failure) sends nothing: an
+    # increment is safe to send again, and a write without write ids keeps its own answer.
+    table = client.model(Event).table
+    await table.put({"stream": "s", "seq": 1, "kind": "k", "n": 0})
+    testing.inject_fault(client, operation="UpdateItem", refuse_connection=True, times=2)
+    with testing.capture_events(client, "request.*") as events:
+        await table.update({"stream": "s", "seq": 1}, F("n").add(1))
+    assert (await table.get({"stream": "s", "seq": 1}) or {})["n"] == 1, "applied once"
+    assert [entry.kind for entry in events].count(dynamoxy.EventKind.REQUEST_RETRY) == 2
+
+    await client.create_tables(Plain)
+    plains = client.model(Plain)
+    await plains.create(Plain(plain_id="p1"))
+    testing.inject_fault(client, operation="PutItem", refuse_connection=True)
+    with pytest.raises(dynamoxy.ItemAlreadyExistsError):
+        await plains.create(Plain(plain_id="p1"))
+
+    # When no attempt connects, nothing was applied: a retryable TransportError, not an unknown
+    # outcome.
+    testing.inject_fault(client, operation="UpdateItem", refuse_connection=True, times=3)
+    with (
+        testing.capture_events(client, "request.*") as events,
+        pytest.raises(dynamoxy.TransportError, match="connection refused") as caught,
+    ):
+        await table.update({"stream": "s", "seq": 1}, F("n").add(1))
+    assert not isinstance(caught.value, dynamoxy.WriteOutcomeUnknownError)
+    assert caught.value.retryable
+    assert dynamoxy.EventKind.REQUEST_OUTCOME_UNKNOWN not in [entry.kind for entry in events]
+    assert (await table.get({"stream": "s", "seq": 1}) or {})["n"] == 1, "not applied"
+
+
 async def test_transactions_are_sent_again_after_a_lost_response(client: dynamoxy.Client) -> None:
     users = client.model(User)  # unique emails: create() is a transaction
     testing.inject_fault(client, operation="TransactWriteItems", lose_response=True)

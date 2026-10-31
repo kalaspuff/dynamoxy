@@ -64,6 +64,11 @@ fn lose(operation: &str) -> Fault {
     Fault { operation: Some(operation.into()), table: None, kind: FaultKind::LoseResponse, times: 1 }
 }
 
+/// The next `times` calls of `operation` fail before sending anything (a refused connection).
+fn refuse(operation: &str, times: u32) -> Fault {
+    Fault { operation: Some(operation.into()), table: None, kind: FaultKind::RefuseConnection, times }
+}
+
 async fn stored(client: &Client, key: &str) -> Option<Item> {
     let input = GetItemInput {
         table_name: "items".into(),
@@ -518,4 +523,45 @@ fn capacity_without_a_split_counts_as_the_request_says() {
         ConsumedCapacity { capacity_units: 3.0, read_capacity_units: 1.0, write_capacity_units: 2.0, ..total(0.0) };
     assert_eq!(split(std::slice::from_ref(&reported), false), (1.0, 2.0), "a reported split is kept");
     assert_eq!(split(&[reported, total(1.0)], true), (1.0, 3.0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn writes_that_were_never_sent_are_sent_again() {
+    let client = client_with_table(config()).await;
+    let backend = client.memory_backend().unwrap();
+
+    // An increment would apply twice if an attempt that reached DynamoDB were sent again; one
+    // that never left the process is safe to send again, and applies once.
+    backend.inject_fault(refuse("UpdateItem", 2));
+    let call = client.update_item(update("a", "ADD n :v", AttributeValue::n(1))).await;
+    assert!(call.result.is_ok(), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 3);
+    assert_eq!(stored(&client, "a").await.unwrap()["n"], AttributeValue::n(1));
+
+    // A failed condition after such attempts is the write's own answer, not an unknown outcome.
+    backend.inject_fault(refuse("PutItem", 1));
+    let call = client
+        .put_item(PutItemInput { condition_expression: Some("attribute_not_exists(pk)".into()), ..put("a") })
+        .await;
+    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::ConditionalCheckFailed));
+
+    // When every attempt fails to connect, the write was not applied: the last attempt's
+    // transport error, retryable, and no unknown outcome.
+    kinds(&client);
+    backend.inject_fault(refuse("UpdateItem", 3));
+    let call = client.update_item(update("a", "ADD n :v", AttributeValue::n(1))).await;
+    let error = call.result.unwrap_err();
+    assert!(matches!(error, Error::Transport { sent: false, .. }), "{error:?}");
+    assert!(error.is_retryable() && !error.may_have_been_applied());
+    assert_eq!(call.stats.attempts, 3);
+    assert!(!kinds(&client).contains(&EventKind::RequestOutcomeUnknown));
+    assert_eq!(stored(&client, "a").await.unwrap()["n"], AttributeValue::n(1));
+
+    // An attempt that was sent before them still leaves the outcome unknown.
+    backend.inject_fault(lose("PutItem"));
+    backend.inject_fault(refuse("PutItem", 1));
+    let call = client
+        .put_item(PutItemInput { condition_expression: Some("attribute_not_exists(pk)".into()), ..put("b") })
+        .await;
+    assert!(matches!(call.result, Err(Error::OutcomeUnknown { .. })), "{:?}", call.result);
 }

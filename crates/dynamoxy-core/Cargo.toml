@@ -18,6 +18,7 @@ aws-config.workspace = true
 aws-credential-types.workspace = true
 aws-sdk-dynamodb.workspace = true
 fastrand.workspace = true
+hyper-util.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 thiserror.workspace = true

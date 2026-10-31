@@ -79,7 +79,12 @@ remaining attempts; a write already sent may still be applied by DynamoDB.
 ## Writes with unknown outcome
 
 An attempt that times out, loses its connection or gets a 5xx may have been applied (DynamoDB:
-"the operation may have succeeded or failed"). A throttled or refused attempt applies nothing.
+"the operation may have succeeded or failed"). A throttled or refused attempt applies nothing,
+and neither does one that never left the process: a failure to connect (connection refused, DNS,
+TLS handshake, connect timeout, no file descriptors for the socket). Such attempts are sent
+again whatever the write, increments too, and never leave the outcome unknown; when all of them
+fail to connect, the call raises the last one's retryable `TransportError`. `connect_timeout`
+counts as at most `timeout`, so a slow connect ends as a connect timeout, which sent nothing.
 After an attempt that may have been applied, dynamoxy never reports a conflict that the write
 may have caused itself, and never applies a write twice:
 

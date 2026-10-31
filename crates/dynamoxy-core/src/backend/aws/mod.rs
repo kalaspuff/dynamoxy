@@ -76,7 +76,12 @@ impl AwsBackend {
         let shared = loader.load().await;
         let mut builder = aws_sdk_dynamodb::config::Builder::from(&shared)
             .retry_config(RetryConfig::disabled())
-            .timeout_config(TimeoutConfig::builder().connect_timeout(config.connect_timeout()).build());
+            // No longer than an attempt: a connect that outlasts `timeout` would end as an attempt
+            // timeout, which may have been applied, rather than as a connect timeout, which sent
+            // nothing.
+            .timeout_config(
+                TimeoutConfig::builder().connect_timeout(config.connect_timeout().min(config.timeout())).build(),
+            );
         if shared.region().is_none() {
             if config.endpoint_url.is_some() {
                 builder = builder.region(aws_config::Region::new("us-east-1"));

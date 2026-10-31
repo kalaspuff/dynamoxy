@@ -449,6 +449,7 @@ impl Client {
                     operation: operation.as_str(),
                     message: format!("no response within {} seconds (timeout)", config.timeout),
                     retryable: true,
+                    sent: true,
                 }),
             };
             let error = match result {
@@ -996,6 +997,7 @@ impl Client {
                     operation: "DescribeTable",
                     message: format!("table {table_name} did not {state} within {} seconds", timeout.as_secs_f64()),
                     retryable: true,
+                    sent: true,
                 });
             }
             if self.inner.memory.is_some() && round < 3 {
@@ -1067,8 +1069,12 @@ impl Client {
                 }
                 let Some(joined) = tasks.join_next().await else { break };
                 let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchWriteItem", message: error.to_string(), retryable: false };
+                    let error = Error::Transport {
+                        operation: "BatchWriteItem",
+                        message: error.to_string(),
+                        retryable: false,
+                        sent: true,
+                    };
                     (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
                 });
                 if let Err(error) = merge(done, &mut stats) {
@@ -1227,8 +1233,12 @@ impl Client {
                 }
                 let Some(joined) = tasks.join_next().await else { break };
                 let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchGetItem", message: error.to_string(), retryable: false };
+                    let error = Error::Transport {
+                        operation: "BatchGetItem",
+                        message: error.to_string(),
+                        retryable: false,
+                        sent: true,
+                    };
                     (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
                 });
                 if let Err(error) = merge(done, &mut stats) {

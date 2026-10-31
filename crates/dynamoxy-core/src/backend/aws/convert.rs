@@ -22,6 +22,7 @@ pub fn protocol_error(message: impl std::fmt::Display) -> Error {
         operation: "",
         message: format!("unexpected response from DynamoDB: {message}"),
         retryable: false,
+        sent: true,
     }
 }
 

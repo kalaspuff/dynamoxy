@@ -220,7 +220,7 @@ class Client:
         profile: Named AWS profile.
         credentials: Static credentials (default: the AWS credential chain).
         timeout: Time limit of one attempt of a request (seconds or ``timedelta``).
-        connect_timeout: Time limit to establish a connection.
+        connect_timeout: Time limit to establish a connection (at most ``timeout``).
         retry: Retry policy for throttling, server errors, conflicts and timeouts.
         table_prefix: Prefix added to every table name of models and ``client.table()``
             (``"prod-"``), to separate environments sharing an account.
