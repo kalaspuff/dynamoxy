@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy as copy_module
 import pickle
 import traceback
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -16,6 +18,14 @@ from tests.models import User
 
 NATIVE = sorted(
     (value for value in vars(_core).values() if isinstance(value, type) and issubclass(value, dynamoxy.DynamoxyError)),
+    key=lambda value: value.__name__,
+)
+ALL = sorted(
+    (
+        value
+        for name in dynamoxy.errors.__all__
+        if isinstance(value := getattr(dynamoxy.errors, name), type) and issubclass(value, BaseException)
+    ),
     key=lambda value: value.__name__,
 )
 
@@ -31,6 +41,17 @@ def test_native_errors_name_their_module(error_type: type[Exception]) -> None:
     assert traceback.format_exception_only(error_type("boom")) == [f"dynamoxy.errors.{error_type.__name__}: boom\n"]
     copy = round_trip(error_type("boom"))
     assert (type(copy), str(copy)) == (error_type, "boom")
+
+
+@pytest.mark.parametrize("error_type", ALL, ids=lambda error_type: error_type.__name__)
+def test_every_error_unpickles_from_its_message(error_type: type[Exception]) -> None:
+    # Unpickling calls the class with the message alone: an error class with a second required
+    # argument pickles, and then fails to unpickle in the process that receives it.
+    error = error_type("boom")
+    error.extra = {"n": 1}  # pyrefly: ignore[missing-attribute]
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        copy = pickle.loads(pickle.dumps(error, protocol))
+        assert (type(copy), copy.args, vars(copy)) == (error_type, ("boom",), vars(error))
 
 
 async def test_errors_of_calls_keep_their_attributes() -> None:
@@ -78,3 +99,67 @@ def test_validation_errors_leave_out_values_that_do_not_pickle() -> None:
     values = {error.path: error.value for error in copy.errors}
     assert values == {"email": None, "name": "", "age": -1}, "the function is left out"
     assert {error.path: error.value for error in deepcopy(caught.value.errors)}["email"] is not None
+
+
+async def test_canceled_transactions_keep_their_reasons() -> None:
+    async with testing.memory_client() as client:
+        await client.create_tables(User)
+        await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+        with pytest.raises(dynamoxy.TransactionCanceledError) as caught:  # noqa: PT012 - the block commits
+            async with client.transaction() as tx:
+                tx.create(User(user_id="u1", email="bob@example.com", name="Bob"))
+                tx.create(User(user_id="u2", email="ada@example.com", name="Ada"))
+    error = caught.value
+    copy = round_trip(error)
+    assert type(copy) is dynamoxy.TransactionCanceledError
+    assert copy.reasons == error.reasons
+    assert [replace(reason, error=None) for reason in copy.cancellation_reasons] == [
+        replace(reason, error=None) for reason in error.cancellation_reasons
+    ]
+    assert [type(reason.error) for reason in copy.cancellation_reasons] == [
+        type(reason.error) for reason in error.cancellation_reasons
+    ]
+    assert [type(specific) for specific in copy.errors] == [
+        dynamoxy.ItemAlreadyExistsError,
+        dynamoxy.UniqueConstraintError,
+    ]
+    assert [vars(specific) for specific in copy.errors] == [vars(specific) for specific in error.errors]
+
+
+def make_local_model() -> type[dynamoxy.Model]:
+    class Local(dynamoxy.Model, table="local"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+
+    return Local
+
+
+def test_attributes_that_do_not_pickle_are_left_out() -> None:
+    # A model defined in a function does not pickle: the error still crosses process boundaries.
+    local = make_local_model()
+    unique = dynamoxy.UniqueConstraintError("taken", model=User, field="email", value=lambda: 1)
+    missing = dynamoxy.ItemNotFoundError("missing", model=local, key={"pk": "p1"})
+    for error in (missing, unique):
+        with pytest.raises((pickle.PicklingError, AttributeError, TypeError)):
+            pickle.dumps(dict(vars(error)))
+    copy = round_trip(missing)
+    assert (type(copy), str(copy), copy.model, copy.key) == (dynamoxy.ItemNotFoundError, "missing", None, {"pk": "p1"})
+    copy = round_trip(unique)
+    assert (copy.model, copy.field, copy.value) == (User, "email", None)
+    reason = dynamoxy.CancellationReason(index=0, code="ConditionalCheckFailed", error=missing)
+    canceled = dynamoxy.TransactionCanceledError("canceled")
+    canceled._explained_reasons = [reason]  # pyrefly: ignore[missing-attribute]
+    copy = round_trip(canceled)
+    assert copy.cancellation_reasons[0].error.key == {"pk": "p1"}
+    assert copy.cancellation_reasons[0].error.model is None
+
+
+def test_copies_keep_every_attribute() -> None:
+    local = make_local_model()
+    error = dynamoxy.ItemNotFoundError("missing", model=local, key={"pk": "p1"})
+    error.attempts = 2
+    shallow, deep = copy_module.copy(error), deepcopy(error)
+    for copied in (shallow, deep):
+        assert (type(copied), copied.args, vars(copied)) == (dynamoxy.ItemNotFoundError, ("missing",), vars(error))
+        assert copied.model is local
+    assert shallow.key is error.key
+    assert deep.key is not error.key

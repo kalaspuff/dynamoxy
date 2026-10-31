@@ -348,3 +348,44 @@ def cancellation_reasons(error: TransactionCanceledError) -> list[CancellationRe
 # (``Transaction`` sets the specific errors of the operations it planned).
 setattr(TransactionCanceledError, "cancellation_reasons", property(cancellation_reasons))  # noqa: B010
 TransactionCanceledError.errors = ()  # pyrefly: ignore[missing-attribute]
+
+
+def _picklable(value: Any) -> Any:
+    try:
+        pickle.dumps(value)
+    except Exception:  # noqa: BLE001 - whatever does not pickle
+        return None
+    return value
+
+
+def _reduce_error(error: BaseException) -> tuple[Any, ...]:
+    # An error crosses process boundaries (multiprocessing, task queues) as itself also when one of
+    # its attributes does not pickle (the model class of a model defined in a function, a unique
+    # value of a type that does not pickle): the pickle leaves such a value out. Unpickling calls
+    # the class with the arguments of the message, then restores the attributes.
+    state = vars(error)
+    try:
+        pickle.dumps(state)
+    except Exception:  # noqa: BLE001 - whatever does not pickle
+        state = {name: _picklable(value) for name, value in state.items()}
+    return (type(error), error.args, state)
+
+
+def _copy_error[E: BaseException](error: E) -> E:
+    copied = type(error)(*error.args)
+    vars(copied).update(vars(error))
+    return copied
+
+
+def _deepcopy_error[E: BaseException](error: E, memo: dict[int, Any]) -> E:
+    copied = type(error)(*copy.deepcopy(error.args, memo))
+    memo[id(error)] = copied
+    vars(copied).update(copy.deepcopy(vars(error), memo))
+    return copied
+
+
+# Every dynamoxy error, native or defined above, derives from the native base class. Copies keep
+# every attribute: only pickles leave out what does not pickle.
+setattr(DynamoxyError, "__reduce__", _reduce_error)  # noqa: B010
+setattr(DynamoxyError, "__copy__", _copy_error)  # noqa: B010
+setattr(DynamoxyError, "__deepcopy__", _deepcopy_error)  # noqa: B010
