@@ -670,6 +670,33 @@ async fn concurrent_chunks_in_flight_finish_when_another_fails() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn batches_send_nothing_again_after_a_timeout_without_retry_timeouts() {
+    let retry = RetryConfig { retry_timeouts: false, ..config().retry };
+    let client = client_with_table(ClientConfig { retry, ..config() }).await;
+    create_table(&client, "other").await;
+    let memory = client.memory_backend().unwrap();
+    memory.inject_fault(Fault { table: Some("other".into()), ..lose("BatchWriteItem") });
+    let mut writes = puts("other", "b", 25);
+    writes.extend(puts("items", "a", 10));
+    let call = client.batch_write(writes, ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(call.stats.requests, 2, "the chunk that lost its response is not sent again");
+    assert_eq!(tables_of(&result.unprocessed), ["other"; 25]);
+    assert!(matches!(result.error, Some(Error::Transport { retryable: true, .. })));
+    assert!(stored(&client, "a9").await.is_some(), "the other chunks go on");
+
+    memory.inject_fault(Fault { table: Some("other".into()), ..lose("BatchGetItem") });
+    let mut request = keys("items", "a", 100);
+    request.extend(keys("other", "b", 10));
+    let call = client.batch_get(request, ReturnConsumedCapacity::None).await;
+    let result = call.result.unwrap();
+    assert_eq!(call.stats.requests, 2);
+    assert_eq!(result.unprocessed["other"].keys.len(), 10);
+    assert_eq!(result.items["items"].len(), 10);
+    assert!(matches!(result.error, Some(Error::Transport { .. })));
+}
+
+#[tokio::test(start_paused = true)]
 async fn keys_left_by_the_response_size_limit_are_requested_again_at_once() {
     let client = client_with_table(ClientConfig { batch_max_rounds: 1, ..config() }).await;
     let large = "x".repeat(350 * 1024);

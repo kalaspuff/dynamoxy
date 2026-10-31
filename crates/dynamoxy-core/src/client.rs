@@ -1247,6 +1247,14 @@ impl Client {
         }
     }
 
+    /// Whether a managed batch sends a chunk again in its next round after its request failed
+    /// with `error`: a retryable error, but no timeout or lost connection with `retry_timeouts`
+    /// off (nothing is sent again after one; the chunk is reported with the error, and the other
+    /// chunks go on).
+    fn resends_chunk(&self, error: &Error) -> bool {
+        error.is_retryable() && (self.inner.config.retry.retry_timeouts || !matches!(error, Error::Transport { .. }))
+    }
+
     async fn write_chunk(
         &self,
         mut chunk: Vec<(String, WriteRequest)>,
@@ -1281,9 +1289,9 @@ impl Client {
                     // Nothing of a request DynamoDB rejected was applied; a request that timed
                     // out may have been, and writing its items again is harmless.
                     chunk = flatten_writes(input.request_items);
-                    let retryable = failed.is_retryable();
+                    let resend = self.resends_chunk(&failed);
                     error = Some(failed);
-                    if !retryable {
+                    if !resend {
                         return (ChunkDone { left: chunk, consumed, error }, stats);
                     }
                 }
@@ -1407,9 +1415,9 @@ impl Client {
                 }
                 Err(failed) => {
                     chunk = input.request_items.into_iter().filter(|(_, keys)| !keys.keys.is_empty()).collect();
-                    let retryable = failed.is_retryable();
+                    let resend = self.resends_chunk(&failed);
                     error = Some(failed);
-                    if !retryable {
+                    if !resend {
                         return (ChunkDone { left: (items, chunk), consumed, error }, stats);
                     }
                 }

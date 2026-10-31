@@ -134,7 +134,9 @@ costs twice the write units of a single write.
 A write whose attempt may have been applied raises `WriteOutcomeUnknownError` (a
 `TransportError` that is not `.retryable`), which model writes settle by their write id as
 above; reads, batch writes and table operations raise the attempt's `TransportError`, which is
-`.retryable` because sending them again is safe.
+`.retryable` because sending them again is safe. A managed batch does not send such a chunk again
+in a later round either: the other chunks go on, and `UnprocessedItemsError` reports the chunk's
+items with that `TransportError` in `.error`.
 
 ## Batches
 

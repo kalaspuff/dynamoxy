@@ -35,7 +35,7 @@ at most 4,294,967,295; other types raise `TypeError` when the object is created.
 | `max_attempts` | `4` | Attempts per request, the first included; `1` disables retries (`RetryPolicy.none()`) |
 | `base_delay` | `0.05` | Seconds before the first retry; doubles with every attempt, with full jitter (a `timedelta` is stored as float seconds) |
 | `max_delay` | `5.0` | Longest delay between attempts, in seconds |
-| `retry_timeouts` | `True` | Retry requests that timed out or lost their connection. Such a write may have been applied: writes that would apply twice are not sent again, and an answer the earlier attempt may have caused raises `WriteOutcomeUnknownError` (see [writes with unknown outcome](../guides/errors-and-retries.md#writes-with-unknown-outcome)). When `False`, nothing is sent again after a timeout: writes raise `WriteOutcomeUnknownError`, reads a retryable `TransportError` |
+| `retry_timeouts` | `True` | Retry requests that timed out or lost their connection. Such a write may have been applied: writes that would apply twice are not sent again, and an answer the earlier attempt may have caused raises `WriteOutcomeUnknownError` (see [writes with unknown outcome](../guides/errors-and-retries.md#writes-with-unknown-outcome)). When `False`, nothing is sent again after a timeout: writes raise `WriteOutcomeUnknownError`, reads a retryable `TransportError`, and managed batches report the chunk's items in `UnprocessedItemsError` (`.error`) instead of sending them in a later round |
 
 ## `Credentials(...)`
 

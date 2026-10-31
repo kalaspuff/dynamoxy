@@ -391,6 +391,18 @@ async def test_batches_report_the_requests_that_failed_in_every_round() -> None:
         assert [kind for kind, _ in caught.value.unprocessed] == ["get"] * 3
 
 
+async def test_batches_send_nothing_again_after_a_timeout_without_retry_timeouts() -> None:
+    async with testing.memory_client(retry=dynamoxy.RetryPolicy(retry_timeouts=False)) as client:
+        await client.create_tables(Event)
+        testing.inject_fault(client, operation="BatchWriteItem", lose_response=True)
+        with dynamoxy.collect() as collected, pytest.raises(dynamoxy.UnprocessedItemsError) as caught:
+            await client.model(Event).batch_put([event(seq) for seq in range(3)])
+        assert isinstance(caught.value.error, dynamoxy.TransportError)
+        assert caught.value.retryable
+        assert len(caught.value.unprocessed) == 3
+        assert collected.records[0].requests == 1, "the chunk is not sent again"
+
+
 async def test_an_error_that_is_not_retried_stops_a_batch_and_reports_what_is_left() -> None:
     SAVED.clear()
     async with testing.memory_client() as client:
