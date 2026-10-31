@@ -221,6 +221,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   throughput left the table provisioned without capacity, so that every later `UpdateTable`
   failed, even one that only turns on deletion protection. `TagResource` added the tags before
   it refused the request for going over 50 tags. Both now validate the whole request first.
+- PartiQL `SELECT` pages of the in-memory DynamoDB continued at a position in the list of
+  results (`NextToken` was an offset), not after the last item the page read: with `Limit=2`,
+  deleting the two rows of the first page made the next page skip two rows, and inserting rows
+  before the position repeated rows, so a "select a page, delete it, continue" cleanup loop
+  missed items. `NextToken` now stands for the key of the last item the page evaluated, which
+  pages also return as `last_evaluated_key`, as DynamoDB's do.
 
 ### Security
 

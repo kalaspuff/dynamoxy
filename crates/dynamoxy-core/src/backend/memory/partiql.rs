@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 
 use super::items::{Failure, Prepared, apply, prepare_delete, prepare_put, prepare_update};
-use super::table::{CapacityMeter, KeyInfo, PageRead, StoredKey, Table};
+use super::table::{CapacityMeter, Index, KeyInfo, PageRead, StoredKey, Table};
 use super::{State, TokenRecord, now};
 use crate::error::{CancellationReason, Error, Result, ServiceError};
 use crate::expr::{
@@ -949,6 +949,63 @@ fn returned(prepared_old: Option<Item>, prepared_new: Option<Item>, returning: R
     }
 }
 
+/// The position of an item in the iteration order of a read: its key in the table, or its
+/// entry in the index (the index key, then the table key).
+type Position = (StoredKey, Option<StoredKey>);
+
+/// The position of the key a `NextToken` names (`None` when it is not a key of this read).
+fn start_position(table: &Table, index: Option<&Index>, start: &Item) -> Option<Position> {
+    let table_key = table.key.exact_key(&table.key.key_of(start)).ok()?;
+    match index {
+        None => Some((table_key, None)),
+        Some(index) => Some((index.entry_key(start)?, Some(table_key))),
+    }
+}
+
+/// The `NextToken` of a page: the key of the last item it evaluated (the page's
+/// `LastEvaluatedKey`), as `name.typevalue` pairs in hexadecimal, joined by `:`.
+fn next_token_of(key: &Item) -> String {
+    let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let mut token = String::from("key");
+    for (name, value) in key {
+        let (kind, bytes) = match value {
+            AttributeValue::S(text) => ('S', text.as_bytes()),
+            AttributeValue::N(number) => ('N', number.as_str().as_bytes()),
+            AttributeValue::B(bytes) => ('B', bytes.as_slice()),
+            _ => continue, // key attributes are strings, numbers or binaries
+        };
+        token.push_str(&format!(":{}.{kind}{}", hex(name.as_bytes()), hex(bytes)));
+    }
+    token
+}
+
+/// The key a `NextToken` of [`next_token_of`] names (`None` when it is not such a token).
+fn decode_next_token(token: &str) -> Option<Item> {
+    fn bytes(hex: &str) -> Option<Vec<u8>> {
+        if !hex.len().is_multiple_of(2) {
+            return None;
+        }
+        (0..hex.len()).step_by(2).map(|index| u8::from_str_radix(hex.get(index..index + 2)?, 16).ok()).collect()
+    }
+    let mut parts = token.split(':');
+    if parts.next() != Some("key") {
+        return None;
+    }
+    let mut key = Item::new();
+    for part in parts {
+        let (name, value) = part.split_once('.')?;
+        let name = String::from_utf8(bytes(name)?).ok()?;
+        let value = match (value.get(..1)?, bytes(value.get(1..)?)?) {
+            ("S", value) => AttributeValue::S(String::from_utf8(value).ok()?),
+            ("N", value) => AttributeValue::N(Number::parse(&String::from_utf8(value).ok()?).ok()?),
+            ("B", value) => AttributeValue::B(value),
+            _ => return None,
+        };
+        key.insert(name, value);
+    }
+    Some(key)
+}
+
 fn select(
     state: &State,
     statement: &Statement,
@@ -980,41 +1037,54 @@ fn select(
             partitions.iter().any(|partition| stored.hash == partition.hash && stored.partition == partition.partition)
         })
     };
-    let mut candidates: Vec<&Item> = match index {
-        None => table.items.iter().filter(|(stored, _)| queried(stored)).map(|(_, item)| item).collect(),
+    // Each candidate with its position in iteration order: its key in the table, or its entry in the index.
+    let mut candidates: Vec<(Position, &Item)> = match index {
+        None => table
+            .items
+            .iter()
+            .filter(|(stored, _)| queried(stored))
+            .map(|(stored, item)| ((stored.clone(), None), item))
+            .collect(),
         Some(index) => index
             .entries
             .iter()
             .filter(|(stored, _)| queried(stored))
-            .filter_map(|(_, table_key)| table.items.get(table_key))
+            .filter_map(|(stored, table_key)| {
+                table.items.get(table_key).map(|item| ((stored.clone(), Some(table_key.clone())), item))
+            })
             .collect(),
     };
-    if let Some((partition_descending, sort_descending)) = directions {
-        // Candidates are in key order within a partition, but partitions are in hash order.
-        let directed =
-            |ordering: std::cmp::Ordering, descending: bool| if descending { ordering.reverse() } else { ordering };
-        candidates.sort_by(|left, right| {
-            directed(key_order(left, right, &key.partition.name), partition_descending).then_with(|| match &key.sort {
-                Some(sort) => directed(key_order(left, right, &sort.name), sort_descending),
-                None => std::cmp::Ordering::Equal,
-            })
-        });
-    }
-    let offset: usize = match next_token {
-        Some(token) => token
-            .strip_prefix("offset:")
-            .and_then(|offset| offset.parse().ok())
-            .ok_or_else(|| invalid("Invalid NextToken"))?,
-        None => 0,
+    // ORDER BY sorts by the key values (partitions are in hash order otherwise), ties in iteration order.
+    let ordering = |left: (&Position, &Item), right: (&Position, &Item)| match directions {
+        Some((partition_descending, sort_descending)) => {
+            let directed =
+                |ordering: std::cmp::Ordering, descending: bool| if descending { ordering.reverse() } else { ordering };
+            directed(key_order(left.1, right.1, &key.partition.name), partition_descending)
+                .then_with(|| match &key.sort {
+                    Some(sort) => directed(key_order(left.1, right.1, &sort.name), sort_descending),
+                    None => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| left.0.cmp(right.0))
+        }
+        None => left.0.cmp(right.0),
     };
-    candidates.drain(..offset.min(candidates.len()));
+    if directions.is_some() {
+        candidates.sort_by(|left, right| ordering((&left.0, left.1), (&right.0, right.1)));
+    }
+    // A page continues after the key of the last item the previous page evaluated, wherever that
+    // key is now: deleted or inserted items do not shift the rows of later pages.
+    if let Some(token) = next_token {
+        let start = decode_next_token(token).ok_or_else(|| invalid("Invalid NextToken"))?;
+        let position = start_position(table, index, &start).ok_or_else(|| invalid("Invalid NextToken"))?;
+        candidates.retain(|(candidate, item)| ordering((candidate, item), (&position, &start)).is_gt());
+    }
     // Like a query, a local index fetches each item from the table when the projection names an
     // attribute the index does not hold. The WHERE clause still reads the index entries.
     let fetch = index.zip(projection.as_ref()).is_some_and(|(index, paths)| index.fetches(paths, &table.key));
     let mut output = ExecuteStatementOutput::default();
     let mut read = PageRead::new(consistent);
     let mut evaluated = 0usize;
-    for item in &candidates {
+    for (_, item) in &candidates {
         let visible = match index {
             Some(index) => index.project(item, &table.key),
             None => (*item).clone(),
@@ -1035,7 +1105,13 @@ fn select(
         }
     }
     if evaluated < candidates.len() {
-        output.next_token = Some(format!("offset:{}", offset + evaluated));
+        let (_, last) = candidates[evaluated - 1];
+        let mut last_key = table.key.key_of(last);
+        if let Some(index) = index {
+            last_key.extend(index.key.key_of(last));
+        }
+        output.next_token = Some(next_token_of(&last_key));
+        output.last_evaluated_key = Some(last_key);
     }
     let mut meter = CapacityMeter::default();
     read.charge(&mut meter, &table.name, index.map(|index| (index.name.as_str(), index.global)));

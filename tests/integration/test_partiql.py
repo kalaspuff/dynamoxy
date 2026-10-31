@@ -66,3 +66,30 @@ async def test_transactions_name_each_item_once(client: dynamoxy.Client, table: 
     with pytest.raises(dynamoxy.ValidationError, match="cannot include multiple operations on one item"):
         await client.execute_transaction(statements)
     assert await client.execute(f'SELECT a, b FROM "{table}" WHERE pk = ? AND sk = ?', "x", 1) == [{"a": 0, "b": 0}]
+
+
+async def test_pages_continue_after_the_rows_a_page_returned(client: dynamoxy.Client, table: str) -> None:
+    # A cleanup loop: select a page, delete its rows, continue with the page's token.
+    for sk in range(7):
+        await client.execute(f"INSERT INTO \"{table}\" VALUE {{'pk': ?, 'sk': ?}}", "a", sk)
+    seen: list[int] = []
+    token: str | None = None
+    while True:
+        output = await client.call(
+            "execute_statement",
+            "ExecuteStatement",
+            statement=f'SELECT * FROM "{table}" WHERE pk = ?',
+            parameters=["a"],
+            consistent_read=True,
+            limit=2,
+            next_token=token,
+        )
+        rows = [row["sk"] for row in output["items"]]
+        seen += rows
+        for sk in rows:
+            await client.execute(f'DELETE FROM "{table}" WHERE pk = ? AND sk = ?', "a", sk)
+        token = output["next_token"]
+        if token is None:
+            break
+        assert output["last_evaluated_key"] == {"pk": "a", "sk": rows[-1]}
+    assert seen == list(range(7))
