@@ -49,14 +49,15 @@ kept here: [DynamoDB](probe-aws-eu-north-1-2026-10-31.json) (eu-north-1, 2026-10
 [the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
 [LocalStack](probe-localstack-2026.3.0.json).
 
-Every fact the DynamoDB run holds, the in-memory backend's run holds alike. That run stopped two
-scenarios early: on-demand throttling of eleven 390 KB writes to a new table ended `sizes` before
-its `TransactGetItems` and `UpdateItem` facts, and a backfill longer than the 300-second wait ended
-`tables` before its billing facts (the probe now retries and waits longer). It also showed that
+The in-memory backend's run answers every fact the DynamoDB run holds alike (`compare` counts the
+facts both runs hold apart from those only one holds). The DynamoDB run stopped two scenarios
+early: on-demand throttling of eleven 390 KB writes to a new table ended `sizes` before its
+`TransactGetItems` and `UpdateItem` facts, and a backfill longer than the 300-second wait ended
+`tables` before its billing facts (the probe now retries and waits longer). It showed that
 DynamoDB refuses `DescribeTimeToLive` of a table it is still creating, and how conditions, deletes
-and checks count toward a transaction's payload. Later variants of the `sizes` scenario (the other
-condition forms) have no DynamoDB answer yet. MiniStack differs from DynamoDB in 63 facts and
-LocalStack in 58, each an emulator difference listed below.
+and checks count toward a transaction's payload. The other condition forms, asked since, have no
+DynamoDB answer yet: 24 facts are in the other runs only. Of the facts both runs hold, MiniStack
+differs from DynamoDB in 39 and LocalStack in 34, each an emulator difference listed below.
 
 ## What DynamoDB answered
 

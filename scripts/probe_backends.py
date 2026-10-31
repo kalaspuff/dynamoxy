@@ -429,7 +429,7 @@ async def sizes(probe: Probe) -> None:
             }
             if condition is not None:
                 operation["condition_expression"] = condition
-                used = {":w": "w", ":ww": "ww"}
+                used = {":w": "w", ":ww": "ww", ":t": "S"}  # :t a type name, as long as :w
                 extra = {name: value for name, value in used.items() if re.search(rf"{name}\b", condition)}
                 operation["expression_attribute_values"] = {":v": filler, **extra}
             operations.append(operation)
@@ -459,7 +459,7 @@ async def sizes(probe: Probe) -> None:
         ("not_equal", "note <> :w"),
         ("begins_with", "begins_with(note, :w)"),
         ("contains", "contains(note, :w)"),
-        ("attribute_type", "attribute_type(note, :w)"),
+        ("attribute_type", "attribute_type(note, :t)"),
         ("between", "note BETWEEN :w AND :w"),
         ("in", "note IN (:w, :w)"),
         ("and", "attribute_exists(pk) AND attribute_exists(pk)"),
@@ -753,18 +753,22 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     return {"target": args.target, "dynamoxy": dynamoxy.__version__, "facts": probe.facts}
 
 
-def compare(reference: dict[str, Any], other: dict[str, Any]) -> list[str]:
-    """Every fact that differs, as ``scenario.fact: reference | other`` lines."""
-    lines = []
+def compare(reference: dict[str, Any], other: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The facts both runs hold that differ (``scenario.fact`` and both values), and the facts only
+    one of them holds."""
+    differing, missing = [], []
     left, right = reference["facts"], other["facts"]
     for scenario in sorted(set(left) | set(right)):
         facts_left, facts_right = left.get(scenario, {}), right.get(scenario, {})
         for name in sorted(set(facts_left) | set(facts_right)):
-            a, b = facts_left.get(name), facts_right.get(name)
-            if a != b:
-                lines.append(f"{scenario}.{name}:")
-                lines.append(f"  {reference['target']}: {json.dumps(a)}\n  {other['target']}: {json.dumps(b)}")
-    return lines
+            if name not in facts_left or name not in facts_right:
+                holder = reference["target"] if name in facts_left else other["target"]
+                missing.append(f"{scenario}.{name} (only in {holder})")
+            elif facts_left[name] != facts_right[name]:
+                differing.append(f"{scenario}.{name}:")
+                differing.append(f"  {reference['target']}: {json.dumps(facts_left[name])}")
+                differing.append(f"  {other['target']}: {json.dumps(facts_right[name])}")
+    return differing, missing
 
 
 def iam_policy(account: str) -> dict[str, Any]:
@@ -805,9 +809,11 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         print(f"wrote {out}")
     elif args.command == "compare":
-        lines = compare(json.loads(args.reference.read_text()), json.loads(args.other.read_text()))
-        print("\n".join(lines) if lines else "no differences")
-        print(f"{len(lines) // 2} differing facts", file=sys.stderr)
+        differing, missing = compare(json.loads(args.reference.read_text()), json.loads(args.other.read_text()))
+        print("\n".join(differing) if differing else "no differences")
+        if missing:
+            print("\nFacts only one run holds:\n" + "\n".join(missing))
+        print(f"{len(differing) // 3} differing facts, {len(missing)} in one run only", file=sys.stderr)
     elif args.command == "iam-policy":
         print(json.dumps(iam_policy(args.account), indent=2))
     else:

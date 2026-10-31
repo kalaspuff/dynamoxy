@@ -223,7 +223,7 @@
       "payload_updates_condition_attribute_type": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Invalid ConditionExpression: Invalid attribute type name found; type: w, valid types: {N,BS,L,B,NULL,M,S,SS,NS,BOOL}"
+        "message": "Transaction payload size cannot exceed 4MB. Payload Size: 4393499"
       },
       "payload_updates_condition_begins_with": {
         "code": "ValidationException",
