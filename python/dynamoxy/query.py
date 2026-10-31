@@ -522,7 +522,15 @@ class _Reader[T]:
         DynamoDB counts what matches the key condition and the filters; checks dynamoxy makes on
         the client (see ``where()``) do not apply.
         """
+        if self._projection:
+            # A count returns no attributes: a projection's names would be unused in the request.
+            return await self._replace(projection=()).count()
         if self._segments is not None:
+            if self._start is not None:
+                raise TypeError(
+                    "a parallel scan counts every segment from its start: count one segment with "
+                    ".segment(index, total).after(cursor) instead of .segments(n)"
+                )
             totals = await asyncio.gather(
                 *(
                     self._replace(segments=None, segment=(segment, self._segments)).count()
@@ -536,7 +544,6 @@ class _Reader[T]:
         while True:
             builder = ExpressionBuilder()
             params = self._params(builder, start, self._page_size)
-            params.pop("projection_expression", None)
             if self._segment is not None:
                 params["segment"], params["total_segments"] = self._segment
             params["select"] = "COUNT"

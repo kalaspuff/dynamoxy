@@ -339,3 +339,50 @@ async def test_templates_render_the_stored_form(client: dynamoxy.Client) -> None
     )
     await loaded.save()
     assert [item.sk for item in await prices.query(sku="a").all()] == ["PRICE#1.5#2025-12-31"], "the same item"
+
+
+class Seat(Model, table="seats", entity="Seat"):
+    """Sort keys that repeat a field of the partition key, in the table and in an index."""
+
+    pk: Attr[str] = partition_key(template="ORG#{org_id}")
+    sk: Attr[str] = sort_key(template="MEMBER#{org_id}#{user_id}")
+    org_id: Attr[str]
+    user_id: Attr[str]
+    status: Attr[str] = field(default="active")
+    placed_at: Attr[str] = field(default="")
+    note: Attr[str] = field(default="")
+    gsi1pk: Attr[str] = field(template="STATUS#{status}")
+    gsi1sk: Attr[str] = field(template="{status}#{placed_at}")
+
+    by_status = GlobalIndex("gsi1", partition_key=gsi1pk, sort_key=gsi1sk)
+
+
+async def test_sort_keys_may_repeat_fields_of_the_partition_key(client: dynamoxy.Client) -> None:
+    await client.create_tables(Seat)
+    for org, user, placed in [("o1", "u1", "2026-01"), ("o1", "u2", "2026-02"), ("o2", "u1", "2026-01")]:
+        await Seat.create(client, org_id=org, user_id=user, placed_at=placed, note="x")
+    assert await Seat.get(client, org_id="o1", user_id="u1") is not None
+    found = await Seat.query(client, org_id="o1", user_id="u1").all()
+    assert [(seat.org_id, seat.user_id) for seat in found] == [("o1", "u1")]
+    assert await Seat.query(client, org_id="o1", user_id="u1").count() == 1
+    assert await Seat.query(client, org_id="o1").count() == 2, "the partition alone"
+    by_status = Seat.query(client, index=Seat.by_status, status="active", placed_at="2026-01")
+    assert sorted(seat.org_id for seat in await by_status.all()) == ["o1", "o2"]
+    assert await Seat.query(client, index=Seat.by_status, status="active").count() == 3
+    with pytest.raises(ValueError, match="unexpected arguments team"):
+        Seat.query(client, org_id="o1", user_id="u1", team="t")
+
+
+async def test_counts_of_projected_reads(client: dynamoxy.Client) -> None:
+    await client.create_tables(Seat)
+    for user in ("u1", "u2", "u3"):
+        await Seat.create(client, org_id="o1", user_id=user, note="x")
+    assert await Seat.query(client, org_id="o1").project(Seat.note).count() == 3
+    assert await client.model(Seat).scan().project(Seat.note).count() == 3
+    table = client.table("seats")
+    assert await table.query(dynamoxy.F("pk") == "ORG#o1").project("note").count() == 3
+    assert await table.scan().project("note").count() == 3
+    page = await client.model(Seat).scan().limit(1).page()
+    assert page.cursor is not None
+    with pytest.raises(TypeError, match=r"counts every segment from its start"):
+        await client.model(Seat).scan().after(page.cursor).segments(2).count()

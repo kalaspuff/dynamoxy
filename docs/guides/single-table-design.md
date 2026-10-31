@@ -48,7 +48,9 @@ formatted in UTC, so an item read back renders the same key. Templated fields:
   check); for other models, a concurrent change between that read and the write can leave the
   templated attribute behind, so give models whose keys follow counters a `version()` field;
 - accept the fields they use in reads: `orders.get(customer_id="c1", order_id="o1")`,
-  `orders.query(customer_id="c1")`, `Order.key(customer_id=..., order_id=...)`.
+  `orders.query(customer_id="c1")`, `Order.key(customer_id=..., order_id=...)`. A sort key may
+  repeat fields of the partition key (`"ORG#{org_id}"` and `"MEMBER#{org_id}#{user_id}"`):
+  `memberships.query(org_id="o1", user_id="u1")` selects the sort key too.
 
 When a model's sort key template starts with a constant (`"ORDER#"`) and a query gives only the
 partition key, dynamoxy adds `begins_with(sk, "ORDER#")`, so `orders.query(customer_id="c1")`
