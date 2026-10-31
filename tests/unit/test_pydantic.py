@@ -352,3 +352,58 @@ def test_star_imports_work_with_and_without_pydantic(installed: bool) -> None:
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+class Tree(dynamoxy.PydanticModel, table="trees"):
+    """Recursive and nested models (core schema definitions), and a plain validator that takes info."""
+
+    tree_id: Annotated[str, dynamoxy.PartitionKey(), pydantic.AfterValidator(str.upper)]
+    parent: Tree | None = None
+    address: Address | None = None
+    label: Annotated[str, pydantic.PlainValidator(lambda value, info: f"{value}:{info.field_name}")] = ""
+
+    @pydantic.model_validator(mode="after")
+    def needs_label(self) -> Tree:
+        if not self.label:
+            raise ValueError("needs a label")
+        return self
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def needs_data(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            raise ValueError("needs a dict")
+        return data
+
+
+def test_values_outside_instances_run_the_fields_schema() -> None:
+    schema = schema_of(Tree)
+    # Through the core schema's definitions, without the model validators (which need the data or
+    # the instance): one of mode="after" wraps the model, one of mode="before" its fields.
+    assert schema.key_from(("t1",), {}) == {"tree_id": "T1"}
+    assert schema.fields["address"].validate({"street": "Main"}) == Address(street="Main")
+    with pytest.raises(ValueError, match=r"street: Field required"):  # where, for nested values
+        schema.fields["address"].validate({"city": "Oslo"})
+    parent = Tree(tree_id="p", label="x")
+    assert schema.fields["parent"].validate(parent) is parent
+    # A plain validator that takes a ValidationInfo cannot be left out: the codec checks the value.
+    assert schema.fields["label"].validate("x") == "x"
+    with pytest.raises(ValueError, match="expected str"):
+        schema.fields["label"].validate(5)
+
+
+def test_core_schemas_of_another_layout_leave_the_type_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Note(dynamoxy.PydanticModel, table="notes"):
+        note_id: Annotated[str, dynamoxy.PartitionKey(), pydantic.AfterValidator(str.upper)]
+
+    monkeypatch.setattr(Note, "__pydantic_core_schema__", {"type": "model"})  # no "schema"
+    assert schema_of(Note).key_from(("n1",), {}) == {"note_id": "n1"}
+
+
+def test_pydantic_errors_of_values_outside_instances_say_where() -> None:
+    class Shelf(dynamoxy.PydanticModel, table="shelves"):
+        shelf_id: Annotated[str, dynamoxy.PartitionKey()]
+        sizes: list[Annotated[int, pydantic.Field(ge=0)]] = []  # noqa: RUF012 - a field: pydantic copies its default
+
+    with pytest.raises(ValueError, match=r"^1: Input should be greater than or equal to 0$"):
+        schema_of(Shelf).fields["sizes"].validate([1, -1])

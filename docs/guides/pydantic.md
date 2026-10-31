@@ -42,10 +42,15 @@ Stored items are read like those of native models: a missing attribute reads as 
 the field's default in other fields (see [modeling](modeling.md#fields-and-codecs)).
 
 Key values you give to reads and to writes by key (`customers.get("c1")`,
-`query(index=Customer.by_email, email=...)`) are checked against the field's type only:
-pydantic's validators run on instances, not on these values. When a validator normalizes a key
-or index key field (`AfterValidator(str.lower)`), normalize the value the same way before the
-lookup. Native models run their validators on key values too ([modeling](modeling.md)).
+`query(index=Customer.by_email, email=...)`) and the values `update()` sets
+(`attr(Customer.name).set(...)`) are validated like the field of an instance, before any I/O:
+its type, `Field` constraints, `Annotated` validators (`AfterValidator(str.lower)` makes
+`get("Ada")` find `ada`) and `@field_validator`s, under the model's config. Validators that take
+a `ValidationInfo` do not run on such values, since they may read other fields, which a single
+value does not have; nor do model validators. A field whose `PlainValidator` takes a
+`ValidationInfo` (it replaces the field's whole validation, so it cannot be left out) has only
+its type checked. Pydantic has no public API that validates one
+field, so dynamoxy builds a validator from the field's part of the model's core schema.
 
 ## Existing models
 

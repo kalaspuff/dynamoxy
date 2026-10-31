@@ -142,7 +142,8 @@ automatic ones: a template of `updated_at` or `version` (`"{status}#{updated_at}
 update.
 
 Values you `set()` are validated like constructor arguments (type, constraints such as `ge` or
-`pattern`, validators), and removing a required field is refused, all before any I/O. Arithmetic
+`pattern`, validators; for pydantic models the field's pydantic validators, see
+[pydantic](pydantic.md)), and removing a required field is refused, all before any I/O. Arithmetic
 (`add`, `increment`, `set(path + n)`) happens in DynamoDB and cannot be checked locally: guard it
 with a condition (`condition=Account.balance >= amount`).
 

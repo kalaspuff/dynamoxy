@@ -408,6 +408,9 @@ class FieldSpec:
         auto: ``"created_at"``, ``"updated_at"``, ``"version"`` or ``"ttl"``.
         constraints: Length, pattern and range constraints.
         validators: Callables ``value -> value`` that raise ``ValueError``.
+        outside_validator: For models whose instances validate themselves (pydantic): a callable
+            ``value -> value`` that validates a value given outside an instance (keys of reads,
+            values of updates) as the model validates the field, raising ``ValueError``.
         immutable: The value cannot change once the item is stored.
         repr: Shown in ``repr()``.
         description: Documentation.
@@ -427,6 +430,7 @@ class FieldSpec:
     auto: AutoField | None = None
     constraints: Constraints = field(default_factory=Constraints)
     validators: tuple[Callable[[Any], Any], ...] = ()
+    outside_validator: Callable[[Any], Any] | None = None
     immutable: bool = False
     repr: bool = True
     description: str | None = None
@@ -484,7 +488,21 @@ class FieldSpec:
         return MISSING
 
     def validate(self, value: Any) -> Any:
-        """Checks a value for this field: type (codec), constraints and validators.
+        """Checks a value given outside an instance: type (codec), constraints and validators.
+
+        Pydantic models validate their fields with pydantic's validators too
+        (``outside_validator``).
+
+        Raises:
+            ValueError: The value is invalid (the message says why).
+        """
+        value = self.check(value)
+        if value is not None and self.outside_validator is not None:
+            value = self.outside_validator(value)
+        return value
+
+    def check(self, value: Any) -> Any:
+        """Checks a value of an instance: type (codec), constraints and validators.
 
         Raises:
             ValueError: The value is invalid (the message says why).
@@ -746,7 +764,10 @@ class ModelSchema:
         # (constraints and validators), or with the codec alone for derived and automatic fields,
         # whose values writes compute.
         self._key_checks: dict[str, Callable[[Any], Any]] = {spec.name: spec.codec.validate for spec in fields}
-        self._key_checks.update((name, check) for name, check, _ in self._validated)
+        self._key_checks.update(
+            (name, self.fields[name].validate if self.fields[name].outside_validator is not None else check)
+            for name, check, _ in self._validated
+        )
         # (name, attribute, encode, spec) in field order.
         self._encoders: tuple[tuple[str, str, Callable[[Any], Any], FieldSpec], ...] = tuple(
             (spec.name, spec.attribute, spec.codec.encode, spec) for spec in fields
@@ -1159,7 +1180,7 @@ def _float_key(value: Any) -> Any:
 
 
 def _value_check(spec: FieldSpec) -> Callable[[Any], Any]:
-    """:meth:`FieldSpec.validate` for values that are not ``None``.
+    """:meth:`FieldSpec.check` for values that are not ``None``.
 
     That is the codec's ``validate`` alone when the field has neither constraints nor validators.
     """
@@ -1174,7 +1195,7 @@ def _value_check(spec: FieldSpec) -> Callable[[Any], Any]:
         constraints.lt,
     )
     if spec.validators or any(bound is not None for bound in bounded):
-        return spec.validate
+        return spec.check
     return spec.codec.validate
 
 
@@ -1295,6 +1316,7 @@ def make_field(
             lt=options.get("lt"),
         ),
         validators=tuple(options.get("validators") or ()),
+        outside_validator=options.get("outside_validator"),
         immutable=bool(options.get("immutable", False)),
         repr=bool(options.get("repr", True)),
         description=options.get("description"),

@@ -163,8 +163,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   reads found nothing (an item whose key predates the rule is still read with a stored key:
   `batch_get([{"user_id": ...}])`), and so does `None`, which templated keys sent to DynamoDB.
   Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
-  they are, and conditions compare with the value as given. Pydantic models still check key
-  values against the field's type only.
+  they are, and conditions compare with the value as given. Pydantic models run the field's
+  pydantic validators on them (see below).
 - Fields that a subclass inherits encoded expression values in the `datetime_format` of the
   class that declared them, while the subclass stored them in its own. With an abstract
   `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,
@@ -429,6 +429,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   wrote. A document read from an item (native, a model used as a document, or pydantic) now
   writes back the map keys no field declares, also in lists and maps of documents and in update
   values; a document the application builds replaces the map (ADR 0020).
+- Pydantic models checked the key values of reads and writes by key, and the values `update()`
+  sets, against the field's type only: a key that a validator normalizes
+  (`AfterValidator(str.lower)`, a `@field_validator`) found no item, and an update wrote values
+  that `Field` constraints refuse, then raised `ItemDecodeError` after the write. Such values now
+  run the field's pydantic validation before any I/O: its type, constraints, `Annotated`
+  validators and `@field_validator`s, under the model's config. Validators that take a
+  `ValidationInfo` (they may read other fields) and model validators still run on instances
+  only.
 
 ### Security
 

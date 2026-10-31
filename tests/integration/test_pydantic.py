@@ -233,3 +233,49 @@ async def test_default_factories_may_take_the_data(client: dynamoxy.Client) -> N
     assert (loaded.slug, loaded.labels) == ("p2", Labels([]))
     await parcels.update(Parcel.key("P3"), dynamoxy.attr(Parcel.size).set(Dimensions({"width": 1})), upsert=True)
     assert (await parcels.get_or_raise("P3")).slug == "p3"
+
+
+class Member(dynamoxy.PydanticModel, table="pydantic-members"):
+    model_config = pydantic.ConfigDict(str_strip_whitespace=True)
+
+    handle: Annotated[str, dynamoxy.PartitionKey(), pydantic.AfterValidator(str.lower)]
+    email: Annotated[str, dynamoxy.Unique()]
+    name: str = pydantic.Field(default="anonymous", min_length=3)
+    visits: int = 0
+    by_email = dynamoxy.GlobalIndex(partition_key="email")
+
+    @pydantic.field_validator("email")
+    @classmethod
+    def lower_email(cls, value: str) -> str:
+        return value.lower()
+
+    @pydantic.field_validator("visits")
+    @classmethod
+    def at_most_name_length(cls, value: int, info: pydantic.ValidationInfo) -> int:
+        # Reads another field: a single value has none (info.data is None), so it does not run there.
+        if value > 100 * len(info.data["name"]):
+            raise ValueError("too many visits")
+        return value
+
+
+async def test_values_given_outside_instances_run_the_fields_validators(client: dynamoxy.Client) -> None:
+    # The key and index key values of lookups, and values update() sets, were checked against the
+    # field's type only: normalized keys found nothing, and invalid values were written.
+    await client.create_tables(Member)
+    members = client.model(Member)
+    created = await members.create(Member(handle="Ada", email="Ada@Example.com"))
+    assert (created.handle, created.email) == ("ada", "ada@example.com")
+    assert await members.get(" Ada ") == created
+    assert await members.query(index=Member.by_email, email="ADA@example.com").all() == [created]
+    assert Member.key("ADA") == {"handle": "ada"}
+
+    with pytest.raises(dynamoxy.ValidationError, match=r"Member\.name: String should have at least 3 characters"):
+        await members.update(Member.key("ada"), dynamoxy.attr(Member.name).set("x"))
+    updated = await members.update(Member.key("ada"), dynamoxy.attr(Member.email).set(" B@Example.COM "))
+    assert updated.email == "b@example.com"
+    assert (await members.table.get({"handle": "ada"}) or {})["email"] == "b@example.com"
+    assert await members.query(index=Member.by_email, email="B@EXAMPLE.com").all() == [updated]
+    # Validators that take a ValidationInfo run on instances only.
+    assert (await members.update(Member.key("ada"), dynamoxy.attr(Member.visits).set(5))).visits == 5
+    with pytest.raises(pydantic.ValidationError, match="too many visits"):
+        Member(handle="b", email="b@b", name="abc", visits=301)

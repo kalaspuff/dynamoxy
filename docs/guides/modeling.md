@@ -101,7 +101,7 @@ normalizes (`field(validators=(str.lower,))`) finds what it stored, so
 `ada@example.com`, and a value the field refuses (or `None`) raises `ValueError` before any
 request. Conditions (`where()`, `filter()`, `condition=`) compare with the value you give: they
 take prefixes and bounds, which constraints and validators are not made for. Pydantic models
-check key values by their type only (see the [pydantic guide](pydantic.md)).
+run the field's pydantic validators on key values (see the [pydantic guide](pydantic.md)).
 
 A stored key, a dict of the key attributes with their stored values (`User.key("u1")`,
 `{"user_id": "u1"}`), is used as it is. `batch_get()`, `update()`, `delete()`, `batch_delete()`

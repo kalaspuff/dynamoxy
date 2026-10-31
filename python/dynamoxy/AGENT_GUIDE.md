@@ -358,8 +358,9 @@ like stored values: a normalizing validator applies (`field(validators=(str.lowe
 Stored keys (`{"user_id": "u1"}`, `User.key(...)`) are used as they are by the calls that take
 one: `batch_get`, `update`, `delete`, `batch_delete` and transaction operations, but not `get`,
 `exists` or `query`. Read an item whose key predates a constraint or validator with
-`users.batch_get([{"user_id": "Ada"}])`. Pydantic models check key values against the field's
-type only: normalize them before the lookup as their validators would.
+`users.batch_get([{"user_id": "Ada"}])`. Pydantic models run the field's pydantic validators on
+key values and on values `update()` sets, except validators that take a `ValidationInfo` and
+model validators (a field whose `PlainValidator` takes one has only its type checked).
 
 ### Queries
 
