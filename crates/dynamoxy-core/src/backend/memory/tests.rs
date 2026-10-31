@@ -2347,6 +2347,56 @@ async fn the_payload_size_of_a_transaction_is_counted_like_dynamodb() {
             4_393_125,
         ),
     ];
+    // Conditions, deletes and checks (dynamoxy's probe on AWS, and round 2 for `absent`).
+    let conditioned = |condition: &str, vals: Values| {
+        (0..11)
+            .map(|sk| match update("upd", sk, "SET filler = :v", Names::new(), vals.clone()) {
+                TransactWriteItem::Update { mut target, key, update_expression } => {
+                    target.condition_expression = Some(condition.into());
+                    TransactWriteItem::Update { target, key, update_expression }
+                }
+                other => other,
+            })
+            .collect::<Vec<_>>()
+    };
+    let filler_only = values(&[(":v", filler.clone())]);
+    let base =
+        || (0..11).map(|sk| update("upd", sk, "SET filler = :v", Names::new(), values(&[(":v", filler.clone())])));
+    let other = || item([("pk", s("other")), ("sk", s("00"))]);
+    let target = |condition: Option<&str>| TransactTarget {
+        table_name: "big".into(),
+        condition_expression: condition.map(Into::into),
+        ..Default::default()
+    };
+    let mut variants = variants;
+    variants.extend([
+        ("attribute_exists(pk)", conditioned("attribute_exists(pk)", filler_only.clone()), 4_394_170),
+        ("attribute_exists(abcdefghij)", conditioned("attribute_exists(abcdefghij)", filler_only.clone()), 4_394_258),
+        ("attribute_not_exists(absent)", conditioned("attribute_not_exists(absent)", filler_only.clone()), 4_394_258),
+        ("note = :w", conditioned("note = :w", values(&[(":v", filler.clone()), (":w", s("w"))])), 4_394_137),
+        (
+            "a delete",
+            base().chain([TransactWriteItem::Delete { target: target(None), key: other() }]).collect(),
+            4_393_466,
+        ),
+        (
+            "a check",
+            base()
+                .chain([TransactWriteItem::ConditionCheck {
+                    target: target(Some("attribute_not_exists(pk)")),
+                    key: other(),
+                }])
+                .collect(),
+            4_393_535,
+        ),
+        (
+            "a put with a condition",
+            base()
+                .chain([TransactWriteItem::Put { target: target(Some("attribute_not_exists(pk)")), item: other() }])
+                .collect(),
+            4_393_535,
+        ),
+    ]);
     for (variant, transact_items, size) in variants {
         let error = backend
             .transact_write_items(TransactWriteItemsInput { transact_items, ..Default::default() })

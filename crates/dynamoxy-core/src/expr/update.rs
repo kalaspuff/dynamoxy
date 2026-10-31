@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use super::ast::{Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
+use super::ast::{Condition, Operand, Path, PathElement, SetValue, UpdateExpression, UpdateOperand};
 use super::eval::resolve;
 use crate::error::{Error, Result};
 use crate::value::{AttributeValue, Item, Number, value_size};
@@ -377,6 +377,47 @@ impl UpdateExpression {
         let add = self.add.iter().map(|(path, value)| 19 + target(path) + value_size(value));
         let removes = self.remove.iter().chain(self.delete.iter().map(|(path, _)| path)).map(|path| 1 + target(path));
         3 + set.sum::<usize>() + add.sum::<usize>() + removes.sum::<usize>()
+    }
+}
+
+/// What DynamoDB counts a condition for in the payload size of `TransactWriteItems`, from the
+/// request alone (measured through dynamoxy's probe, scripts/probe_backends.py, in eu-north-1 on 2026-10-31,
+/// docs/parity): `attribute_exists(p)` 63 and `attribute_not_exists(p)` 67 more than the path,
+/// a comparison 57 more than its operands; a path counts like an update's target, a value its
+/// size, `size(p)` its path. The other forms were not measured and count like a comparison, and
+/// `AND`, `OR` and `NOT` their parts.
+pub fn condition_charge(condition: &Condition) -> usize {
+    fn path(path: &Path) -> usize {
+        path.0
+            .iter()
+            .enumerate()
+            .map(|(i, part)| {
+                let element = match part {
+                    PathElement::Name(name) => name.len(),
+                    PathElement::Index(index) => index.to_string().len(),
+                };
+                element + if i == 0 { 0 } else { 4 }
+            })
+            .sum()
+    }
+    fn operand(operand: &Operand) -> usize {
+        match operand {
+            Operand::Path(p) | Operand::Size(p) => path(p),
+            Operand::Value(value) => value_size(value),
+        }
+    }
+    const COMPARISON: usize = 57;
+    match condition {
+        Condition::AttributeExists(p) => 63 + path(p),
+        Condition::AttributeNotExists(p) => 67 + path(p),
+        Condition::Compare(a, _, b) => COMPARISON + operand(a) + operand(b),
+        Condition::Between(a, low, high) => COMPARISON + operand(a) + operand(low) + operand(high),
+        Condition::In(a, candidates) => COMPARISON + operand(a) + candidates.iter().map(operand).sum::<usize>(),
+        Condition::AttributeType(p, b) | Condition::BeginsWith(p, b) | Condition::Contains(p, b) => {
+            COMPARISON + path(p) + operand(b)
+        }
+        Condition::And(a, b) | Condition::Or(a, b) => condition_charge(a) + condition_charge(b),
+        Condition::Not(inner) => condition_charge(inner),
     }
 }
 

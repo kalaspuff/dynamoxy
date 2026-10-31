@@ -91,8 +91,11 @@ measured in rounds 1 and 2; an update of a key attribute stays bare), and refuse
 
 The in-memory backend refuses these with DynamoDB's messages and kinds, counts a local index entry
 as the attributes it holds, the 4 MB of a read as the items returned (4 MiB), and the payload
-size of a write transaction as DynamoDB does, from the request (exact for puts and updates;
-conditions, deletes and checks add bytes DynamoDB counts and it does not). It holds a standalone
+size of a write transaction as DynamoDB does, from the request: a put's item, an update's key,
+request charge and 8 bytes, a delete's and a check's key, and each one's condition
+(`attribute_exists(p)` 63 bytes more than the path, `attribute_not_exists(p)` 67, a comparison 57
+more than its operands; measured by dynamoxy's probe on AWS, the other condition forms counted
+like a comparison). It holds a standalone
 `UpdateItem` to 400 KB by the same update charge before it reads the item (dynoxide-rs), and
 reports item collection sizes as whole gigabytes, `[0.0, 1.0]` for a small collection.
 

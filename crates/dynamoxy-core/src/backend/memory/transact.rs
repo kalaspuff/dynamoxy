@@ -207,9 +207,9 @@ pub fn transact_write_items(state: &mut State, input: TransactWriteItemsInput) -
             validate_update_for(table, update)?;
         }
         // DynamoDB's payload size, from the request alone (measured, docs/parity): a put's item;
-        // an update's key, its request charge and 8 bytes. Table names and placeholder names
-        // count nothing. Conditions add bytes too (73 for `attribute_not_exists(absent)`), and
-        // deletes and checks some for their key, which were not measured further: left out.
+        // an update's key, its request charge and 8 bytes; a delete's and a check's key; and each
+        // one's condition. Table names and placeholder names count nothing.
+        total_size += expressions.condition.as_ref().map_or(0, crate::expr::condition_charge);
         total_size += match operation {
             TransactWriteItem::Put { item, .. } => item_size(item),
             TransactWriteItem::Update { key, .. } => {
