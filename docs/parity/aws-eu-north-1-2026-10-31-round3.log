@@ -1,0 +1,87 @@
+# dynamoxy DynamoDB probes, round 3, 2026-10-31T16:00:13Z, region eu-north-1, aws-cli/2.37.6 Python/3.14.6 Darwin/27.0.0 script-exe/arm64
+tables: dynamoxy-probe-222299-*
+### setup: create dynamoxy-probe-222299-pq
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-222299-pq", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T17:00:14.307000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-pq", "TableId": "e84f3b3a-fd1f-4073-86b0-1d56d26f5d84", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-222299-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "lsk", "AttributeType": "S"}, {"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-222299-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T17:00:14.837000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-lsi", "TableId": "eb44f531-32b0-4ef8-ba1c-82c5fb1c1309", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "IndexSizeBytes": 0, "ItemCount": 0, "IndexArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-lsi/index/lsi"}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-222299-ttl
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-222299-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T17:00:15.394000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-ttl", "TableId": "dc45a0f5-8475-479e-804f-05ec633220c6", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+tables active
+## PartiQL: an INSERT of an item that exists
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### pq-insert-existing: ExecuteStatement INSERT of an item that exists
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#DuplicateItemException","message":"Duplicate primary key exists in table"}'
+
+### pq-transaction-insert-existing: ExecuteTransaction: INSERT of a new item, then of one that exists
+exit: 254
+body: b'{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"None"},{"Code":"DuplicateItem","Message":"Duplicate primary key exists in table"}],"Message":"Transaction cancelled, please refer cancellation reasons for specific reasons [None, DuplicateItem]"}'
+
+### pq-batch-insert-existing: BatchExecuteStatement: INSERT of a new item, then of one that exists
+exit: 0
+out: {"Responses": [{"TableName": "dynamoxy-probe-222299-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-222299-pq"}]}
+body: b'{"Responses":[{"TableName":"dynamoxy-probe-222299-pq"},{"Error":{"Code":"DuplicateItem","Message":"Duplicate primary key exists in table"},"TableName":"dynamoxy-probe-222299-pq"}]}'
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### pq-select-page: ExecuteStatement SELECT with Limit=2: NextToken and LastEvaluatedKey
+exit: 0
+out: {"Items": [{"pk": {"S": "a"}, "sk": {"S": "1"}}, {"pk": {"S": "a"}, "sk": {"S": "2"}}], "NextToken": "ml0fq4nEVJGDUccnJG+5Nl3arIWXJSanfXmKWuEprwoSGn2oSj0CHaXtC2T2DPQ49MGfq/SeWkM1UG51CByjirZCpdidb2mrWl/gcXi2aHJtk9kBDl5AB71MHjDmGOmUVrIy0Knlj75TIwv/VcbBzIDNYV4oLHu0nRADp4xxgN/4kAMSxdPi1O61NACYbrVIHpGomXqjhgxflYly5Px1+V6ypjUuZoXk5XmPfHIfE6OrovTV0/uli83XdVEEUeVWzs9NIdUWIoFcX3RkUmpNtqnzRPA60L/c8+tEcK/np5aEbetddyBlgw7dZIx+CGyDDRnK3y9syPRBt/lsyvsaTjkP8vuFSUZE", "LastEvaluatedKey": {"sk": {"S": "2"}, "pk": {"S": "a"}}}
+
+## Time to Live of a table created again
+### setup: ttl
+exit: 0
+out: {"TimeToLiveSpecification": {"Enabled": true, "AttributeName": "expires"}}
+
+### setup: delete
+exit: 0
+out: {"TableDescription": {"TableName": "dynamoxy-probe-222299-ttl", "TableStatus": "DELETING", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-ttl", "TableId": "dc45a0f5-8475-479e-804f-05ec633220c6", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": "2026-10-31T17:00:15.394000+01:00"}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-222299-ttl again
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-222299-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "CREATING", "CreationDateTime": "2026-10-31T17:00:53.736000+01:00", "ProvisionedThroughput": {"NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:eu-north-1:<account>:table/dynamoxy-probe-222299-ttl", "TableId": "a0b6ab7a-7173-420b-81df-b0e4f1fd4b36", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}, "DeletionProtectionEnabled": false}}
+
+### ttl-recreated: DescribeTimeToLive of the table created again with the same name
+exit: 0
+out: {"TimeToLiveDescription": {"TimeToLiveStatus": "DISABLED"}}
+
+## Item collection metrics (a table with a local index)
+### icm-put: PutItem with ReturnItemCollectionMetrics=SIZE
+exit: 0
+out: {"ItemCollectionMetrics": {"ItemCollectionKey": {"pk": {"S": "c"}}, "SizeEstimateRangeGB": [0.0, 1.0]}}
+
+### icm-batch: BatchWriteItem with ReturnItemCollectionMetrics=SIZE
+exit: 0
+out: {"UnprocessedItems": {}, "ItemCollectionMetrics": {"dynamoxy-probe-222299-lsi": [{"ItemCollectionKey": {"pk": {"S": "c"}}, "SizeEstimateRangeGB": [0.0, 1.0]}]}}
+
+### icm-transaction: TransactWriteItems with ReturnItemCollectionMetrics=SIZE
+exit: 0
+out: {"ItemCollectionMetrics": {"dynamoxy-probe-222299-lsi": [{"ItemCollectionKey": {"pk": {"S": "c"}}, "SizeEstimateRangeGB": [0.0, 1.0]}]}}
+
+## Binary values
+### binary-300k: PutItem of an item with 300 KB of binary (400 KB as base64)
+exit: 0
+
+## cleanup
+deleted dynamoxy-probe-222299-pq
+deleted dynamoxy-probe-222299-lsi
+deleted dynamoxy-probe-222299-ttl

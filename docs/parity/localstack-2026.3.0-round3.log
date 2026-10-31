@@ -1,0 +1,87 @@
+# dynamoxy DynamoDB probes, round 3, 2026-10-31T14:36:56Z, region us-east-1, aws-cli/1.46.2 Python/3.12.15 Linux/6.18.35 botocore/1.43.62
+tables: dynamoxy-probe-05dc92-*
+### setup: create dynamoxy-probe-05dc92-pq
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-05dc92-pq", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457416.984, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-05dc92-pq", "TableId": "1caefdff-fadc-477d-a682-3e02d1e15fe2", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793457416.984}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-05dc92-lsi
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}, {"AttributeName": "lsk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-05dc92-lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457417.272, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-05dc92-lsi", "TableId": "0a0f6115-e14c-499c-8e4a-1fd5ec6515a4", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793457417.272}, "LocalSecondaryIndexes": [{"IndexName": "lsi", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "lsk", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}}], "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-05dc92-ttl
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-05dc92-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457417.554, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-05dc92-ttl", "TableId": "ebc3e809-e4f3-47a0-bbd7-089877c5abad", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793457417.554}, "DeletionProtectionEnabled": false}}
+
+tables active
+## PartiQL: an INSERT of an item that exists
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### pq-insert-existing: ExecuteStatement INSERT of an item that exists
+exit: 255
+err: An error occurred (DuplicateItem) when calling the ExecuteStatement operation: Duplicate primary key exists in table
+body: b'{"__type": "DuplicateItem", "message": "Duplicate primary key exists in table"}'
+
+### pq-transaction-insert-existing: ExecuteTransaction: INSERT of a new item, then of one that exists
+exit: 255
+err: An error occurred (TransactionCanceledException) when calling the ExecuteTransaction operation: Transaction cancelled, please refer cancellation reasons for specific reasons [None, ValidationError]
+body: b'{"__type": "TransactionCanceledException", "Message": "Transaction cancelled, please refer cancellation reasons for specific reasons [None, ValidationError]", "CancellationReasons": [{"Code": "None"}, {"Code": "ValidationError", "Message": "Duplicate primary key exists in table"}]}'
+
+### pq-batch-insert-existing: BatchExecuteStatement: INSERT of a new item, then of one that exists
+exit: 0
+out: {"Responses": [{"TableName": "dynamoxy-probe-05dc92-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-05dc92-pq"}]}
+body: b'{"Responses": [{"TableName": "dynamoxy-probe-05dc92-pq"}, {"Error": {"Code": "DuplicateItem", "Message": "Duplicate primary key exists in table"}, "TableName": "dynamoxy-probe-05dc92-pq"}]}'
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### setup: item
+exit: 0
+out: {"Items": []}
+
+### pq-select-page: ExecuteStatement SELECT with Limit=2: NextToken and LastEvaluatedKey
+exit: 0
+out: {"Items": [{"sk": {"S": "1"}, "pk": {"S": "a"}}, {"sk": {"S": "2"}, "pk": {"S": "a"}}], "NextToken": "eyJjcmVhdGlvblRpbWUiOjE3OTM0NTc0MjAuMjIyLCJvcEluZGV4VG9FeGNsdXNpdmVOZXh0S2V5Ijp7IjAiOnsic2siOnsiUyI6IjIifSwicGsiOnsiUyI6ImEifX19LCJ2ZXJzaW9uIjoiVjEifQ=="}
+
+## Time to Live of a table created again
+### setup: ttl
+exit: 0
+out: {"TimeToLiveSpecification": {"Enabled": true, "AttributeName": "expires"}}
+
+### setup: delete
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-05dc92-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457417.554, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-05dc92-ttl", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793457417.554}, "DeletionProtectionEnabled": false}}
+
+### setup: create dynamoxy-probe-05dc92-ttl again
+exit: 0
+out: {"TableDescription": {"AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}], "TableName": "dynamoxy-probe-05dc92-ttl", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}], "TableStatus": "ACTIVE", "CreationDateTime": 1793457421.247, "ProvisionedThroughput": {"LastIncreaseDateTime": 0.0, "LastDecreaseDateTime": 0.0, "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0}, "TableSizeBytes": 0, "ItemCount": 0, "TableArn": "arn:aws:dynamodb:us-east-1:<account>:table/dynamoxy-probe-05dc92-ttl", "TableId": "76b616b1-1dc9-4d1d-a62f-d26c41bf00cd", "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST", "LastUpdateToPayPerRequestDateTime": 1793457421.247}, "DeletionProtectionEnabled": false}}
+
+### ttl-recreated: DescribeTimeToLive of the table created again with the same name
+exit: 0
+out: {"TimeToLiveDescription": {"TimeToLiveStatus": "ENABLED", "AttributeName": "expires"}}
+
+## Item collection metrics (a table with a local index)
+### icm-put: PutItem with ReturnItemCollectionMetrics=SIZE
+exit: 0
+
+### icm-batch: BatchWriteItem with ReturnItemCollectionMetrics=SIZE
+exit: 0
+out: {"UnprocessedItems": {}}
+
+### icm-transaction: TransactWriteItems with ReturnItemCollectionMetrics=SIZE
+exit: 0
+
+## Binary values
+### binary-300k: PutItem of an item with 300 KB of binary (400 KB as base64)
+exit: 0
+
+## cleanup
+deleted dynamoxy-probe-05dc92-pq
+deleted dynamoxy-probe-05dc92-lsi
+deleted dynamoxy-probe-05dc92-ttl

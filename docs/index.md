@@ -36,4 +36,6 @@ dynamoxy is a typed, async DynamoDB ORM for Python with a Rust core. Start with
 
 - [Architecture](architecture.md): layers, pipelines, invariants, concurrency, extension points.
 - [Architecture decision records](adr/README.md): why things are the way they are.
+- [Parity with DynamoDB](parity/README.md): DynamoDB's answers measured against the service, and
+  the emulators', which the in-memory backend follows.
 - [Examples](../examples/README.md): runnable programs, executed by the test suite.
