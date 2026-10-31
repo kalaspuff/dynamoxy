@@ -78,10 +78,10 @@ class Get[M]:
         return f"Get({self.model.__name__}, {self.key})"
 
 
-async def transact_get(client: Client, gets: Sequence[Get[Any]]) -> list[Any]:
+async def transact_get(client: Client, gets: Sequence[Get[Any]]) -> tuple[Any, ...]:
     """Reads items in one consistent snapshot (see :meth:`dynamoxy.Client.transact_get`)."""
     if not gets:
-        return []
+        return ()
     if len(gets) > MAX_OPERATIONS:
         raise ValueError(f"a transaction reads at most {MAX_OPERATIONS} items, got {len(gets)}")
     repositories: dict[type, Repository[Any]] = {}
@@ -90,10 +90,10 @@ async def transact_get(client: Client, gets: Sequence[Get[Any]]) -> list[Any]:
             repositories[get.model] = client.model(get.model)
     items = [{"table_name": repositories[get.model].table_name, "key": get.key} for get in gets]
     output = await client.call("transact_get_items", "TransactGetItems", transact_items=items)
-    return [
+    return tuple(
         None if item is None else repositories[get.model]._load(item)
         for get, item in zip(gets, output["responses"], strict=True)
-    ]
+    )
 
 
 @dataclass(eq=False)

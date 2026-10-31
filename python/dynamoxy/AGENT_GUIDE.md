@@ -632,7 +632,7 @@ with `tx.create()` of an item keyed by the operation id.
 Consistent multi-item reads:
 
 ```python
-customer, order = await client.transact_get(
+customer, order = await client.transact_get(  # a tuple: Customer | None, Order | None
     dynamoxy.Get(Customer, customer_id="c1"),
     dynamoxy.Get(Order, customer_id="c1", order_id="o1"),
 )
