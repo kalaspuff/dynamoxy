@@ -443,7 +443,9 @@ async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, back
     table = client.table("creating")
     await table.create(partition_key=("pk", "S"), wait=False)
     if backend == "memory":
-        with pytest.raises(dynamoxy.ResourceNotFoundError, match=r"Table: .*creating not found"):
+        # enable_time_to_live() describes Time to Live first, which DynamoDB refuses then (an
+        # UpdateTimeToLive would be ResourceNotFoundError).
+        with pytest.raises(dynamoxy.ValidationError, match="Cannot describe time to live while table is in CREATING"):
             await table.enable_time_to_live("expires")
         with pytest.raises(dynamoxy.ResourceInUseError, match="Table is being created"):
             await table.add_index(dynamoxy.IndexDefinition("by_owner", "global", ("owner", "S")))
@@ -455,3 +457,14 @@ async def test_tables_being_created_refuse_changes(client: dynamoxy.Client, back
             await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))
     await table.wait_until_active()
     await table.add_index(dynamoxy.IndexDefinition("by_name", "global", ("name", "S")))
+
+
+async def test_sync_with_waits_for_a_table_being_created(client: dynamoxy.Client) -> None:
+    # Another process created the table and did not wait: sync_with() (ensure_tables) waits for it
+    # before it describes its Time to Live, which DynamoDB refuses while the table is being
+    # created (measured, docs/parity).
+    table = client.table("visits")
+    await table.create(partition_key=("visit_id", "S"), wait=False)
+    [definition] = dynamoxy.table.definitions_for([Visit])
+    assert await table.sync_with(definition)
+    assert (await table.time_to_live()).attribute == "expires_at"

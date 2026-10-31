@@ -110,6 +110,7 @@ bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 Mi
 | Request | DynamoDB | MiniStack | LocalStack |
 | --- | --- | --- | --- |
 | `UpdateTimeToLive` of a table still `CREATING` | `ResourceNotFoundException: Requested resource not found: Table: <name> not found` | accepted (tables are active at once) | accepted (active at once) |
+| `DescribeTimeToLive` of a table still `CREATING` (dynamoxy's probe on AWS) | `ValidationException: Cannot describe time to live while table is in CREATING state: Current table state is CREATING` | accepted | accepted |
 | `UpdateTable` of a table still `CREATING` | `ResourceInUseException: Attempt to change a resource which is still in use: Table is being created: <name>` | accepted | accepted |
 | switch to `PROVISIONED` with capacity for the table only (one global index) | `One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1` | accepted, the index at 0/0 | `InternalFailure` |
 | add a global index without `ProvisionedThroughput` to a provisioned table | `One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2` | accepted | `InternalFailure` |
