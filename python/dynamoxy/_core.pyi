@@ -19,6 +19,8 @@ class DynamoxyError(Exception):
     request_id: str | None
     status_code: int | None
     attempts: int | None
+    throttles: int | None
+    requests: int | None
     duration: float | None
 
 class ConfigurationError(DynamoxyError): ...

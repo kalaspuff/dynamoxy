@@ -5,8 +5,8 @@ that only the Python layer raises are defined below and derive from the same bas
 
 Every error has ``.retryable`` (whether the same call may succeed later). Errors returned by
 DynamoDB also carry ``.code`` (e.g. ``"ConditionalCheckFailedException"``), ``.message``,
-``.operation``, ``.request_id`` and ``.status_code``; errors of a call carry ``.attempts`` and
-``.duration``.
+``.operation``, ``.request_id`` and ``.status_code``; errors of a call carry ``.attempts``,
+``.throttles``, ``.requests`` and ``.duration``.
 
 ::
 
@@ -180,7 +180,7 @@ class ItemNotFoundError(DynamoxyError):
 def _copy_service_fields(target: DynamoxyError, source: BaseException | None) -> None:
     if source is None:
         return
-    for name in ("code", "operation", "request_id", "status_code", "attempts", "duration"):
+    for name in ("code", "operation", "request_id", "status_code", "attempts", "throttles", "requests", "duration"):
         value = getattr(source, name, None)
         if value is not None:
             setattr(target, name, value)

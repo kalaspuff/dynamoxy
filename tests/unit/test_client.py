@@ -388,6 +388,72 @@ async def test_metrics_and_collection() -> None:
         assert "PutItem" not in client.metrics().operations
 
 
+async def test_partiql_writes_count_as_writes() -> None:
+    async with testing.memory_client(consumed_capacity="TOTAL") as client:
+        await client.create_tables(Event)
+        with dynamoxy.collect() as collected:
+            for seq in range(3):
+                await client.execute("INSERT INTO events VALUE {'stream': 's', 'seq': ?, 'kind': 'k'}", seq)
+            await client.batch_execute([("INSERT INTO events VALUE {'stream': 't', 'seq': 1, 'kind': 'k'}", [])])
+            await client.execute_transaction([("UPDATE events SET kind = 'x' WHERE stream = 's' AND seq = 0", [])])
+            await client.execute("SELECT * FROM events WHERE stream = 's'")
+        operations = client.metrics().operations
+        units = {
+            name: (metrics.read_capacity_units, metrics.write_capacity_units) for name, metrics in operations.items()
+        }
+        assert units["ExecuteStatement"][1] == collected.records[0].write_capacity_units * 3
+        assert units["ExecuteStatement"][0] == collected.records[-1].read_capacity_units > 0, "the SELECT"
+        assert units["BatchExecuteStatement"][0] == 0 < units["BatchExecuteStatement"][1]
+        assert units["ExecuteTransaction"][0] == 0 < units["ExecuteTransaction"][1]
+        assert [record.read_capacity_units == 0 < record.write_capacity_units for record in collected.records] == [
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+        ]
+
+
+async def test_retries_count_the_attempts_beyond_the_first_of_each_request() -> None:
+    retry = dynamoxy.RetryPolicy(max_attempts=5, base_delay=0, max_delay=0)
+    async with testing.memory_client(retry=retry, batch_max_rounds=1) as client:
+        await client.create_tables(Event)
+        events = client.model(Event)
+        with dynamoxy.collect() as batch:
+            await events.batch_put([Event(stream="s", seq=seq, kind="k") for seq in range(60)])
+        assert (batch.summary()["retries"], batch.summary()["requests"]) == (0, 3), "three chunks, none retried"
+        testing.inject_fault(client, operation="PutItem", error="throttling", times=2)
+        with dynamoxy.collect() as single:
+            await events.put(Event(stream="s", seq=100, kind="k"))
+        (record,) = single.records
+        assert (record.attempts, record.requests, single.retries) == (3, 1, 2)
+        testing.inject_fault(client, operation="GetItem", error="throttling", times=10)
+        with dynamoxy.collect() as failed, pytest.raises(dynamoxy.ThrottlingError) as caught:
+            await events.get("s", 1)
+        (record,) = failed.records
+        assert (record.attempts, record.throttles, record.requests, failed.retries) == (5, 5, 1, 4)
+        assert (caught.value.attempts, caught.value.throttles, caught.value.requests) == (5, 5, 1)
+
+
+async def test_batches_that_leave_items_unprocessed_are_recorded_as_failures() -> None:
+    async with testing.memory_client(batch_max_rounds=2) as client:
+        await client.create_tables(Event)
+        failures: list[dynamoxy.Event] = []
+        client.on("operation.failed", failures.append)
+        testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times=100)
+        with dynamoxy.collect() as collected, pytest.raises(dynamoxy.UnprocessedItemsError):
+            await client.model(Event).batch_put([Event(stream="s", seq=seq, kind="k") for seq in range(3)])
+        (record,) = collected.records
+        assert (record.error, record.items, record.requests, collected.errors) == ("UnprocessedItemsError", 0, 2, 1)
+        assert [event.fields["operation"] for event in failures] == ["BatchWriteItem"]
+        client.store.clear_faults()  # type: ignore[union-attr]
+        testing.inject_fault(client, operation="BatchGetItem", unprocessed=True, times=100)
+        with dynamoxy.collect() as reads, pytest.raises(dynamoxy.UnprocessedItemsError):
+            await client.model(Event).batch_get([("s", 1)])
+        assert [record.error for record in reads.records] == ["UnprocessedItemsError"]
+
+
 async def test_collectors_follow_tasks() -> None:
     async with testing.memory_client() as client:
         await client.create_tables(Event)

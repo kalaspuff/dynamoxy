@@ -37,7 +37,8 @@ class CallStats:
     Attributes:
         attempts: Attempts sent (1 when the first succeeded).
         throttles: Attempts DynamoDB throttled.
-        requests: Requests sent (several for managed batches).
+        requests: Requests sent: 1 for a single call, however many attempts it took; managed
+            batches send one per chunk and round of unprocessed items.
         duration: Seconds, retries included.
     """
 
@@ -106,10 +107,15 @@ class ConsumedCapacity:
 
 
 def capacity_split(
-    operation: str, capacities: Sequence[ConsumedCapacity]
+    operation: str, capacities: Sequence[ConsumedCapacity], *, writes: bool | None = None
 ) -> tuple[float, float]:  # pragma: no cover - trivial
-    """``(read units, write units)``, attributing reported totals by operation kind."""
-    writes = operation in {"PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"}
+    """``(read units, write units)``, attributing reported totals by operation kind.
+
+    ``writes`` says whether the request writes, for operations whose kind does not say it
+    (PartiQL statements); by default only the write operations write.
+    """
+    if writes is None:
+        writes = operation in {"PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"}
     read = write = 0.0
     for capacity in capacities:
         units = capacity.capacity_units or (capacity.read_capacity_units + capacity.write_capacity_units)
@@ -365,7 +371,9 @@ class OperationRecord:
         duration: Seconds, retries included.
         attempts: Attempts sent.
         throttles: Attempts throttled.
-        requests: Requests sent (managed batches send several).
+        requests: Requests sent: 1 for a single call, however many attempts it took; managed
+            batches send one per chunk and round of unprocessed items. Retries are ``attempts -
+            requests``.
         read_capacity_units: Read units consumed (when reported).
         write_capacity_units: Write units consumed (when reported).
         items: Items returned or written.

@@ -58,7 +58,8 @@ pub struct OperationStats {
     pub attempts: u32,
     /// Attempts that were throttled.
     pub throttles: u32,
-    /// Requests sent (several for managed batches).
+    /// Requests sent: 1 for a single call, however many attempts it took; managed batches send
+    /// one per chunk and round of unprocessed items. Retries are `attempts - requests`.
     pub requests: u32,
     /// Wall-clock time, retries and backoff included.
     pub duration: Duration,
@@ -75,37 +76,43 @@ pub struct Call<T> {
 
 /// Capacity reported by an output, for metrics.
 trait ConsumedCapacityTotals {
-    fn capacity(&self) -> (f64, f64);
+    /// Read and write units. `writes` says how to count units reported without a read/write
+    /// split: as writes or as reads (`None`: as the operation's kind, which PartiQL outputs do
+    /// not know).
+    fn capacity(&self, writes: Option<bool>) -> (f64, f64);
 }
 
-/// Capacity units of a list of reports (DynamoDB often fills only `capacity_units`).
-fn units<'a>(capacities: impl IntoIterator<Item = &'a ConsumedCapacity>) -> f64 {
-    capacities
-        .into_iter()
-        .map(|capacity| {
-            if capacity.capacity_units > 0.0 {
-                capacity.capacity_units
-            } else {
-                capacity.read_capacity_units + capacity.write_capacity_units
-            }
-        })
-        .sum()
+/// Read and write units of a list of reports. DynamoDB often fills only `capacity_units`: those
+/// count as writes or reads as `writes` says; a reported split is taken as it is.
+fn split<'a>(capacities: impl IntoIterator<Item = &'a ConsumedCapacity>, writes: bool) -> (f64, f64) {
+    let (mut read, mut write) = (0.0, 0.0);
+    for capacity in capacities {
+        if capacity.read_capacity_units > 0.0 || capacity.write_capacity_units > 0.0 {
+            read += capacity.read_capacity_units;
+            write += capacity.write_capacity_units;
+        } else if writes {
+            write += capacity.capacity_units;
+        } else {
+            read += capacity.capacity_units;
+        }
+    }
+    (read, write)
 }
 
 /// Implements [`ConsumedCapacityTotals`] for outputs of read (`read`) or write (`write`) operations.
 macro_rules! capacity {
     ($($output:ty => $kind:ident),+ $(,)?) => {$(
         impl ConsumedCapacityTotals for $output {
-            fn capacity(&self) -> (f64, f64) {
-                let units = units(self.consumed_capacity.iter());
-                capacity!(@split $kind units)
+            fn capacity(&self, writes: Option<bool>) -> (f64, f64) {
+                split(self.consumed_capacity.iter(), writes.unwrap_or(capacity!(@writes $kind)))
             }
         }
     )+};
-    (@split read $units:ident) => { ($units, 0.0) };
-    (@split write $units:ident) => { (0.0, $units) };
+    (@writes read) => { false };
+    (@writes write) => { true };
 }
 
+// PartiQL outputs are reads unless the statements write (`Safety::writes`).
 capacity! {
     GetItemOutput => read,
     WriteItemOutput => write,
@@ -122,7 +129,7 @@ capacity! {
 macro_rules! no_capacity {
     ($($output:ty),+ $(,)?) => {$(
         impl ConsumedCapacityTotals for $output {
-            fn capacity(&self) -> (f64, f64) {
+            fn capacity(&self, _: Option<bool>) -> (f64, f64) {
                 (0.0, 0.0)
             }
         }
@@ -254,19 +261,22 @@ struct Safety<T> {
     settle: Option<Settle<T>>,
     /// The old values the request returns.
     old_values: OldValues,
+    /// Whether the request writes, for capacity reported without a read/write split (`None`:
+    /// as the operation's kind; PartiQL statements say it).
+    writes: Option<bool>,
 }
 
 impl<T> Safety<T> {
     /// Reads, and writes that apply once even when sent twice and whose answers stay the same
     /// (batch writes, which have no conditions and return nothing of the items).
     fn resendable() -> Self {
-        Self { resend: true, settle: None, old_values: OldValues::Trusted }
+        Self { resend: true, settle: None, old_values: OldValues::Trusted, writes: None }
     }
 
     /// Transactions: their token makes a later attempt return the earlier one's result, so only
     /// the lack of an answer leaves the outcome unknown.
     fn transaction() -> Self {
-        Self { resend: true, settle: Some(settle_write::<T>), old_values: OldValues::Trusted }
+        Self { resend: true, settle: Some(settle_write::<T>), old_values: OldValues::Trusted, writes: None }
     }
 }
 
@@ -319,7 +329,7 @@ fn settle_statement(result: &Result<ExecuteStatementOutput>, old_values: OldValu
 
 /// The [`Safety`] of a single-item write.
 fn item_write(resend: bool, old_values: OldValues) -> Safety<WriteItemOutput> {
-    Safety { resend, settle: Some(settle_item_write), old_values }
+    Safety { resend, settle: Some(settle_item_write), old_values, writes: None }
 }
 
 /// What a failed attempt says, for messages.
@@ -498,6 +508,7 @@ impl Client {
             });
             tokio::time::sleep(delay).await;
         };
+        let writes = safety.writes;
         let unsettled = match (&uncertain, safety.settle) {
             (Some(_), Some(settle)) => settle(&result, safety.old_values),
             _ => None,
@@ -553,7 +564,7 @@ impl Client {
         let metrics = &self.inner.metrics;
         metrics.record(operation, duration, attempts, throttles, result.is_err());
         if let Ok(output) = &result {
-            let (read, write) = output.capacity();
+            let (read, write) = output.capacity(writes);
             if read > 0.0 || write > 0.0 {
                 metrics.record_capacity(operation, read, write);
             }
@@ -570,7 +581,8 @@ impl Client {
                 .field("attempts", attempts)
             });
         }
-        Call { result, stats: OperationStats { operation, attempts, throttles, requests: attempts, duration } }
+        // One request, however many attempts it took (managed batches add up their requests).
+        Call { result, stats: OperationStats { operation, attempts, throttles, requests: 1, duration } }
     }
 
     /// `GetItem`.
@@ -664,9 +676,14 @@ impl Client {
                     (true, false) => OldValues::Present,
                     (true, true) => OldValues::Absent,
                 };
-                Safety { resend: true, settle: Some(settle_statement), old_values }
+                Safety { resend: true, settle: Some(settle_statement), old_values, writes: Some(true) }
             }
-            Effect::Once => Safety { resend: false, settle: Some(settle_statement), old_values: OldValues::Trusted },
+            Effect::Once => Safety {
+                resend: false,
+                settle: Some(settle_statement),
+                old_values: OldValues::Trusted,
+                writes: Some(true),
+            },
         };
         call!(self, ExecuteStatement, None, execute_statement(input); safety)
     }
@@ -681,7 +698,11 @@ impl Client {
             .statements
             .iter()
             .all(|statement| partiql::effect(&statement.statement, &statement.parameters) == Effect::Read);
-        let safety = if reads { Safety::resendable() } else { Safety { resend: false, ..Safety::transaction() } };
+        let safety = if reads {
+            Safety::resendable()
+        } else {
+            Safety { resend: false, writes: Some(true), ..Safety::transaction() }
+        };
         call!(self, BatchExecuteStatement, None, batch_execute_statement(input); safety)
     }
 
@@ -694,7 +715,7 @@ impl Client {
         if input.client_request_token.is_none() && writes {
             input.client_request_token = Some(request_token());
         }
-        let safety = if writes { Safety::transaction() } else { Safety::resendable() };
+        let safety = if writes { Safety { writes: Some(true), ..Safety::transaction() } } else { Safety::resendable() };
         call!(self, ExecuteTransaction, None, execute_transaction(input); safety)
     }
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
 from dynamoxy._utils import LoopLocal, count, deprecated, seconds
-from dynamoxy.errors import DynamoxyError, ResourceInUseError
+from dynamoxy.errors import DynamoxyError, ResourceInUseError, UnprocessedItemsError
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
 from dynamoxy.results import CallStats, ConsumedCapacity, MetricsSnapshot, OperationRecord, capacity_split
@@ -145,8 +145,8 @@ def _items_of(operation: str, params: Mapping[str, Any], output: Any) -> int:
         return sum(len(items) for items in found.values())
     if operation == "BatchWriteItem":
         requests = params.get("requests")
-        if requests is not None:
-            return len(requests)
+        if requests is not None:  # a managed batch: the writes made
+            return len(requests) - len(output.get("unprocessed", ()))
         return sum(len(entries) for entries in params.get("request_items", {}).values())
     if operation == "TransactGetItems":
         return sum(item is not None for item in output.get("responses", ()))
@@ -155,6 +155,41 @@ def _items_of(operation: str, params: Mapping[str, Any], output: Any) -> int:
     if operation == "ExecuteStatement":
         return len(output.get("items", ()))
     return 0
+
+
+_PARTIQL = frozenset({"ExecuteStatement", "BatchExecuteStatement", "ExecuteTransaction"})
+
+
+#: Operations whose items are returned rows (``db.client.response.returned_rows``): reads, and
+#: PartiQL ``SELECT`` statements. The items of writes are not rows.
+_RETURNS_ROWS = frozenset({"GetItem", "Query", "Scan", "BatchGetItem", "TransactGetItems", "ExecuteStatement"})
+
+
+def _returns_rows(operation: str, params: Mapping[str, Any]) -> bool:
+    """Whether the items of a successful call are returned rows (a read, not a write)."""
+    return operation in _RETURNS_ROWS and not _statement_writes(operation, params)
+
+
+def _statement_writes(operation: str, params: Mapping[str, Any]) -> bool | None:
+    """Whether a PartiQL request writes (``None`` for other operations): any statement but ``SELECT``."""
+    if operation not in _PARTIQL:
+        return None
+    if operation == "ExecuteStatement":
+        texts = [params.get("statement", "")]
+    else:
+        texts = [statement.get("statement", "") for statement in params.get("statements", ())]
+    return any(not str(text).lstrip()[:6].upper().startswith("SELECT") for text in texts)
+
+
+def _unprocessed(method: str, output: Any) -> list[tuple[str, dict[str, Any]]]:
+    """What a managed batch (``batch_write``, ``batch_get``) left unprocessed after every round."""
+    if not isinstance(output, dict):
+        return []
+    if method == "batch_write":
+        return [(kind, item) for _, kind, item in output.get("unprocessed", ())]
+    if method == "batch_get":
+        return [("get", key) for keys in output.get("unprocessed_keys", {}).values() for key in keys.get("keys", ())]
+    return []
 
 
 def _capacities(output: Any) -> list[ConsumedCapacity]:
@@ -536,6 +571,10 @@ class Client:
         except DynamoxyError as error:
             self._failed(core, operation, table, model, started, error)
             raise
+        incomplete = _incomplete(method, output, stats)
+        if incomplete is not None:
+            self._finish(core, _success_record(operation, table, model, params, output, stats, incomplete), incomplete)
+            return output, stats
         self._succeeded(core, operation, table, model, params, output, stats)
         return output, stats
 
@@ -558,9 +597,10 @@ class Client:
                 self._recorder.finish_span(span, None, entry, error)
                 self._finish(core, entry, error)
                 raise
-            entry = _success_record(operation, table, model, params, output, stats)
-            self._recorder.finish_span(span, output, entry, None)
-        self._finish(core, entry, None)
+            incomplete = _incomplete(method, output, stats)
+            entry = _success_record(operation, table, model, params, output, stats, incomplete)
+            self._recorder.finish_span(span, output, entry, incomplete)
+        self._finish(core, entry, incomplete, returns_rows=_returns_rows(operation, params))
         return output, stats
 
     def _succeeded(
@@ -577,7 +617,7 @@ class Client:
         entry: OperationRecord | None = None
         if self._recorder.recording_metrics():
             entry = _success_record(operation, table, model, params, output, stats)
-            self._recorder.record_metrics(entry)
+            self._recorder.record_metrics(entry, returns_rows=_returns_rows(operation, params))
         collectors = active_collectors()
         if collectors:
             if entry is None:
@@ -615,8 +655,10 @@ class Client:
                 entry = _failure_record(operation, table, model, started, error)
             self._emit_failed(entry, error)
 
-    def _finish(self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None) -> None:
-        self._recorder.record_metrics(entry)
+    def _finish(
+        self, core: CoreClient, entry: OperationRecord, error: DynamoxyError | None, *, returns_rows: bool = False
+    ) -> None:
+        self._recorder.record_metrics(entry, returns_rows=returns_rows)
         for collector in active_collectors():
             collector.records.append(entry)
         self._dispatch_buffered(core)
@@ -955,6 +997,23 @@ class Client:
             yield collector
 
 
+def _incomplete(method: str, output: Any, stats: tuple[int, int, int, float]) -> UnprocessedItemsError | None:
+    """The error of a managed batch that left items unprocessed, which its caller raises.
+
+    The call is recorded as failed with it (collectors, metrics, ``operation.failed``, the span),
+    although the response came back.
+    """
+    unprocessed = _unprocessed(method, output)
+    if not unprocessed:
+        return None
+    error = UnprocessedItemsError(
+        f"{len(unprocessed)} {'keys' if method == 'batch_get' else 'writes'} stayed unprocessed (throttling)",
+        unprocessed=unprocessed,
+    )
+    error.attempts, error.throttles, error.requests, error.duration = stats
+    return error
+
+
 def _success_record(
     operation: str,
     table: str | None,
@@ -962,8 +1021,9 @@ def _success_record(
     params: Mapping[str, Any],
     output: Any,
     stats: tuple[int, int, int, float],
+    incomplete: UnprocessedItemsError | None = None,
 ) -> OperationRecord:
-    read, write = capacity_split(operation, _capacities(output))
+    read, write = capacity_split(operation, _capacities(output), writes=_statement_writes(operation, params))
     return OperationRecord(
         operation=operation,
         table=table,
@@ -975,7 +1035,7 @@ def _success_record(
         read_capacity_units=read,
         write_capacity_units=write,
         items=_items_of(operation, params, output),
-        error=None,
+        error=None if incomplete is None else type(incomplete).__name__,
         timestamp=time.time(),
     )
 
@@ -989,8 +1049,8 @@ def _failure_record(
         model=model.__name__ if model else None,
         duration=error.duration if error.duration is not None else time.perf_counter() - started,
         attempts=error.attempts or 1,
-        throttles=0,
-        requests=error.attempts or 1,
+        throttles=getattr(error, "throttles", None) or 0,
+        requests=getattr(error, "requests", None) or 1,
         read_capacity_units=0.0,
         write_capacity_units=0.0,
         items=0,

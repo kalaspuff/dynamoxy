@@ -36,7 +36,6 @@ if TYPE_CHECKING:
     from dynamoxy.results import OperationRecord
 
 __all__ = ["Collector", "Telemetry", "collect"]
-
 _UNKNOWN: Any = object()
 
 
@@ -107,8 +106,8 @@ class Collector:
 
     @property
     def retries(self) -> int:
-        """Attempts beyond the first."""
-        return sum(record.attempts - 1 for record in self.records if record.attempts)
+        """Attempts beyond the first of each request (a managed batch sends several requests)."""
+        return sum(max(record.attempts - record.requests, 0) for record in self.records)
 
     def by_operation(self) -> dict[str, int]:
         """Number of calls per operation."""
@@ -355,8 +354,8 @@ class TelemetryRecorder:
             span.record_exception(error)
             span.set_status(self._otel.Status(self._otel.StatusCode.ERROR, str(error)[:500]))
 
-    def record_metrics(self, entry: OperationRecord) -> None:
-        """Records the metrics of one finished call."""
+    def record_metrics(self, entry: OperationRecord, *, returns_rows: bool = False) -> None:
+        """Records the metrics of one finished call (``returns_rows``: a read, whose items are rows)."""
         if not self.recording_metrics():
             return
         instruments = self._instruments
@@ -369,7 +368,7 @@ class TelemetryRecorder:
         instruments["attempts"].add(entry.attempts, attributes)
         if entry.throttles:
             instruments["throttles"].add(entry.throttles, attributes)
-        if entry.error is None:
+        if entry.error is None and returns_rows:
             instruments["rows"].record(entry.items, attributes)
         if entry.read_capacity_units:
             instruments["capacity"].add(entry.read_capacity_units, {**attributes, "capacity.type": "read"})

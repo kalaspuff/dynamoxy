@@ -85,6 +85,13 @@ Metrics:
 | `dynamoxy.request.attempts` | counter | `{attempt}` |
 | `dynamoxy.request.throttles` | counter | `{attempt}` |
 
+`returned_rows` counts the items that reads return (`GetItem`, `Query`, `Scan`, `BatchGetItem`,
+`TransactGetItems`, PartiQL `SELECT`s); writes, PartiQL ones included, record none. Capacity of PartiQL statements counts
+as reads for `SELECT` and as writes otherwise, also when DynamoDB reports only a total. A
+managed batch that leaves items unprocessed after every round (`UnprocessedItemsError`) is a
+failed operation: its span has status `ERROR`, its metrics carry `error.type`, and it emits
+`operation.failed`.
+
 ```python
 client = dynamoxy.Client(telemetry=dynamoxy.Telemetry(tracer_provider=provider, meter_provider=meters))
 client = dynamoxy.Client(telemetry=None)  # off
@@ -102,7 +109,11 @@ logger.info("handled", extra={"dynamodb": usage.summary()})
 
 Collectors follow the context into tasks started inside the block and can be nested.
 `usage.records` lists every `OperationRecord` (operation, table, model, duration, attempts,
-throttles, capacity, items, error).
+throttles, requests, capacity, items, error), failed calls with their attempts and throttles
+too. A call sends one request, however many attempts it takes; a managed batch sends one per
+chunk of items and round of unprocessed ones. `retries` counts the attempts beyond the first of
+each request, so a 60-item `batch_put()` that is never throttled has three requests and no
+retries.
 
 ## Metrics snapshot
 

@@ -131,7 +131,62 @@ async def test_metrics(otel: Telemetry) -> None:
     rows = {
         point.attributes["db.operation.name"]: point.sum for point in otel.points("db.client.response.returned_rows")
     }
-    assert rows["GetItem"] == 2
+    assert rows == {"GetItem": 2}, "the items of writes are not returned rows"
+
+
+async def test_partiql_writes_record_no_returned_rows(otel: Telemetry) -> None:
+    await otel.client.execute("INSERT INTO events VALUE {'stream': 's', 'seq': 1, 'kind': 'k'}")
+    await otel.client.execute("UPDATE events SET kind = 'x' WHERE stream = 's' AND seq = 1 RETURNING ALL NEW *")
+    await otel.client.execute("SELECT * FROM events WHERE stream = 's'")
+    rows = otel.points("db.client.response.returned_rows")
+    assert [(point.attributes["db.operation.name"], point.count, point.sum) for point in rows] == [
+        ("ExecuteStatement", 1, 1)
+    ], "the SELECT only"
+
+
+async def test_metrics_without_traces_record_the_same_rows() -> None:
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    settings = dynamoxy.Telemetry(meter_provider=meter_provider)  # no tracer provider: no spans
+    async with testing.memory_client(telemetry=settings) as client:
+        await client.create_tables(Event)
+        assert client._recorder.recording_tracer() is None, "the untraced path"
+        await client.model(Event).put(Event(stream="s", seq=1, kind="k"))
+        await client.model(Event).get("s", 1)
+        await client.execute("UPDATE events SET kind = 'x' WHERE stream = 's' AND seq = 1 RETURNING ALL NEW *")
+        await client.execute("SELECT * FROM events WHERE stream = 's'")
+    rows = Telemetry(client, InMemorySpanExporter(), reader).points("db.client.response.returned_rows")
+    meter_provider.shutdown()
+    assert sorted((point.attributes["db.operation.name"], point.count, point.sum) for point in rows) == [
+        ("ExecuteStatement", 1, 1),
+        ("GetItem", 1, 1),
+    ]
+
+
+async def test_failed_calls_record_their_throttles(otel: Telemetry) -> None:
+    testing.inject_fault(otel.client, operation="GetItem", error="throttling", times=10)
+    with pytest.raises(dynamoxy.ThrottlingError):
+        await otel.client.model(Event).get("s", 1)
+    (span,) = otel.finished()
+    attributes = dict(span.attributes or {})
+    attempts = otel.client.retry.max_attempts
+    assert (attributes["dynamoxy.attempts"], attributes["dynamoxy.throttles"]) == (attempts, attempts)
+    assert [point.value for point in otel.points("dynamoxy.request.throttles")] == [attempts]
+
+
+async def test_batches_that_leave_items_unprocessed_are_failures(otel: Telemetry) -> None:
+    testing.inject_fault(otel.client, operation="BatchWriteItem", unprocessed=True, times=100)
+    with pytest.raises(dynamoxy.UnprocessedItemsError):
+        await otel.client.model(Event).batch_put([Event(stream="s", seq=seq, kind="k") for seq in range(3)])
+    (span,) = otel.finished()
+    assert span.status.status_code is StatusCode.ERROR
+    assert dict(span.attributes or {})["error.type"] == "UnprocessedItemsError"
+    (duration,) = [
+        point
+        for point in otel.points("db.client.operation.duration")
+        if point.attributes["db.operation.name"] == "BatchWriteItem"
+    ]
+    assert duration.attributes["error.type"] == "UnprocessedItemsError"
 
 
 async def test_expressions_are_recorded_without_values() -> None:

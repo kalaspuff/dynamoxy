@@ -855,7 +855,8 @@ provides credentials wins:
 ## 14. Errors
 
 Every error derives from `dynamoxy.DynamoxyError` and has `.retryable`. Service errors carry
-`.code`, `.message`, `.operation`, `.request_id`, `.status_code`, `.attempts` and `.duration`.
+`.code`, `.message`, `.operation`, `.request_id`, `.status_code`, `.attempts`, `.throttles`,
+`.requests` and `.duration`.
 
 | Error | Raised when | What to do |
 | --- | --- | --- |
