@@ -92,10 +92,8 @@ measured in rounds 1 and 2; an update of a key attribute stays bare), and refuse
 The in-memory backend refuses these with DynamoDB's messages and kinds, counts a local index entry
 as the attributes it holds, the 4 MB of a read as the items returned (4 MiB), and the payload
 size of a write transaction as DynamoDB does, from the request: a put's item, an update's key,
-request charge and 8 bytes, a delete's and a check's key, and each one's condition
-(`attribute_exists(p)` 63 bytes more than the path, `attribute_not_exists(p)` 67, a comparison 57
-more than its operands; measured by dynamoxy's probe on AWS, the other condition forms counted
-like a comparison). It holds a standalone
+request charge and 8 bytes, a delete's and a check's key, and each one's condition, by the rule
+below (measured for every condition form by dynamoxy's probe on AWS). It holds a standalone
 `UpdateItem` to 400 KB by the same update charge before it reads the item (dynoxide-rs), and
 reports item collection sizes as whole gigabytes, `[0.0, 1.0]` for a small collection.
 
@@ -122,10 +120,26 @@ bytes were taken, so the limit lies above about 4,001,200 bytes (presumably 4 Mi
 | a delete of a 11-byte key added | 4,393,466 | probe `sizes.payload_updates_plus_delete` |
 | a check `attribute_not_exists(pk)` of that key added | 4,393,535 | probe `sizes.payload_updates_plus_check` |
 | a put of that key with `attribute_not_exists(pk)` added | 4,393,535 | probe `sizes.payload_updates_plus_put_with_condition` |
+| `attribute_exists(ab.cd)` on each | 4,394,346 | probe run 3 `sizes.payload_updates_condition_exists_nested` |
+| `note = alt` (two paths) on each | 4,394,324 | probe run 3 `sizes.payload_updates_condition_compare_paths` |
+| `size(note) > :w` on each | 4,394,379 | probe run 3 `sizes.payload_updates_condition_compare_size` |
+| `note BETWEEN :w AND :w` on each | 4,394,291 | probe run 3 `sizes.payload_updates_condition_between` |
+| `note IN (:w, :w)` on each | 4,394,236 | probe run 3 `sizes.payload_updates_condition_in` |
+| `begins_with(note, :w)` on each | 4,394,236 | probe run 3 `sizes.payload_updates_condition_begins_with` |
+| `contains(note, :w)` on each | 4,394,203 | probe run 3 `sizes.payload_updates_condition_contains` |
+| `attribute_type(note, :t)` on each | 4,394,269 | probe run 3 `sizes.payload_updates_condition_attribute_type` |
+| `attribute_exists(pk) AND attribute_exists(pk)` on each | 4,395,050 | probe run 3 `sizes.payload_updates_condition_and` |
+| `attribute_exists(pk) OR attribute_exists(pk)` on each | 4,395,039 | probe run 3 `sizes.payload_updates_condition_or` |
+| `NOT attribute_exists(pk)` on each | 4,394,401 | probe run 3 `sizes.payload_updates_condition_not` |
 
-The probe facts come from dynamoxy's own probe run on DynamoDB, kept here as
-[probe-aws-eu-north-1-2026-10-31.json](probe-aws-eu-north-1-2026-10-31.json) (its script,
-`scripts/probe_backends.py`, comes with the probe's pull request).
+The probe facts come from dynamoxy's own probe runs on DynamoDB, kept here as
+[probe-aws-eu-north-1-2026-10-31.json](probe-aws-eu-north-1-2026-10-31.json) and
+[run 3](probe-aws-eu-north-1-2026-10-31-run3.json) (their script, `scripts/probe_backends.py`,
+comes with the probe's pull request). They fit one rule, which the in-memory backend follows: a
+path in a condition counts as where it is read (1, plus 14 and the element for each element), a
+value its size, `size(p)` 22 more than its path, and on top of its operands `attribute_exists`
+48, `attribute_not_exists` 52, a comparison 42, `BETWEEN` 55, `IN` 50, `begins_with` 51,
+`contains` 48, `attribute_type` 54, `AND` 15, `OR` 14 and `NOT` 21.
 
 ### Table updates (#87)
 
