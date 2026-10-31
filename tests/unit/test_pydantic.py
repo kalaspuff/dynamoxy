@@ -368,10 +368,18 @@ class Tree(dynamoxy.PydanticModel, table="trees"):
             raise ValueError("needs a label")
         return self
 
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def needs_data(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            raise ValueError("needs a dict")
+        return data
+
 
 def test_values_outside_instances_run_the_fields_schema() -> None:
     schema = schema_of(Tree)
-    # Through the core schema's definitions, without the model validator (which needs the instance).
+    # Through the core schema's definitions, without the model validators (which need the data or
+    # the instance): one of mode="after" wraps the model, one of mode="before" its fields.
     assert schema.key_from(("t1",), {}) == {"tree_id": "T1"}
     assert schema.fields["address"].validate({"street": "Main"}) == Address(street="Main")
     with pytest.raises(ValueError, match="Field required"):

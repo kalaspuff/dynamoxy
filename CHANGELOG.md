@@ -163,8 +163,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   reads found nothing (an item whose key predates the rule is still read with a stored key:
   `batch_get([{"user_id": ...}])`), and so does `None`, which templated keys sent to DynamoDB.
   Stored keys, which `batch_get()`, `update()`, `delete()` and transactions take, are used as
-  they are, and conditions compare with the value as given. Pydantic models still check key
-  values against the field's type only.
+  they are, and conditions compare with the value as given. Pydantic models run the field's
+  pydantic validators on them (see below).
 - Fields that a subclass inherits encoded expression values in the `datetime_format` of the
   class that declared them, while the subclass stored them in its own. With an abstract
   `Timestamped` declaring `seen_at` and `Article(Timestamped, datetime_format="iso_z")`,

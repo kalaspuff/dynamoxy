@@ -285,6 +285,8 @@ def _field_validation(model: type[BaseModel], name: str) -> Any:
         else:
             return None
     fields = node["schema"]
+    while fields.get("type") in ("function-before", "function-after", "function-wrap"):
+        fields = fields["schema"]  # model validators of mode="before" (and root validators)
     if fields.get("type") != "model-fields" or name not in fields["fields"]:
         return None
     try:
