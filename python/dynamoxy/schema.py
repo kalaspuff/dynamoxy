@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 from uuid import UUID
 
 from dynamoxy import _core
-from dynamoxy._utils import MISSING, number_text
+from dynamoxy._utils import MISSING, number_text, stored_identity
 from dynamoxy.codecs import (
     _UNCHANGED,
     AnyCodec,
@@ -1012,12 +1012,45 @@ class ModelSchema:
         return {attribute: item[attribute] for attribute in self._key_attributes if attribute in item}
 
     def key_of(self, instance: Any) -> dict[str, Any]:
-        """The stored primary key of an instance.
+        """The stored primary key of an instance, as its values render it.
 
         Raises:
             ValueError: A key component is missing.
         """
-        values = self.values(instance)
+        return self._key_from_values(self.values(instance))
+
+    def loaded_key(self, instance: Any) -> dict[str, Any] | None:
+        """The key of the item ``instance`` was loaded from, as stored, while its values still address it.
+
+        ``None`` when the instance was not loaded, or a key field (or a field a key template
+        uses) changed since. See :meth:`addresses`.
+
+        Raises:
+            ValueError: A key component is missing.
+        """
+        state = self.state(instance)
+        if state is None or not state.loaded or state.stored is None:
+            return None
+        return self.addresses(state.stored, self.key_of(instance))
+
+    def addresses(self, stored: Mapping[str, Any], key: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The key of the ``stored`` item when ``key`` (rendered from field values) addresses it, else ``None``.
+
+        Another writer may have stored a key in a form the field's codec reads but does not
+        write: an upper-case UUID, a date as ``20260102``. Its instances render the canonical
+        form, which addresses no item; what decodes to the same values is the same key, and
+        writes use it as stored.
+        """
+        stored_key = self.key_values(stored)
+        if stored_identity(stored_key) == stored_identity(self.key_values(key)):
+            return stored_key
+        try:
+            rendered = self._key_from_values(self.decode_values(stored))
+        except (ValueError, TypeError, ArithmeticError):
+            return None
+        return stored_key if stored_identity(rendered) == stored_identity(self.key_values(key)) else None
+
+    def _key_from_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
         key: dict[str, Any] = {}
         for spec in self._key_specs:
             template = spec.template

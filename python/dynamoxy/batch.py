@@ -87,7 +87,7 @@ class BatchWriter:
         """Queues a model instance (validated now; hooks run at flush)."""
         repository = self._repository(type(item), item)
         repository.schema.validate(item)
-        await self._queue(repository.table_name, "put", {}, self._identity(repository.schema.key_of(item)), item)
+        await self._queue(repository.table_name, "put", {}, self._identity(repository._target_key(item)), item)
 
     async def delete(self, target: Any, *, model: type | None = None) -> None:
         """Queues a delete by instance, or by stored key with ``model=``."""

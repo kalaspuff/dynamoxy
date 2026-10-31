@@ -173,7 +173,10 @@ class Reading(Base, table="readings"):
 Every model has a `partition_key()` and optionally a `sort_key()`. Key values are strings,
 numbers or bytes. Keys are immutable: changing a key means writing a new item and deleting the
 old one (in a transaction if both must happen). A write of a loaded instance whose key changed
-(also through a field its key template uses) raises `ValueError`.
+(also through a field its key template uses) raises `ValueError`. Writes through a loaded
+instance, and its `primary_key()`, use the key as stored, also when another writer stored it in
+a form that decodes to the same values but that dynamoxy would not write (an upper-case UUID, a
+date as `20260102`); so do the values of immutable fields.
 
 Keys can be generated (`partition_key(default_factory=lambda: uuid4().hex)`) or built from other
 fields with templates (`partition_key(template="USER#{user_id}")`, see

@@ -332,9 +332,7 @@ class Repository[M]:
         if isinstance(target, self.model_class):
             key = self.schema.key_of(target)
             stored = self._stored(target)
-            if stored is not None:
-                self._check_key_unchanged(stored, key)
-            return key
+            return self._check_key_unchanged(stored, key) if stored is not None else key
         if isinstance(target, dict):
             schema = self.schema
             if target.keys() == schema._key_attribute_set and all(
@@ -657,7 +655,16 @@ class Repository[M]:
         if mode != "create":
             stored = self._stored(instance)
             if stored is not None:
-                self._check_unchanged(stored, item)
+                kept = self._check_unchanged(stored, item)  # what changes no value stays as stored
+                item.update(kept)
+                if schema._derived:
+                    # Derived key fields of the instance hold the key as stored too.
+                    fields = schema.fields
+                    changes.update(
+                        (name, value)
+                        for name, value in schema.decode_values(kept).items()
+                        if fields[name].template is not None
+                    )
                 item = self._with_undeclared(stored, item)
         if standalone and schema.write_ids:  # replaces the id of the write that stored the loaded item
             item[WRITE_ID_ATTRIBUTE] = new_write_id()
@@ -736,22 +743,30 @@ class Repository[M]:
         state = self.schema.state(instance)
         return state.stored if state is not None and state.loaded else None
 
-    def _check_key_unchanged(self, stored: dict[str, Any], item: Mapping[str, Any]) -> None:
-        """Refuses a write through a loaded instance whose key now addresses another item.
+    def _check_key_unchanged(self, stored: dict[str, Any], item: Mapping[str, Any]) -> dict[str, Any]:
+        """The key of the ``stored`` item, which a write through a loaded instance (whose key is ``item``'s) addresses.
+
+        It is the key as stored, also in a form the field's codec does not write (see
+        :meth:`ModelSchema.addresses`).
 
         Raises:
             ValueError: The key (or a field a key template uses) changed since the instance was
                 loaded.
         """
-        schema = self.schema
-        if stored_identity(schema.key_values(stored)) != stored_identity(schema.key_values(item)):
+        key = self.schema.addresses(stored, item)
+        if key is None:
             raise ValueError(
                 f"{self.model_class.__name__}: the key of this instance changed since it was loaded, and DynamoDB "
                 "cannot change keys: write the new item from a copy (create(instance.copy())) and delete the old one"
             )
+        return key
 
-    def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> None:
+    def _check_unchanged(self, stored: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
         """Refuses a write of a loaded instance that changes its key or an immutable field.
+
+        Returns the attributes the write keeps as stored: the key (see
+        :meth:`_check_key_unchanged`), and immutable values stored in a form that decodes to the
+        instance's value but that the field's codec does not write.
 
         Raises:
             ValueError: The key (or a field a key template uses) or an immutable value changed
@@ -759,11 +774,18 @@ class Repository[M]:
         """
         schema = self.schema
         name = self.model_class.__name__
-        self._check_key_unchanged(stored, item)
+        kept = self._check_key_unchanged(stored, item)
         for spec in schema._immutable:
             old = stored.get(spec.attribute)
-            if old is not None and stored_identity(old) != stored_identity(item.get(spec.attribute)):
+            if old is None:
+                continue
+            new = item.get(spec.attribute)
+            if stored_identity(old) == stored_identity(new):
+                continue
+            if new is None or not _same_value(spec, old, new):
                 raise ValueError(f"{name}.{spec.name} is immutable: it cannot change once stored")
+            kept[spec.attribute] = old
+        return kept
 
     async def _plan_put(
         self,
@@ -1570,7 +1592,7 @@ class Repository[M]:
         done = [
             target
             for target in targets
-            if isinstance(target, self.model_class) and stored_identity(self.schema.key_of(target)) not in left
+            if isinstance(target, self.model_class) and stored_identity(self._target_key(target)) not in left
         ]
         for target in done:
             self._apply(target, {}, None)
@@ -1713,6 +1735,15 @@ def _is_stored_key_value(spec: FieldSpec, value: Any) -> bool:
     if kind == "N":
         return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
     return isinstance(value, bytes)
+
+
+def _same_value(spec: FieldSpec, old: Any, new: Any) -> bool:
+    """Whether two stored forms of a field decode to the same value."""
+    decode = spec.codec.decode
+    try:
+        return bool(decode(old) == decode(new))
+    except (ValueError, TypeError, ArithmeticError):
+        return False
 
 
 def _has_entity(attribute: str, entity: str, item: dict[str, Any]) -> bool:
