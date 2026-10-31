@@ -18,7 +18,9 @@
 //! earlier attempt wrote, or the absence of the item it deleted). With `retry_timeouts` off, a
 //! write that timed out or lost its connection is not sent again and fails with
 //! [`Error::OutcomeUnknown`] too; calls that are always sent again (reads, batch writes, table
-//! operations) keep their retryable [`Error::Transport`].
+//! operations) keep their retryable [`Error::Transport`]. An attempt that failed to connect sent
+//! nothing (`Error::Transport { sent: false, .. }`): it leaves no outcome unknown, and every write
+//! is sent again after it.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -489,6 +491,7 @@ impl Client {
                     operation: operation.as_str(),
                     message: format!("no response within {} seconds (timeout)", config.timeout),
                     retryable: true,
+                    sent: true,
                 }),
             };
             let error = match result {
@@ -1039,6 +1042,7 @@ impl Client {
                     operation: "DescribeTable",
                     message: format!("table {table_name} did not {state} within {} seconds", timeout.as_secs_f64()),
                     retryable: true,
+                    sent: true,
                 });
             }
             if self.inner.memory.is_some() && round < 3 {
@@ -1110,8 +1114,12 @@ impl Client {
                 }
                 let Some(joined) = tasks.join_next().await else { break };
                 let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchWriteItem", message: error.to_string(), retryable: false };
+                    let error = Error::Transport {
+                        operation: "BatchWriteItem",
+                        message: error.to_string(),
+                        retryable: false,
+                        sent: true,
+                    };
                     (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
                 });
                 if let Err(error) = merge(done, &mut stats) {
@@ -1251,8 +1259,12 @@ impl Client {
                 }
                 let Some(joined) = tasks.join_next().await else { break };
                 let done = joined.unwrap_or_else(|error| {
-                    let error =
-                        Error::Transport { operation: "BatchGetItem", message: error.to_string(), retryable: false };
+                    let error = Error::Transport {
+                        operation: "BatchGetItem",
+                        message: error.to_string(),
+                        retryable: false,
+                        sent: true,
+                    };
                     (Err(error), OperationStats { attempts: 0, throttles: 0, requests: 0, ..stats })
                 });
                 if let Err(error) = merge(done, &mut stats) {

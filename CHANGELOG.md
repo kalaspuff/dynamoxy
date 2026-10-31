@@ -72,6 +72,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   dynamoxy ran without the GIL although it was never tested that way. The extension now declares
   that it needs the GIL: the interpreter turns the GIL on when it imports dynamoxy, with a
   `RuntimeWarning`, until dynamoxy is tested without it.
+- A write whose request never left the process (connection refused, DNS or TLS failure, a
+  connect timeout shorter than `timeout`, no file descriptors for the socket) counted as "may
+  have been applied": it raised `WriteOutcomeUnknownError`, and increments, `add()` and
+  `append()` were not retried, although sending them again is safe. Failures to connect now
+  count as sent nothing: every write is retried after them, and when all attempts fail to
+  connect the call raises a retryable `TransportError`. `testing.inject_fault()` takes `refuse_connection=True` to simulate them.
 
 ## [0.4.0] - 2026-10-31
 

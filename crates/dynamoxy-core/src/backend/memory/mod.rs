@@ -143,6 +143,9 @@ pub enum FaultKind {
     /// Run the operation, then lose its response: the caller sees a transport error (as when a
     /// connection drops), although the operation was applied.
     LoseResponse,
+    /// Fail before the request is sent, as when the connection is refused: the caller sees a
+    /// transport error that sent nothing, and the operation does not run.
+    RefuseConnection,
 }
 
 /// What a triggered fault leaves to do once the operation runs.
@@ -163,6 +166,7 @@ impl Triggered {
                 operation,
                 message: "the connection closed before the response arrived (injected fault)".into(),
                 retryable: true,
+                sent: true,
             });
         }
         result
@@ -315,6 +319,12 @@ impl MemoryBackend {
                 Ok(Triggered::default())
             }
             FaultKind::LoseResponse => Ok(Triggered { lose_response: true, ..Triggered::default() }),
+            FaultKind::RefuseConnection => Err(Error::Transport {
+                operation,
+                message: "could not connect: connection refused (injected fault)".into(),
+                retryable: true,
+                sent: false,
+            }),
         }
     }
 }

@@ -88,7 +88,8 @@ plain repository per model, on first use, and returns it afterwards.
 6. **Core, `client.rs`**: validate, send through the backend with a per-attempt timeout; retry
    retryable errors (throttling, 5xx, transaction conflicts, timeouts) with exponential backoff
    and full jitter; emit events; record metrics; return the output with `OperationStats`. After
-   an attempt that may have been applied (a timeout, a lost connection, a 5xx), only writes that
+   an attempt that may have been applied (a timeout, a lost connection, a 5xx; not a failure to
+   connect, which sent nothing: `Error::Transport { sent: false }`), only writes that
    apply once even when sent twice are sent again, and an answer that attempt may have caused
    (a failed condition, old values), or no answer when the attempts run out, is `OutcomeUnknown`
    (`WriteOutcomeUnknownError`). `close()` refuses new calls; calls in progress finish their

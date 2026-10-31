@@ -40,6 +40,10 @@ pub enum Error {
         message: String,
         /// Whether retrying the operation may succeed.
         retryable: bool,
+        /// Whether the request may have reached DynamoDB. `false` when it failed before
+        /// anything was sent (the connection could not be established: refused, DNS, TLS, no
+        /// file descriptors, connect timeout), so a write was certainly not applied.
+        sent: bool,
     },
     /// A write that may have been applied, without an answer that says whether it was: an
     /// attempt timed out, lost its connection or got a 5xx, and the write was not sent again (it
@@ -319,10 +323,11 @@ impl Error {
 
     /// Whether the request may have been applied although it failed: a timeout, a lost
     /// connection or a 5xx (DynamoDB: "the operation may have succeeded or failed"). DynamoDB
-    /// applies nothing of a request it throttles or rejects.
+    /// applies nothing of a request it throttles or rejects, and nothing of one that never left
+    /// the process (a failure to connect).
     pub fn may_have_been_applied(&self) -> bool {
         match self {
-            Self::Transport { .. } => true,
+            Self::Transport { sent, .. } => *sent,
             Self::Service(error) => error.kind == ErrorKind::Internal,
             _ => false,
         }

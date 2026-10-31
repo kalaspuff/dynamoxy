@@ -276,4 +276,5 @@ and TTL settings and never deletes anything.
 | `unprocessed` | `False` | Batch operations return requests unprocessed: those of `table` when it is given (the others are processed), else every request |
 | `latency` | `None` | Seconds to wait before the call runs |
 | `lose_response` | `False` | The call runs, then its response is lost (a `TransportError`, which the client retries), as when a connection drops after a write was applied |
+| `refuse_connection` | `False` | The call fails before its request is sent, as when the connection is refused (a `TransportError` that sent nothing: the client retries every write, and nothing is applied) |
 | `times` | `1` | Number of calls affected |

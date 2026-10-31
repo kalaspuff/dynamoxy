@@ -47,6 +47,7 @@ testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times
 testing.inject_fault(client, operation="GetItem", latency=0.5)        # with Client(timeout=0.1)
 testing.inject_fault(client, error="ConditionalCheckFailedException")  # any DynamoDB error code
 testing.inject_fault(client, operation="UpdateItem", lose_response=True)  # applied, then lost
+testing.inject_fault(client, operation="UpdateItem", refuse_connection=True)  # never sent
 ```
 
 Faults apply to the next `times` matching calls (attempts count, so throttling twice with four
@@ -55,6 +56,8 @@ among others: a batch or transaction of several tables, or a PartiQL statement o
 `unprocessed=True` only that table's requests of a batch come back unprocessed. `lose_response=True` applies the write and then loses its response,
 as a dropped connection does: use it to test how your code handles
 [writes with unknown outcome](errors-and-retries.md#writes-with-unknown-outcome).
+`refuse_connection=True` fails the call before anything is sent, as a refused connection does:
+nothing is applied, and every write, increments too, is sent again.
 
 ## Time to Live
 

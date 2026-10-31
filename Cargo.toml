@@ -26,6 +26,9 @@ aws-sdk-dynamodb = { version = "1.130", default-features = false, features = [
     "rt-tokio",
 ] }
 fastrand = "2"
+# Only to recognize the SDK's failures to connect (`legacy::Error::is_connect`): the same version
+# as the SDK's HTTP client, which Cargo unifies.
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
 parking_lot = "0.12"
 pyo3 = { version = "0.29", features = ["abi3-py312"] }
 pythonize = "0.29"
