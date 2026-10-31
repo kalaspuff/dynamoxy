@@ -143,12 +143,20 @@ Entries of an index with a `KEYS_ONLY` or `INCLUDE` projection hold only some at
   and its `.project(...)` may name attributes the index does not hold: DynamoDB reads the rest
   from the table, at the cost of a read of each item besides the index entries (a 1 MB page
   holds fewer items too).
-- A filter on an attribute a global index does not hold raises `ValueError`: DynamoDB filters the
-  index entries, so it would never match. Filter the hydrated items in Python instead, or project
-  the attribute into the index.
+- `.project(...)` of a *global* index that names an attribute the index does not hold raises
+  `ValueError`, since DynamoDB refuses it, unless the query adds `.hydrate()`: then the index is
+  read for the keys and the attributes come from the full items.
+- A filter on an attribute an index does not hold, global or local, raises `ValueError`:
+  DynamoDB filters the index entries before anything else, refuses such a filter in a query
+  (also when it reads the items from the table) and never matches it in a scan. Filter the
+  hydrated items in Python instead, or project the attribute into the index.
 - For models with an entity type (single-table design), dynamoxy projects the type attribute
-  into such indexes when it creates them. Indexes created before (dynamoxy 0.2) do not hold it:
-  their entries pass the entity filter, and `.hydrate()` checks the entity of the full items.
+  into such indexes when it creates them, and their reads filter on it. DynamoDB refuses queries
+  of an index that does not hold it (created by other tools, or by dynamoxy 0.2) with a
+  `ValidationError` ("does not project one or more filter attributes: [_type, _type]"): add the
+  type attribute to its projection, which means creating the index again. Scans of such an index
+  read entries without a type, and `.hydrate()` checks the entity of the full items
+  ([ADR 0021](../adr/0021-index-reads-follow-dynamodbs-refusals.md)).
 
 ## Scans
 

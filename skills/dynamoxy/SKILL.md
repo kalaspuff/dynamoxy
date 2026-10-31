@@ -39,8 +39,9 @@ It is authoritative for the installed version; this skill only summarizes it.
    request paths. Paginate with `page()` / `cursor` / `after(cursor)`; never trust cursors for
    authorization. Reads are eventually consistent: pass `consistent=True` (`get`, `query`,
    `scan`; not on a `GlobalIndex`) to read your own writes. Reads of a `KEYS_ONLY`/`INCLUDE`
-   global index need `.hydrate()` (full items) or `.project(...)` (dicts). `where()` takes one
-   sort key condition (use `between()` for ranges).
+   global index need `.hydrate()` (full items) or `.project(...)` (dicts of what it holds), and
+   filters may only name what an index holds. `where()` takes one sort key condition (use
+   `between()` for ranges).
 7. Use `field(unique=True)` for unique values, `version()` for concurrent edits, conditions for
    business rules, and `client.transaction()` for multi-item changes. Keys and
    `immutable=True` fields of loaded instances cannot change: write a copy as a new item.

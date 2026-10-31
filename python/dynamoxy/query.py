@@ -147,7 +147,9 @@ class _Reader[T]:
         self._where: Condition | None = None
         self._checks = checks  # checks of every item on the client
         self._where_checks = where_checks  # checks once where() replaced the automatic condition
-        self._projected = projected  # the attributes an index holds (None: every attribute)
+        # The attributes an index holds (None: every attribute): filters, and projections of a
+        # global index, may name no others.
+        self._projected = projected
         # A global index that does not hold every attribute of the model: its entries cannot be
         # decoded into complete instances (hydrate() or project() instead).
         self._partial = partial
@@ -172,8 +174,9 @@ class _Reader[T]:
         Filters run after items are read: they reduce what is returned, not what is consumed.
 
         Raises:
-            ValueError: The filter reads attributes that the global secondary index being read
-                does not hold (``KEYS_ONLY`` / ``INCLUDE`` projections), so it would never match.
+            ValueError: The filter reads attributes that the index being read does not hold
+                (``KEYS_ONLY`` / ``INCLUDE`` projections): DynamoDB refuses such a query filter, and
+                such a scan filter never matches.
         """
         combined = self._filter
         for condition in conditions:
@@ -194,8 +197,24 @@ class _Reader[T]:
             names = ", ".join(repr(name) for name in missing)
             raise ValueError(
                 f"{owner} {self._index!r} does not hold {names} (see its projection), and DynamoDB filters the "
-                "index entries before anything else, so this filter would never match: query the table, add the "
-                "attribute to the index with Projection.include(...), or check the items after .hydrate() in Python"
+                "index entries before anything else: it refuses this filter in a query, and in a scan it would never "
+                "match. Query the table, add the attribute to the index with Projection.include(...), or check the "
+                "items after .hydrate() in Python"
+            )
+
+    def _check_projection(self) -> None:
+        projected = self._projected
+        if projected is None or not self._global_index:
+            return  # a local index fetches what it does not hold from the table
+        roots = {str(path.elements[0]) for path in self._projection}
+        missing = sorted(roots - projected)
+        if missing:
+            owner = f"{self._model.__name__} index" if self._model is not None else "index"
+            names = ", ".join(repr(name) for name in missing)
+            raise ValueError(
+                f"{owner} {self._index!r} does not hold {names} (see its projection), and DynamoDB refuses a "
+                "projection of a global index that names them: add .hydrate() to read them from the full items, "
+                "project what the index holds, or add the attribute to the index with Projection.include(...)"
             )
 
     def limit(self, count: int) -> Self:
@@ -273,7 +292,11 @@ class _Reader[T]:
         filters = [condition for condition in (self._auto_filter, self._filter) if condition is not None]
         if filters:
             params["filter_expression"] = builder.condition(filters[0] if len(filters) == 1 else and_(*filters))
-        if self._projection:
+        if self._projection and self._hydrate and key_names:
+            # The attributes come from the full items: the index entries need their keys only
+            # (a global index may hold none of the attributes, and DynamoDB refuses naming them).
+            params["projection_expression"] = builder.projection(tuple(F(name) for name in key_names))
+        elif self._projection:
             paths = self._projection
             if key_names:
                 # Key attributes too, for cursors, client checks and hydration (see _fetch_page).
@@ -315,6 +338,8 @@ class _Reader[T]:
         self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
     ) -> tuple[Page[T], list[dict[str, Any]]]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
+        if self._projection and not self._hydrate:
+            self._check_projection()
         if self._partial and not self._hydrate and not self._projection:
             owner = self._model.__name__ if self._model is not None else "the models"
             raise ValueError(

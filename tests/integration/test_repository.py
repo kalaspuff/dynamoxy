@@ -1145,6 +1145,14 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     if backend == "memory":  # MiniStack never reads the table for local indexes; DynamoDB does
         assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"
         assert projected == [{"kind": "k", "expires_at": expires}], "also for a projection"
+    # DynamoDB refuses a query filter on what a local index does not hold too, although it reads
+    # the items from the table; a filter on what it holds goes through.
+    by_kind = events.query(index="by_kind_local", stream="x")
+    with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+        by_kind.filter(Event.expires_at.exists())
+    assert len(await by_kind.filter(Event.payload["a"] == 1).all()) == 1
+    with pytest.raises(ValueError, match="'by_kind_local' does not hold 'expires_at'"):
+        events.scan(index="by_kind_local").filter(Event.expires_at.exists())
 
 
 async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client: dynamoxy.Client) -> None:

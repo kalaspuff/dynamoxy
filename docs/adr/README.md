@@ -21,7 +21,7 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
 | [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |
 | [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted, amended by 0017 |
-| [0012](0012-reads-of-partial-indexes.md) | Model reads of indexes that hold only some attributes: the type attribute is projected, entries are never decoded into instances | Accepted |
+| [0012](0012-reads-of-partial-indexes.md) | Model reads of indexes that hold only some attributes: the type attribute is projected, entries are never decoded into instances | Accepted, amended by 0021 |
 | [0013](0013-stored-forms-read-back-as-written.md) | Stored numbers and timestamps read back as written: canonical numbers in guards and templates, UTC for formatted datetimes, exact epochs | Accepted |
 | [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |
 | [0015](0015-stored-values-decode-exactly.md) | Stored values decode exactly to their declared type, or raise `ItemDecodeError` | Accepted |
@@ -30,3 +30,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted |
 | [0019](0019-missing-attributes-read-as-none-or-empty-sets.md) | A missing attribute reads as `None` or an empty set where the field can hold one, not as the field's default | Accepted |
 | [0020](0020-documents-keep-undeclared-keys.md) | Documents read from an item keep the map keys their class does not declare | Accepted |
+| [0021](0021-index-reads-follow-dynamodbs-refusals.md) | Filters and projections of indexes follow DynamoDB's refusals, measured against it; queries of an index without the type attribute fail | Accepted |

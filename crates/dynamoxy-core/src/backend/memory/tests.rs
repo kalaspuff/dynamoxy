@@ -469,6 +469,92 @@ async fn local_index_projections_fetch_what_the_index_does_not_hold() {
 }
 
 #[tokio::test]
+async fn index_reads_refuse_or_never_match_attributes_the_index_does_not_hold() {
+    // Measured against DynamoDB in eu-north-1 on 2026-10-31 (docs/parity): a query filter on
+    // attributes the index does not hold is refused, for local indexes too and whatever the query
+    // returns, naming each place the filter reads one; a projection of a global index naming them
+    // is refused in queries and scans. A scan's filter sees the index entries, also when the scan
+    // fetches items from the table, so it matches nothing on them.
+    let backend = backend_with_table().await;
+    seed_query_data(&backend).await;
+    let local = QueryInput {
+        index_name: Some("by_rank".into()),
+        filter_expression: Some("secret = :s OR attribute_not_exists(secret)".into()),
+        ..query("pk = :p", values(&[(":p", s("p")), (":s", s("not projected"))]))
+    };
+    for (select, projection) in
+        [(None, None), (Some(Select::AllAttributes), None), (Some(Select::Count), None), (None, Some("pk, secret"))]
+    {
+        let input = QueryInput { select, projection_expression: projection.map(Into::into), ..local.clone() };
+        let error = backend.query(input).await.unwrap_err();
+        assert_eq!(
+            message(&error),
+            "One or more parameter values were invalid: Secondary index by_rank does not project one or more filter attributes: [secret, secret]",
+            "{select:?} {projection:?}"
+        );
+    }
+    let global = QueryInput {
+        index_name: Some("by_status".into()),
+        expression_attribute_names: names(&[("#s", "status")]),
+        ..query("#s = :odd", values(&[(":odd", s("odd"))]))
+    };
+    let error = backend
+        .query(QueryInput {
+            filter_expression: Some("secret = :v AND #n = :v".into()),
+            expression_attribute_values: values(&[(":odd", s("odd")), (":v", s("x"))]),
+            expression_attribute_names: names(&[("#s", "status"), ("#n", "name")]),
+            ..global.clone()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Secondary index by_status does not project one or more filter attributes: [secret]"
+    );
+    let error = backend
+        .query(QueryInput {
+            projection_expression: Some("secret, #s, #r".into()),
+            expression_attribute_names: names(&[("#s", "status"), ("#r", "rank")]),
+            ..global.clone()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Global secondary index by_status does not project [secret, rank]"
+    );
+    let scan = |index: &str, filter: Option<&str>, projection: Option<&str>, select: Option<Select>| ScanInput {
+        table_name: "items".into(),
+        index_name: Some(index.into()),
+        filter_expression: filter.map(Into::into),
+        projection_expression: projection.map(Into::into),
+        select,
+        expression_attribute_values: if filter.is_some() {
+            values(&[(":s", s("not projected"))])
+        } else {
+            Values::new()
+        },
+        ..Default::default()
+    };
+    let error = backend.scan(scan("by_status", None, Some("secret"), None)).await.unwrap_err();
+    assert_eq!(
+        message(&error),
+        "One or more parameter values were invalid: Global secondary index by_status does not project [secret]"
+    );
+    for (index, projection, select) in [
+        ("by_status", None, None),
+        ("by_rank", None, None),
+        ("by_rank", None, Some(Select::AllAttributes)),
+        ("by_rank", Some("pk, secret"), None),
+    ] {
+        let scanned = backend.scan(scan(index, Some("secret = :s"), projection, select)).await.unwrap();
+        assert_eq!((scanned.count, scanned.scanned_count), (0, 10), "{index} {projection:?} {select:?}");
+    }
+    let fetched = backend.scan(scan("by_rank", None, Some("pk, secret"), None)).await.unwrap();
+    assert!(fetched.items.iter().all(|item| item.contains_key("secret")), "a local index fetches its projection");
+}
+
+#[tokio::test]
 async fn scans_split_into_segments_and_page() {
     let backend = MemoryBackend::default();
     let mut input = table_input("items");

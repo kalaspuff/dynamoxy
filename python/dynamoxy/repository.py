@@ -1758,7 +1758,8 @@ def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool)
       the ``begins_with`` condition and no entity type tells the models apart.
     * Reads of an index that does not hold every field never decode its entries into instances
       (``partial``; reads of such a local index ask for every attribute instead), and filters of
-      such a global index are checked against what it holds (``projected``).
+      such an index, and projections of such a global index, are checked against what it holds
+      (``projected``): DynamoDB refuses them otherwise.
 
     The filters are dynamoxy's own (``auto_filter``): they rarely remove items, so a limit still
     bounds each request.
@@ -1794,7 +1795,7 @@ def _reader_options(schema: ModelSchema, spec: IndexSpec | None, *, query: bool)
             options["where_checks"] = (functools.partial(_has_value, sort.attribute, template.template),)  # type: ignore[union-attr]
         else:
             options["where_checks"] = (functools.partial(_has_prefix, sort.attribute, template.prefix),)  # type: ignore[union-attr]
-    if spec is not None and spec.kind == "global" and spec.projection.type != "ALL":
+    if spec is not None and spec.projection.type != "ALL":
         held = set(names)
         held.update(
             schema.fields[name].attribute if name in schema.fields else name for name in spec.projection.attributes

@@ -236,7 +236,7 @@ async def test_limits_grow_but_stay_bounded(client: dynamoxy.Client, monkeypatch
     assert all(limit == 2**20 for limit in limits), limits
 
 
-async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> None:
+async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client, backend: str) -> None:
     await client.create_tables(Payment, Refund)
     gsi1 = (await client.table("ledger").describe()).indexes["gsi1"]
     assert gsi1.projection == "INCLUDE"
@@ -258,8 +258,12 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
         await open_payments.all()
     with pytest.raises(ValueError, match="does not hold 'amount'"):
         open_payments.filter(Payment.amount > 1)
-    # A table whose index does not hold the entity type (created before dynamoxy projected it):
-    # the entries pass the filter, and hydrated items are checked on the client.
+    with pytest.raises(ValueError, match=r"does not hold 'amount'.*add \.hydrate\(\)"):
+        await open_payments.project("sk", "amount").all()
+    assert [row["amount"] for row in await open_payments.project("amount").hydrate().all()] == [5]
+    # A table whose index does not hold the entity type (created by other tools, or before
+    # dynamoxy projected it): DynamoDB refuses queries that filter on it (ADR 0021), and its
+    # scans' filters see entries without one.
     await client.delete_tables(Payment)
     await client.table("ledger").create(
         partition_key=("pk", "S"),
@@ -267,10 +271,12 @@ async def test_indexes_that_hold_some_attributes(client: dynamoxy.Client) -> Non
         indexes=[IndexDefinition("gsi1", "global", ("gsi1pk", "S"), projection=Projection.keys_only())],
     )
     await write_items()
-    assert [item.payment_id for item in await open_payments.hydrate().all()] == ["p1"]
-    assert [item.refund_id for item in await refunds.query(index=Refund.by_state, state="open").hydrate().all()] == [
-        "r1"
-    ]
+    if backend == "memory":  # MiniStack filters the table items, which hold the type
+        with pytest.raises(
+            dynamoxy.ValidationError, match=r"does not project one or more filter attributes: \[_type, _type\]"
+        ):
+            await open_payments.hydrate().all()
+    assert [item.payment_id for item in await payments.scan(index=Payment.by_state).hydrate().all()] == ["p1"]
 
 
 async def test_keys_of_loaded_instances_cannot_change(app: dynamoxy.Client) -> None:
