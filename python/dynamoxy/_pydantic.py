@@ -247,7 +247,11 @@ class _FieldValidator:
     def __call__(self, value: Any) -> Any:
         validate = self._validate
         if validate is None:
-            validate = self._validate = _field_validation(self.model, self.name) or _unchanged
+            try:
+                validate = _field_validation(self.model, self.name)
+            except (KeyError, TypeError, AttributeError, StopIteration):  # a core schema of another layout
+                validate = None
+            validate = self._validate = validate or _unchanged
         try:
             return validate(value)
         except PydanticValidationError as error:

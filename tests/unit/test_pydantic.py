@@ -382,3 +382,11 @@ def test_values_outside_instances_run_the_fields_schema() -> None:
     assert schema.fields["label"].validate("x") == "x"
     with pytest.raises(ValueError, match="expected str"):
         schema.fields["label"].validate(5)
+
+
+def test_core_schemas_of_another_layout_leave_the_type_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Note(dynamoxy.PydanticModel, table="notes"):
+        note_id: Annotated[str, dynamoxy.PartitionKey(), pydantic.AfterValidator(str.upper)]
+
+    monkeypatch.setattr(Note, "__pydantic_core_schema__", {"type": "model"})  # no "schema"
+    assert schema_of(Note).key_from(("n1",), {}) == {"note_id": "n1"}
