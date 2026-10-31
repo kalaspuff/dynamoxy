@@ -38,6 +38,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   Upserts by key no longer give `X | None` and set fields their defaults, which
   `if_not_exists` wrote over an existing item's `None` or empty set: an item they create reads
   `None` or an empty set there unless the actions set it.
+- [**breaking**] `unique=True` on a set, list, map or document field is a `TypeError` when the
+  model is used: the guard key was the value's text, which has no canonical form for
+  collections (a set's depends on the hash seed of the process), so processes computed
+  different guards for the same value. A collection stored in a unique `Any` field raises
+  `ValueError` before any write. Drop `unique=True` from such fields, or make the value a
+  string (`",".join(sorted(tags))`) in a field of its own.
 
 ### Deprecated
 
@@ -301,14 +307,14 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - Unique guards could get out of step with their items. An upsert that set a unique value and
   found no item did not require that the item was still missing: when another writer created it
   between the read and the write, the upsert overwrote its value and never deleted its guard,
-  so the value stayed taken forever. It now requires that, and reads the item again and writes
-  once more when another writer created it (a transaction cancels and says to retry). A unique
-  `float` field of an instance read back could not be written: the plan compared the stored
-  `Decimal("0.1")` with `0.1` and deleted and put the same guard item, which DynamoDB refuses,
-  so `save()`, `put()` and `update(latitude.set(0.1))` failed with the value unchanged. And
-  `unique=True` was accepted on set, list and map fields, whose guard key was the value's text
-  (a set's depends on the hash seed of the process): it is now a `TypeError`, and a collection
-  in a unique `Any` field raises `ValueError` before any write.
+  so the value stayed taken forever. An upsert that read the item to render a derived attribute
+  (`Player.score.add(1)` with `rank="SCORE#{score:08d}"`) wrote a rank of the missing item's
+  values over the created item's (score 6, rank `SCORE#00000001`). Such upserts now require
+  that the item is still missing, and read it again and write once more when another writer
+  created it (a transaction cancels and says to retry). A unique `float` field of an instance
+  read back could not be written: the plan compared the stored `Decimal("0.1")` with `0.1` and
+  deleted and put the same guard item, which DynamoDB refuses, so `save()`, `put()` and
+  `update(latitude.set(0.1))` failed with the value unchanged.
 
 ### Security
 

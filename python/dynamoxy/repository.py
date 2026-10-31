@@ -1074,8 +1074,9 @@ class Repository[M]:
                 rendered = spec.template.render(created, schema.codecs)
                 if rendered is not None:
                     actions_list.append(schema._path(spec.attribute).set_if_not_exists(rendered))
-        # The read found no item: an upsert creates it only if it is still missing, since an item
-        # another writer created meanwhile has a guard of its own unique value to delete.
+        # The read (for unique values or derived attributes) found no item: an upsert creates it
+        # only if it is still missing, since an item another writer created meanwhile has a guard
+        # of its own unique value to delete, and its own values to render derived attributes from.
         absent = needs_read and stored_old is None
         if unique_touched and stored_old is not None:
             parts.extend(self._guard_conditions(stored_old, unique_touched))

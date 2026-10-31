@@ -1145,3 +1145,25 @@ async def test_index_reads_never_make_up_values(client: dynamoxy.Client, backend
     if backend == "memory":  # MiniStack never reads the table for local indexes; DynamoDB does
         assert [event.expires_at for event in local] == [expires], "a local index reads the other attributes"
         assert projected == [{"kind": "k", "expires_at": expires}], "also for a projection"
+
+
+async def test_upserts_render_derived_keys_from_an_item_created_meanwhile(client: dynamoxy.Client) -> None:
+    await client.create_tables(Player)
+    players = client.model(Player)
+
+    async def create_after_the_read(request: dynamoxy.Request, call_next: dynamoxy.CallNext) -> dynamoxy.Response:
+        response = await call_next(request)
+        if request.operation == "GetItem":
+            remove()
+            await players.create(Player(player_id="p1", name="Ada", score=5))
+        return response
+
+    remove = client.use(create_after_the_read)
+    # The rank is rendered from the item as read: none, so a score of 1. The upsert requires
+    # that the item is still missing, and is planned again from the item created meanwhile.
+    updated = await players.update(
+        Player.key("p1"), Player.score.add(1), Player.name.set_if_not_exists("Bo"), upsert=True
+    )
+    assert (updated.name, updated.score, updated.rank) == ("Ada", 6, "SCORE#00000006")
+    stored = await players.get_or_raise("p1")
+    assert (stored.score, stored.rank) == (6, "SCORE#00000006")
