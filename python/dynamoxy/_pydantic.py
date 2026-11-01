@@ -63,6 +63,8 @@ from dynamoxy.schema import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from pydantic.fields import FieldInfo
 
     from dynamoxy.codecs import DateTimeFormat
@@ -455,13 +457,16 @@ class PydanticModel(BaseModel, _Persistence, metaclass=_ModelMetaclass):
         return schema_of(type(self)).encode(self)
 
     @classmethod
-    def from_item(cls, item: dict[str, Any]) -> Self:
-        """An instance from a stored item.
+    def from_item(cls, item: Mapping[str, Any]) -> Self:
+        """An instance from a stored item (see :meth:`dynamoxy.Model.from_item`).
 
         Raises:
-            ItemDecodeError: The item does not fit the model.
+            ItemDecodeError: The item does not fit the model, is a guard item of a unique value, or
+                is another model's (its type attribute names another model of the table).
         """
-        return schema_of(cls).decode(item)
+        schema = schema_of(cls)
+        schema.check_stored(item, read_with="{model}.from_item()")
+        return schema.decode(item)
 
     def primary_key(self) -> dict[str, Any]:
         """The stored primary key of this instance (see :meth:`dynamoxy.Model.primary_key`)."""

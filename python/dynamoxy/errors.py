@@ -87,6 +87,7 @@ __all__ = [
     "ResourceNotFoundError",
     "ServiceError",
     "ShutdownError",
+    "StreamRecordError",
     "ThrottlingError",
     "TransactionCanceledError",
     "TransactionConflictError",
@@ -163,6 +164,35 @@ class ItemDecodeError(ValidationError):
         self.key = key
         self.message = message
         self.errors: tuple[FieldError, ...] = ()
+
+
+class StreamRecordError(ItemDecodeError):
+    """A DynamoDB Streams record cannot be turned into a change (``dynamoxy.streams.changes()``).
+
+    An image does not fit its model, the record is malformed, or its model cannot be told (a
+    ``KEYS_ONLY`` record whose key fits several models). Report :attr:`sequence_number` as the
+    batch item failure of a Lambda function (``{"batchItemFailures": [{"itemIdentifier": ...}]}``)
+    to have the record retried, or skip it.
+
+    Attributes:
+        model: The model the record was decoded into, when known.
+        key: The primary key of the item (``dynamodb.Keys``), when known.
+        sequence_number: The record's ``dynamodb.SequenceNumber``.
+        event_id: The record's ``eventID``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model: type | None = None,
+        key: dict[str, Any] | None = None,
+        sequence_number: str | None = None,
+        event_id: str | None = None,
+    ) -> None:
+        super().__init__(message, model=model, key=key)
+        self.sequence_number = sequence_number
+        self.event_id = event_id
 
 
 class ItemNotFoundError(DynamoxyError):

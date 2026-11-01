@@ -81,6 +81,7 @@ def test_python_errors_keep_their_attributes() -> None:
         dynamoxy.ItemNotFoundError("missing", model=User, key={"user_id": "u1"}),
         dynamoxy.VersionConflictError("stale", model=User, key={"user_id": "u1"}, expected_version="3f2a"),
         dynamoxy.ItemDecodeError("bad", model=User, key={"user_id": "u1"}),
+        dynamoxy.StreamRecordError("bad", model=User, key={"user_id": "u1"}, sequence_number="7", event_id="e7"),
         dynamoxy.UnprocessedItemsError("left", unprocessed=[("put", {"user_id": "u1"})]),
     ]
     for error in errors:
