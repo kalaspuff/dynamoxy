@@ -26,9 +26,10 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |
 | [0015](0015-stored-values-decode-exactly.md) | Stored values decode exactly to their declared type, or raise `ItemDecodeError` | Accepted |
 | [0016](0016-writes-store-a-write-id.md) | Model writes store a random write id (`_wid`), so a retry recognises its own earlier attempt | Accepted |
-| [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted, amended by 0018 |
-| [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted |
+| [0017](0017-models-create-items-with-an-explicit-client.md) | Models create items with an explicit client: `Model.create(client, ...)`, typed like the constructor | Accepted, amended by 0018 and 0023 |
+| [0018](0018-models-read-items-with-an-explicit-client.md) | Models read items with an explicit client: `Model.get(client, ...)` and `Model.query(client, ...)` | Accepted, amended by 0023 |
 | [0019](0019-missing-attributes-read-as-none-or-empty-sets.md) | A missing attribute reads as `None` or an empty set where the field can hold one, not as the field's default | Accepted |
 | [0020](0020-documents-keep-undeclared-keys.md) | Documents read from an item keep the map keys their class does not declare | Accepted |
 | [0021](0021-index-reads-follow-dynamodbs-refusals.md) | Filters and projections of indexes follow DynamoDB's refusals, measured against it; queries of an index without the type attribute fail | Accepted |
 | [0022](0022-versions-are-random-tokens.md) | Versions are random tokens, new on every write, so a stale instance never matches again | Accepted |
+| [0023](0023-models-scan-and-instances-create-themselves.md) | `Model.scan(client)`, and instances create themselves with `instance.create(client)` | Accepted |

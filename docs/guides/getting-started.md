@@ -86,9 +86,10 @@ await ada.delete()
 
 `User.create(client, ...)` builds a `User` and writes it as a new item; type checkers check its
 arguments like the constructor's. `User.get(client, ...)` reads one item by key, and
-`User.query(client, ...)` the items of a partition. They all go through `client.model(User)`,
-the typed operations of a model on this client (a `dynamoxy.Repository[User]`), which also
-has `get_or_raise`, `scan`, `count`, batches and more. An instance remembers the repository that
+`User.query(client, ...)` the items of a partition, `User.scan(client)` every item of the
+model. An instance built already writes itself as a new item with `await user.create(client)`.
+They all go through `client.model(User)`, the typed operations of a model on this client (a
+`dynamoxy.Repository[User]`), which also has `get_or_raise`, `count`, batches and more. An instance remembers the repository that
 read or wrote it, so with `users = client.model(User)`, `ada.save()` is `users.save(ada)` and
 `ada.increment(User.visits)` is `users.update(ada, User.visits.add(1))`. The repository does the
 same by key, without an instance: `await users.update(User.key("u1"), User.visits.add(1))`.

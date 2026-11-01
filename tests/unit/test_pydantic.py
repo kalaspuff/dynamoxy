@@ -167,7 +167,9 @@ def test_existing_models_are_stored_through_a_subclass() -> None:
         ContactRecord(contact_id="c2", email="b@c.d", name="")
 
 
-@pytest.mark.parametrize("name", ["key", "to_item", "is_loaded", "create", "get", "query", "save", "update", "delete"])
+@pytest.mark.parametrize(
+    "name", ["key", "to_item", "is_loaded", "create", "get", "query", "scan", "save", "update", "delete"]
+)
 def test_fields_cannot_take_the_names_of_the_model_api(name: str) -> None:
     # As in native models: a field's path would replace the method (pydantic only warns).
     namespace = {"__annotations__": {"pk": Annotated[str, dynamoxy.PartitionKey()], name: str}}

@@ -57,9 +57,11 @@ The instance methods (`user.save()`, `user.update(...)`, `user.add(...)`, `user.
 `user.delete()`, ...) call these on the repository the instance is bound to (see "Bound
 instances" below); `add`/`increment`/`decrement` only build the update action.
 `User.create(client, ...)` constructs the instance and calls `client.model(User).create(...)`
-([ADR 0017](adr/0017-models-create-items-with-an-explicit-client.md)); `User.get(client, ...)`
-and `User.query(client, ...)` call `client.model(User).get(...)` and `.query(...)`
-([ADR 0018](adr/0018-models-read-items-with-an-explicit-client.md)). The client builds one
+([ADR 0017](adr/0017-models-create-items-with-an-explicit-client.md)), and `user.create(client)`
+calls it with an instance built already; `User.get(client, ...)`, `User.query(client, ...)` and
+`User.scan(client)` call `client.model(User).get(...)`, `.query(...)` and `.scan(...)`
+([ADR 0018](adr/0018-models-read-items-with-an-explicit-client.md),
+[ADR 0023](adr/0023-models-scan-and-instances-create-themselves.md)). The client builds one
 plain repository per model, on first use, and returns it afterwards.
 
 1. **Python, `repository.py`**: validate the instance (`ModelSchema.validate`: codecs,

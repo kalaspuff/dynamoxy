@@ -37,20 +37,18 @@ async def main(client: dynamoxy.Client | None = None) -> Customer:
     """Runs on the in-memory DynamoDB unless a client is given."""
     async with client or dynamoxy.testing.memory_client() as db:
         await db.ensure_tables(Customer)
-        customers = db.model(Customer)
-        ada = await customers.create(
-            Customer(
-                customer_id="c1", email="ada@example.com", name="Ada", address=Address(street="Main 1", city="Lund")
-            )
+        ada = Customer(
+            customer_id="c1", email="ada@example.com", name="Ada", address=Address(street="Main 1", city="Lund")
         )
+        await ada.create(db)  # or in one step: await Customer.create(db, customer_id="c1", ...)
         print(f"created {ada.customer_id} version={ada.version} created_at={ada.created_at:%Y-%m-%d}")
 
         # Class attributes are expression paths; dynamoxy.attr() types them for type checkers.
-        await customers.update(ada, dynamoxy.attr(Customer.credit).add(Decimal("12.50")))
-        rich = await customers.scan().filter(dynamoxy.attr(Customer.credit) > 10).all()
+        await ada.update(dynamoxy.attr(Customer.credit).add(Decimal("12.50")))
+        rich = await Customer.scan(db).filter(dynamoxy.attr(Customer.credit) > 10).all()
         print("customers with credit:", [customer.name for customer in rich])
 
-        found = await customers.query(index=Customer.by_email, email="ada@example.com").one()
+        found = await Customer.query(db, index=Customer.by_email, email="ada@example.com").one()
         assert found.address is not None
         print(f"{found.name} lives in {found.address.city}; credit {found.credit}")
         return found

@@ -249,9 +249,9 @@ after the model's own and suit cross-cutting concerns such as auditing.
 ## Names to avoid
 
 Field names cannot shadow the model API: `key`, `primary_key`, `is_loaded`, `to_item`,
-`from_item`, `create`, `get`, `query` and the instance methods `save`, `delete`, `update`, `add`,
-`increment`, `decrement`, `refresh`, in native and [pydantic](pydantic.md#existing-models)
-models alike. Native models also reserve `validate`, `copy` and `to_dict`; in pydantic models,
+`from_item`, `create`, `get`, `query`, `scan` and the instance methods `save`, `delete`,
+`update`, `add`, `increment`, `decrement`, `refresh`, in native and
+[pydantic](pydantic.md#existing-models) models alike. Native models also reserve `validate`, `copy` and `to_dict`; in pydantic models,
 pydantic's own names (`copy`, `validate`, ...) follow pydantic's rules. Use another Python name
 and keep the stored name with `attribute_name=`:
 

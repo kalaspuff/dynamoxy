@@ -23,14 +23,14 @@ It is authoritative for the installed version; this skill only summarizes it.
    `Attr[T]` with `field()`, `partition_key()`, `sort_key()`; automatic fields use `created_at()`,
    `updated_at()`, `version()`, `ttl(default=None)`.
 3. All access goes through the model's classmethods (`Model.create(client, ...)`,
-   `Model.get(client, ...)`, `Model.query(client, ...)`), the client's typed model operations
+   `Model.get(client, ...)`, `Model.query(client, ...)`, `Model.scan(client)`), the client's typed model operations
    (`client.model(Model)`, a `Repository[Model]`) or a `Repository[Model]` subclass with domain
    methods. No raw DynamoDB calls in services. Instances a repository read or wrote write
    themselves through it: `await item.save()`, `await item.delete()`,
    `await item.increment(Model.counter)`, `await item.add(Model.tags, "x")`,
    `await item.update(*actions)`, `await item.refresh()`.
 4. Pick the write that states the intent: `create` (new only; `await Model.create(client,
-   field=...)` builds and writes in one call), `save` (optimistic locking), `update` with atomic
+   field=...)` builds and writes in one call, `await item.create(client)` writes an instance), `save` (optimistic locking), `update` with atomic
    actions (`Model.counter.add(1)`), `put` (overwrite), `delete`.
 5. Lifecycle hooks are decorated model methods: `@dynamoxy.before_save`/`after_save`,
    `before_update`/`after_update` (also for `add`/`increment`/`decrement`),

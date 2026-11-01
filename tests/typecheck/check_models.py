@@ -87,18 +87,25 @@ def conditions() -> None:
 async def model_methods(client: dynamoxy.Client) -> None:
     ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
     assert_type(ada, User)
-    await User.create(client, user_id="u1", email="ada@example.com", name="Ada", visits="3")  # type: ignore[arg-type]
-    await User.create(client, user_id="u1", email="ada@example.com")  # type: ignore[call-arg]
+    await User.create(client, user_id="u1", email="ada@example.com", name="Ada", visits="3")  # type: ignore[call-overload]
+    await User.create(client, user_id="u1", email="ada@example.com")  # type: ignore[call-overload]
+    assert_type(await User(user_id="u2", email="bo@example.com", name="Bo").create(client), User)
+    await ada.create(client, name="Ada")  # type: ignore[call-overload]
 
     wallet = await Wallet.create(client, wallet_id="w1", owner="ada")
     assert_type(wallet, Wallet)
-    await Wallet.create(client, wallet_id="w1", owner=3)  # type: ignore[arg-type]
-    await Wallet.create(client, wallet_idd="w1", owner="ada")  # type: ignore[call-arg]
+    await Wallet.create(client, wallet_id="w1", owner=3)  # type: ignore[call-overload]
+    await Wallet.create(client, wallet_idd="w1", owner="ada")  # type: ignore[call-overload]
+    assert_type(await Wallet(wallet_id="w2", owner="bo").create(client), Wallet)
 
     assert_type(await User.get(client, "u1"), User | None)
     assert_type(await Wallet.get(client, "w1"), Wallet | None)
     assert_type(await User.query(client, user_id="u1").all(), list[User])
     assert_type(await Wallet.query(client, wallet_id="w1").first(), Wallet | None)
+    assert_type(User.scan(client), dynamoxy.Scan[User])
+    assert_type(await User.scan(client, index="by_email").filter(User.visits > 3).all(), list[User])
+    assert_type(await Wallet.scan(client).first(), Wallet | None)
+    User.scan(client, "by_email")  # type: ignore[call-arg]
 
     assert_type(await ada.increment(User.visits), User)
     await ada.increment(User.name)  # type: ignore[arg-type]

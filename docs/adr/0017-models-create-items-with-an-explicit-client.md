@@ -1,7 +1,8 @@
 # 0017: Models create items with an explicit client: `Model.create(client, ...)`
 
 Status: Accepted (amends [0011](0011-instances-remember-their-repository.md)), amended by
-[0018](0018-models-read-items-with-an-explicit-client.md) (`Model.get` and `Model.query`)
+[0018](0018-models-read-items-with-an-explicit-client.md) (`Model.get` and `Model.query`) and
+[0023](0023-models-scan-and-instances-create-themselves.md) (`instance.create(client)`)
 
 ## Context
 
