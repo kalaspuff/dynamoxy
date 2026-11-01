@@ -20,7 +20,7 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0008](0008-stored-formats.md) | Stored formats: codecs, sortable timestamps, entity types, cursors | Accepted, amended by 0013 and 0019 |
 | [0009](0009-timestamp-formats.md) | Timestamps with a `Z` suffix (`"iso_z"`), chosen per model with `datetime_format` | Accepted |
 | [0010](0010-asyncio-bridge.md) | An own asyncio bridge: results delivered through per-loop ports, in-memory calls polled inline | Accepted |
-| [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted, amended by 0017 |
+| [0011](0011-instances-remember-their-repository.md) | Model instances remember the repository that read or wrote them and persist themselves through it | Accepted, amended by 0017 and 0024 |
 | [0012](0012-reads-of-partial-indexes.md) | Model reads of indexes that hold only some attributes: the type attribute is projected, entries are never decoded into instances | Accepted, amended by 0021 |
 | [0013](0013-stored-forms-read-back-as-written.md) | Stored numbers and timestamps read back as written: canonical numbers in guards and templates, UTC for formatted datetimes, exact epochs | Accepted |
 | [0014](0014-writes-keep-undeclared-attributes.md) | Writes of loaded instances keep the attributes their model does not declare | Accepted |
@@ -33,3 +33,4 @@ Status values: **Accepted** (or **Accepted, amended by NNNN** when a later ADR a
 | [0021](0021-index-reads-follow-dynamodbs-refusals.md) | Filters and projections of indexes follow DynamoDB's refusals, measured against it; queries of an index without the type attribute fail | Accepted |
 | [0022](0022-versions-are-random-tokens.md) | Versions are random tokens, new on every write, so a stale instance never matches again | Accepted |
 | [0023](0023-models-scan-and-instances-create-themselves.md) | `Model.scan(client)`, and instances create themselves with `instance.create(client)` | Accepted |
+| [0024](0024-stream-records-decode-into-model-changes.md) | DynamoDB Streams records decode into changes of models (`dynamoxy.streams`); `from_item()` refuses guard items and other models' items | Accepted |

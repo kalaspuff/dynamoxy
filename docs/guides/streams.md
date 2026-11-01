@@ -125,3 +125,5 @@ user = client.model(User).from_item(item)   # bound to the repository: user.save
 Both raise `ItemDecodeError` for an item that is not the model's: a guard item
 (`dynamoxy.constraints.is_guard()` tells them), or an item whose type attribute names another
 model of the table.
+
+Why it works this way: [ADR 0024](../adr/0024-stream-records-decode-into-model-changes.md).

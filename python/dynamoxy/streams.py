@@ -382,7 +382,7 @@ class _Router:
             sequence_number=sequence_number if isinstance(sequence_number, str) else None,
             event_id=event_id if isinstance(event_id, str) else None,
             table=table,
-            created_at=_created_at(data.get("ApproximateCreationDateTime")),
+            created_at=_created_at(data.get("ApproximateCreationDateTime"), error),
             view_type=data.get("StreamViewType"),
             record=record,
         )
@@ -455,10 +455,15 @@ def _table_of(arn: Any) -> str | None:
     return parts[5].removeprefix("table/").split("/", 1)[0] or None
 
 
-def _created_at(value: Any) -> datetime | None:
+def _created_at(value: Any, error: _RecordError) -> datetime | None:
     """``ApproximateCreationDateTime``: seconds since the epoch in Lambda events, a datetime from boto3."""
+    if value is None:
+        return None
     if isinstance(value, datetime):
         return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        return datetime.fromtimestamp(float(value), UTC)
-    return None
+        try:
+            return datetime.fromtimestamp(float(value), UTC)
+        except (OverflowError, ValueError, OSError):
+            raise error("its ApproximateCreationDateTime is not a time (seconds since the epoch)") from None
+    raise error(f"its ApproximateCreationDateTime is a {type(value).__name__}, not a number of seconds since the epoch")

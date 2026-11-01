@@ -329,6 +329,19 @@ def test_models_are_checked_when_called() -> None:
         ({"dynamodb": {"SequenceNumber": "7", "NewImage": {"user_id": {"N": 5}}}}, "stream record 7 .* NewImage"),
         ({"dynamodb": {"SequenceNumber": "7", "OldImage": [1]}}, "its OldImage is a list"),
         ({"dynamodb": {"SequenceNumber": "7"}}, "stream record 7 \\(INSERT\\): it has no Keys, NewImage or OldImage"),
+        *(
+            (
+                {
+                    "dynamodb": {
+                        "SequenceNumber": "7",
+                        "Keys": {"user_id": {"S": "u1"}},
+                        "ApproximateCreationDateTime": t,
+                    }
+                },
+                "stream record 7 \\(INSERT\\): its ApproximateCreationDateTime is ",
+            )
+            for t in (1e20, float("nan"), float("inf"), Decimal("1e400"), "1793520000", True)
+        ),
     ],
 )
 def test_malformed_records_are_refused(change: dict[str, Any], message: str) -> None:
