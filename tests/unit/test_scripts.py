@@ -15,6 +15,8 @@ from types import ModuleType
 
 import pytest
 
+import dynamoxy
+
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 
 
@@ -37,10 +39,18 @@ def test_deprecated_apis_fail_the_checks_once_due(monkeypatch: pytest.MonkeyPatc
     read = check_consistency.read
     cargo = f'[workspace.package]\nversion = "{version}"\n'
     monkeypatch.setattr(check_consistency, "read", lambda path: cargo if path == "Cargo.toml" else read(path))
+    monkeypatch.setattr(
+        check_consistency,
+        "DEPRECATED",
+        {
+            "Client.model": (dynamoxy.Client, "model", "0.5.0"),
+            "Client.gone": (dynamoxy.Client, "gone", "0.5.0"),  # already removed: never reported
+        },
+    )
     problems = list(check_consistency.deprecations_removed_on_schedule())
-    assert bool(problems) == due
+    assert len(problems) == int(due)
     if due:
-        assert "Client.repository is deprecated and due for removal in 0.5.0" in problems[0]
+        assert "Client.model is deprecated and due for removal in 0.5.0" in problems[0]
     assert check_consistency.version_tuple("0.5.0-rc.1+build.7") == (0, 5, 0)
 
 

@@ -146,22 +146,6 @@ async def test_closed_clients_let_go_of_their_repositories() -> None:
         await client.model(User).get("u1")
 
 
-def test_repository_is_a_deprecated_alias_of_model() -> None:
-    client = testing.memory_client()
-    with pytest.warns(DeprecationWarning, match=r"use client\.model\(\)") as caught:
-        users = client.repository(User)
-    assert len(caught) == 1
-    assert str(caught[0].message) == (
-        "Client.repository() is deprecated and will be removed in dynamoxy 0.5: "
-        "use client.model(), which returns the same Repository"
-    )
-    assert caught[0].filename == __file__, "the warning points at the caller"
-    assert users is client.model(User)
-    assert "removed in dynamoxy 0.5" in getattr(dynamoxy.Client.repository, "__deprecated__", "")  # PEP 702
-    assert dynamoxy.Client.repository.__name__ == "repository"
-    assert "Deprecated alias of" in (dynamoxy.Client.repository.__doc__ or "")
-
-
 def test_deprecated_backport_matches_python_3_13() -> None:
     # Python 3.12 has no warnings.deprecated; the backport behaves like it for functions.
     @deprecated_backport("old() is deprecated: use new()")
