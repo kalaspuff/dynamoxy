@@ -100,7 +100,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   table is gone, `UpdateTable` when the description shows every change of the request, and
   `UpdateTimeToLive` when Time to Live is as it sets it; a refusal the table does not explain
   stands, and when the table cannot be described, or is still changing, the call raises
-  `WriteOutcomeUnknownError`. `CreateBackup` and the restores are not sent again: they raise
+  `WriteOutcomeUnknownError`. When no later attempt answers (the last attempt was the lost one,
+  also with `retry_timeouts=False`), the table is described the same way, and the call raises the
+  retryable `TransportError` only when the table shows that nothing was applied. These lookups
+  also run after `close()`. `CreateBackup` and the restores are not sent again: they raise
   `WriteOutcomeUnknownError`, which names the backup or the table to look for, and so does a
   `DeleteBackup` whose backup is gone after such an attempt. Tags and point-in-time recovery
   settings are sent again as before: they apply once however often they are sent.

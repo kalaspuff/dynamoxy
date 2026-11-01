@@ -850,8 +850,9 @@ backoff and full jitter. Conditional and validation failures are never retried. 
 attempt timed out, lost its connection or got a 5xx may have been applied: it is sent again
 only when it applies once even when sent twice (transactions, puts, deletes, `SET` updates).
 Table operations check the table instead: a `create_tables()`, `delete_table()`, index or TTL
-change that its own lost attempt already applied succeeds; `create_backup()` and restores are not
-sent again and raise `WriteOutcomeUnknownError` naming the backup or table to look for.
+change that its own lost attempt already applied succeeds, also when that was the last attempt;
+`create_backup()` and restores are not sent again and raise `WriteOutcomeUnknownError` naming
+the backup or table to look for.
 A failure to connect (refused, DNS, TLS, no file descriptors, and a connect timeout when
 `connect_timeout` is shorter than `timeout`) sent nothing: every write is sent again after it,
 increments too, and it never leaves the outcome unknown.

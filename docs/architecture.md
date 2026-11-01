@@ -92,10 +92,10 @@ plain repository per model, on first use, and returns it afterwards.
    connect, which sent nothing: `Error::Transport { sent: false }`), only writes that
    apply once even when sent twice are sent again, and an answer that attempt may have caused
    (a failed condition, old values), or no answer when the attempts run out, is `OutcomeUnknown`
-   (`WriteOutcomeUnknownError`). Table operations settle a refusal of the next attempt by
-   describing the table (`run_settled`: their own table exists, is gone, shows the change), and
-   `CreateBackup` and restores are never sent again. `close()` refuses new calls; calls in
-   progress finish their retries.
+   (`WriteOutcomeUnknownError`). Table operations settle a refusal of the next attempt, or no
+   answer, by describing the table (`run_settled`: their own table exists, is gone, shows the
+   change), and `CreateBackup` and restores are never sent again. `close()` refuses new calls;
+   calls in progress finish their retries, and their lookups.
 7. **Backend**: AWS SDK call (errors classified in `aws/errors.rs`) or the in-memory backend.
 8. **Python**: map failures to specific errors (`explain_failure`: `ItemAlreadyExistsError`,
    `VersionConflictError`, `UniqueConstraintError`, `ItemNotFoundError`), finalize the

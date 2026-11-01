@@ -1040,3 +1040,73 @@ async fn backups_and_restores_are_not_sent_again_after_an_attempt_that_may_have_
     assert!(client.tag_resource(&arn, tags.clone()).await.result.is_ok());
     assert_eq!(client.list_tags_of_resource(&arn).await.result.unwrap().tags, tags);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_last_attempt_of_a_table_operation_is_settled_by_describing_the_table() {
+    // One attempt: the lost one is the last, and no later attempt answers.
+    let config = ClientConfig { retry: RetryConfig { max_attempts: 1, ..config().retry }, ..config() };
+    let client = Client::memory(config, None).unwrap();
+    let backend = client.memory_backend().unwrap();
+    backend.inject_fault(lose("CreateTable"));
+    let call = client.create_table(table_input("things", true)).await;
+    assert_eq!(call.result.unwrap().table_name, "things");
+    client.wait_for_table("things", true, Duration::from_secs(5)).await.unwrap();
+
+    // The lost attempt was refused (another table of that name): nothing to settle, and sending
+    // it again is safe.
+    backend.inject_fault(lose("CreateTable"));
+    let call = client.create_table(table_input("things", false)).await;
+    assert!(matches!(call.result, Err(Error::Transport { retryable: true, .. })), "{:?}", call.result);
+
+    backend.inject_fault(lose("UpdateTable"));
+    assert!(client.update_table(add_index("things", "by_h", "h")).await.result.is_ok());
+    client.wait_for_table("things", true, Duration::from_secs(5)).await.unwrap();
+
+    backend.inject_fault(lose("UpdateTimeToLive"));
+    let ttl = UpdateTimeToLiveInput { table_name: "things".into(), enabled: true, attribute_name: "expires".into() };
+    assert_eq!(client.update_time_to_live(ttl).await.result.unwrap().status, TimeToLiveStatus::Enabled);
+
+    let backup = client.create_backup("things", "nightly").await.result.unwrap();
+    backend.inject_fault(lose("DeleteBackup"));
+    let call = client.delete_backup(&backup.backup_arn).await;
+    assert!(unknown_message(&call).contains("no longer exists"), "{:?}", call.result);
+
+    backend.inject_fault(lose("DeleteTable"));
+    let call = client.delete_table("things").await;
+    assert_eq!(call.result.unwrap().table_status, TableStatus::Deleting);
+
+    // A lost attempt that applied nothing: the retryable error stands.
+    backend.inject_fault(Fault {
+        operation: Some("CreateTable".into()),
+        table: None,
+        kind: FaultKind::Error { code: "InternalServerError".into(), message: "internal".into() },
+        times: 1,
+    });
+    let call = client.create_table(table_input("others", false)).await;
+    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::Internal));
+}
+
+#[tokio::test(start_paused = true)]
+async fn table_operations_in_progress_settle_after_close() {
+    let client = Client::memory(config(), None).unwrap();
+    let backend = client.memory_backend().unwrap();
+    // The first attempt creates the table and its response is lost; the second one times out
+    // (applying nothing) while the client closes; the third finds the table.
+    backend.inject_fault(lose("CreateTable"));
+    backend.inject_fault(Fault {
+        operation: Some("CreateTable".into()),
+        table: None,
+        kind: FaultKind::Latency(Duration::from_secs(5)),
+        times: 1,
+    });
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move { client.create_table(table_input("things", false)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    client.close();
+    let call = call.await.unwrap();
+    assert!(call.result.is_ok(), "{:?}", call.result);
+    assert_eq!(call.stats.attempts, 3);
+    assert_eq!(client.describe_table("things").await.result.unwrap_err(), Error::Shutdown);
+}

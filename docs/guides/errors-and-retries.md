@@ -127,6 +127,16 @@ Table operations follow the same rule, settled by looking at the table:
   description went with it).
 - Tags and point-in-time recovery settings are sent again: they apply once however often they
   are sent.
+- When no later attempt answers (the attempts run out, the last one itself timed out, or
+  `retry_timeouts=False` stops after the first), the table is described the same way: a table
+  that is the one requested, is gone, or shows the change settles the call as a success. The
+  call raises the attempt's retryable `TransportError` only when the table shows that nothing
+  was applied (no table to create was found, the table to delete is still there, the change is
+  not there and nothing is changing), so sending it again is safe. When it cannot tell, it
+  raises `WriteOutcomeUnknownError`.
+
+These lookups are part of the call: they also run after `client.close()`, which lets calls in
+progress finish.
 
 Model writes settle most of these themselves. Each write that runs alone stores a random id in
 the item (`_wid`, [ADR 0016](../adr/0016-writes-store-a-write-id.md)); when the outcome is
@@ -159,10 +169,10 @@ costs twice the write units of a single write.
 `RetryPolicy(retry_timeouts=False)` sends nothing again after a timeout or a lost connection.
 A write whose attempt may have been applied raises `WriteOutcomeUnknownError` (a
 `TransportError` that is not `.retryable`), which model writes settle by their write id as
-above; reads, batch writes and the other table operations raise the attempt's `TransportError`,
-which is `.retryable` because sending them again is safe (a table operation that is sent again
-settles its own earlier attempt as above). `create_backup()` and the restores raise
-`WriteOutcomeUnknownError`. A managed batch does not send such a chunk again
+above; reads and batch writes raise the attempt's `TransportError`, which is `.retryable`
+because sending them again is safe. Table operations describe the table first, as above, and
+raise that `TransportError` only when the table shows that nothing was applied;
+`create_backup()` and the restores raise `WriteOutcomeUnknownError`. A managed batch does not send such a chunk again
 in a later round either: the other chunks go on, and `UnprocessedItemsError` reports the chunk's
 items with that `TransportError` in `.error`.
 

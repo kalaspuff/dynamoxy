@@ -583,3 +583,10 @@ async def test_backups_are_not_created_twice_after_a_lost_response(client: dynam
         await table.create_backup("nightly")
     assert [backup.name for backup in await table.backups()] == ["nightly"]
     assert client.metrics().operations["CreateBackup"].attempts == 1
+
+
+async def test_a_lost_last_attempt_of_create_tables_is_settled() -> None:
+    async with testing.memory_client(retry=dynamoxy.RetryPolicy(retry_timeouts=False)) as client:
+        testing.inject_fault(client, operation="CreateTable", lose_response=True)
+        assert await client.create_tables(User) == [client.table_name("users")]
+        assert client.metrics().operations["CreateTable"].attempts == 1
