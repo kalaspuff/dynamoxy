@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from dynamoxy import _core
 from dynamoxy._core import CoreClient, MemoryStore
-from dynamoxy._utils import LoopLocal, count, deprecated, seconds
+from dynamoxy._utils import LoopLocal, count, seconds
 from dynamoxy.errors import DynamoxyError, ResourceInUseError, UnprocessedItemsError, unprocessed_items_error
 from dynamoxy.events import EventDispatcher, EventHook, EventKind, LoggingConfig
 from dynamoxy.middleware import HookContext, HookRegistry, Middleware, Request, Response
@@ -751,14 +751,6 @@ class Client:
         if not self._closed:  # a closed client keeps nothing (its calls raise ShutdownError)
             self._models[model] = repository
         return repository
-
-    @deprecated(
-        "Client.repository() is deprecated and will be removed in dynamoxy 0.5: "
-        "use client.model(), which returns the same Repository"
-    )
-    def repository[M](self, model: type[M]) -> Repository[M]:
-        """Deprecated alias of :meth:`model`, removed in dynamoxy 0.5."""
-        return self.model(model)
 
     def table(self, name: str) -> Table:
         """Dict-level access to a table by its logical name (prefix and mapping apply)."""

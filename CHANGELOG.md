@@ -25,6 +25,11 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `Order | None` instead of `Any`. Code that unpacks or indexes the result works as before; compare
   it with a tuple, or call `list()` on it to change it.
 
+### Removed
+
+- [**breaking**] `client.repository(User)`, deprecated in 0.4, is gone: call `client.model(User)`,
+  which returns the same `Repository`.
+
 ### Fixed
 
 - An error with an attribute that does not pickle could not cross process boundaries: the

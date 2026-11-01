@@ -266,9 +266,7 @@ def versions_agree() -> Iterator[str]:
 
 #: Deprecated APIs: (owner, attribute) and the version that removes them. From that version on,
 #: this check fails until the API (and its entry) is gone, so a promised removal is not forgotten.
-DEPRECATED: dict[str, tuple[Any, str, str]] = {
-    "Client.repository": (dynamoxy.Client, "repository", "0.5.0"),
-}
+DEPRECATED: dict[str, tuple[Any, str, str]] = {}
 
 
 def version_tuple(version: str) -> tuple[int, ...]:
