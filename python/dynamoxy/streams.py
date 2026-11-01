@@ -358,8 +358,8 @@ class _Router:
             if len(candidates) > 1:
                 raise error(
                     "it has no images, and its key fits several models: "
-                    f"{', '.join(candidate.__name__ for candidate in candidates)}; give their keys templates "
-                    "with distinct prefixes, or use a stream that holds images (NEW_AND_OLD_IMAGES)",
+                    f"{', '.join(candidate.__name__ for candidate in candidates)}; give their key templates "
+                    "distinct prefixes, or use a stream that holds images (NEW_AND_OLD_IMAGES)",
                     key=keys,
                 )
             model = candidates[0]

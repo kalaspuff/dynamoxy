@@ -336,7 +336,7 @@ def test_malformed_records_are_refused(change: dict[str, Any], message: str) -> 
     with pytest.raises(dynamoxy.StreamRecordError, match=message):
         list(streams.changes(malformed, User))
     with pytest.raises(dynamoxy.StreamRecordError, match="a stream record is a mapping, not a str"):
-        list(streams.changes(["INSERT"], User))
+        list(streams.changes(["INSERT"], User))  # pyrefly: ignore[no-matching-overload]
 
 
 def test_records_from_boto3() -> None:

@@ -17,6 +17,7 @@ dynamoxy is a typed, async DynamoDB ORM for Python with a Rust core. Start with
 | [Single-table design](guides/single-table-design.md) | Entities, key templates, generic indexes, collections |
 | [Pydantic models](guides/pydantic.md) | Using pydantic models as tables |
 | [Tables](guides/tables.md) | Creating and evolving tables, TTL, streams, backups, point-in-time recovery, tags |
+| [Streams and Lambda](guides/streams.md) | Changes of models from DynamoDB Streams records, Lambda handlers, partial batch failures |
 | [Low-level access](guides/low-level-access.md) | The dict-level table API, PartiQL, DynamoDB's typed JSON |
 | [Errors and retries](guides/errors-and-retries.md) | The error tree, retry policy, timeouts, what to catch |
 | [Observability](guides/observability.md) | Events, logging, hooks, middleware, OpenTelemetry, cost accounting, metrics |
