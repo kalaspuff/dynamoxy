@@ -115,12 +115,15 @@ def _items(draw: st.DrawFn, model: type) -> dict[str, Any]:
 
 
 def _check_agreement(schema: ModelSchema, item: dict[str, Any]) -> None:
+    nested: str | None = None
     try:
         fast = schema._values_of(item)
     except dynamoxy.ItemDecodeError as error:  # a nested document that does not decode: both raise it
+        nested = str(error)
+    if nested is not None:
         with pytest.raises(dynamoxy.ItemDecodeError) as caught:
             schema._decoded_values(item)
-        assert str(caught.value) == str(error)
+        assert str(caught.value) == nested
         return
     try:
         slow = schema._decoded_values(item)
