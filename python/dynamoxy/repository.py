@@ -79,7 +79,7 @@ from dynamoxy.errors import (
 from dynamoxy.events import EventKind
 from dynamoxy.expressions import Condition, ExpressionBuilder, F, UpdateAction, Value, and_, as_condition, or_
 from dynamoxy.query import Query, Scan
-from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, models_for_table, schema_of
+from dynamoxy.schema import WRITE_ID_ATTRIBUTE, FieldSpec, IndexSpec, ModelSchema, schema_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -347,25 +347,10 @@ class Repository[M]:
     def _check_entity(self, item: dict[str, Any]) -> None:
         """Refuses an item that the type attribute says another model of the table stores.
 
-        Decoded as this model, it would lose the other model's fields, and a save would store it
-        as this model. Entity names no model declares (an entity renamed since) still decode.
-
         Raises:
             ItemDecodeError: The item is another model's.
         """
-        schema = self.schema
-        stored = item.get(schema.type_attribute)  # type: ignore[arg-type]
-        if stored is None or stored == schema.entity or not isinstance(stored, str):
-            return
-        other = models_for_table(schema.table or "").get(stored)
-        if other is None:
-            return
-        raise ItemDecodeError(
-            f"cannot decode {self.model_class.__name__} from a stored item (see .key): it stores another model, "
-            f"{other.__name__} ({schema.type_attribute} is {stored!r}): read it with client.model({other.__name__})",
-            model=self.model_class,
-            key=schema.key_values(item),
-        )
+        self.schema.check_stored(item, read_with="client.model({model})", guards=False)
 
     def _load_written(self, item: dict[str, Any], operation: str) -> M:
         """:meth:`_load` of the item a write returned: a decode error says that the write was made."""
@@ -387,6 +372,29 @@ class Repository[M]:
             return [self._load(item) for item in items]
         decode = self.schema._decode
         return [decode(item, item, self) for item in items]
+
+    def from_item(self, item: Mapping[str, Any]) -> M:
+        """An instance from a stored item that this repository did not read, bound to it.
+
+        For items from elsewhere: a DynamoDB Streams image (``dynamodb.from_wire(image)``), an
+        export, a raw read of the table. Unlike :meth:`dynamoxy.Model.from_item`, the instance
+        is bound to this repository, as if read through it: ``after_load`` hooks run, and
+        ``save()``, ``update()`` and ``delete()`` on it write through this repository, checking its
+        version against the item's.
+
+        Example::
+
+            user = client.model(User).from_item(dynamoxy.from_wire(record["dynamodb"]["NewImage"]))
+            user.visits += 1
+            await user.save()
+
+        Raises:
+            ItemDecodeError: The item does not fit the model, is a guard item of a unique value, or
+                is another model's (its type attribute says so).
+        """
+        stored = dict(item)
+        self.schema.check_stored(stored, read_with="client.model({model}).from_item()")
+        return self._load(stored)
 
     def key(self, *key: Any, **key_values: Any) -> dict[str, Any]:
         """The stored primary key from values.

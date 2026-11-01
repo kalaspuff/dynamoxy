@@ -25,4 +25,5 @@ asyncio.run(quickstart.main(dynamoxy.Client(endpoint_url="http://localhost:4566"
 | [pagination.py](pagination.py) | API pagination with opaque cursors, newest first |
 | [observability.py](observability.py) | Event hooks, middleware, request cost accounting with `collect()`, metrics |
 | [testing_with_faults.py](testing_with_faults.py) | The in-memory DynamoDB, injected throttling, captured events, TTL purging |
+| [stream_handler.py](stream_handler.py) | A DynamoDB Streams handler for AWS Lambda: changes of models from stream records, partial batch failures |
 | [raw_tables.py](raw_tables.py) | Tables without models: dict-level items, PartiQL, DynamoDB's typed JSON |

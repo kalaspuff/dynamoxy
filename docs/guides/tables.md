@@ -85,7 +85,8 @@ await table.disable_time_to_live()
 ```
 
 DynamoDB deletes expired items in the background, typically within days; reads still return them
-until then. Deletions by TTL appear in streams as service deletions.
+until then. Deletions by TTL appear in streams as service deletions (`Change.expired` of
+[`dynamoxy.streams`](streams.md)).
 
 ## Backups and point-in-time recovery
 

@@ -16,6 +16,24 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   and bound. [**breaking**] Fields can no longer be named `scan`: rename the field and keep the
   stored name with `attribute_name="scan"`. mypy now reports wrong field values of
   `Model.create(client, ...)` as `call-overload`.
+- `dynamoxy.streams.changes(event, *models, client=None)` turns DynamoDB Streams records (a
+  Lambda event, `GetRecords` records or one record) into typed `Change` objects: `event_name`,
+  decoded `new` and `old` instances, `key`, `expired` (Time to Live), `sequence_number` and more.
+  It skips guard items of unique values and entities it was not given, dispatches by the type
+  attribute (records without images by key templates), and raises `StreamRecordError` (an
+  `ItemDecodeError` with the record's `sequence_number`) for a record that does not decode. With
+  `client=` instances are bound to its repositories and records routed by table. The guide
+  "Streams and Lambda" and `examples/stream_handler.py` show a Lambda handler with partial batch
+  failures.
+- `Repository.from_item(item)` (`client.model(User).from_item(...)`) decodes a stored item from
+  elsewhere (a stream image, an export) into an instance bound to the repository, as if read
+  through it.
+
+### Changed
+
+- `Model.from_item()` (and `PydanticModel.from_item()`) refuse guard items of unique values and
+  items whose type attribute names another model of the table with an `ItemDecodeError` that
+  says so, instead of failing on missing fields or decoding another entity's item.
 
 ## [0.5.0] - 2026-11-01
 

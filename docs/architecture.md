@@ -20,6 +20,7 @@ preserve. Decisions behind it are recorded in [docs/adr](adr/README.md).
 │  repository.py  transactions.py  batch.py  plan writes (_WritePlan), run hooks, guards    │
 │  query.py  collection.py  table.py        reads, cursors, dict-level API, table admin    │
 │  constraints.py                           unique guard items                             │
+│  streams.py                               DynamoDB Streams records → changes of models   │
 │  expressions.py                           typed paths → expression strings + placeholders │
 │  client.py  middleware.py                 Client: lifecycle, call pipeline, factories    │
 │  events.py  telemetry.py  results.py      events/logging/hooks, OpenTelemetry, collect() │

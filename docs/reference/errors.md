@@ -23,6 +23,7 @@ DynamoxyError
 ├── ConfigurationError
 ├── ValidationError                         .errors: tuple[FieldError, ...]
 │   └── ItemDecodeError
+│       └── StreamRecordError               .sequence_number, .event_id
 ├── ItemNotFoundError
 ├── ServiceError
 │   ├── ConditionalCheckFailedError         .item
@@ -56,6 +57,7 @@ DynamoxyError
 | `ValidationError` | no | A value, key, expression or request is invalid: model validation (before any I/O; `.errors` lists every `FieldError`), local checks (limits, sizes, names) or DynamoDB's `ValidationException` |
 | `FieldError` | — | Not an exception: one problem of a `ValidationError` (`.path`, `.message`, `.value`; `str()` and `repr()` leave the value out) |
 | `ItemDecodeError` | no | A stored item does not match its model (missing required attributes, wrong types); `.model`, `.key`, and `.errors` with each stored value in `FieldError.value` |
+| `StreamRecordError` | no | `dynamoxy.streams.changes()` cannot turn a record into a change: an image does not fit its model, the record is malformed or not a DynamoDB Streams record, or a record without images fits the keys of several models; `.sequence_number` and `.event_id` of the record (report it in `batchItemFailures`), `.model`, `.key`, `.errors` |
 | `ItemNotFoundError` | no | `get_or_raise()`, `Query.one()`, or `update()` of an item that does not exist (without `upsert`); `.model`, `.key` |
 
 ## Conditions and concurrency

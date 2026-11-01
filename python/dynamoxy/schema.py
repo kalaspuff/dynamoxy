@@ -41,6 +41,7 @@ from dynamoxy.codecs import (
     _optional,
     resolve_codec,
 )
+from dynamoxy.constraints import GUARD_PREFIX
 from dynamoxy.errors import FieldError, ItemDecodeError, validation_error
 from dynamoxy.expressions import Path
 
@@ -959,6 +960,50 @@ class ModelSchema:
             ItemDecodeError: The item does not fit the model.
         """
         return self._decode(item, dict(item))
+
+    def check_stored(self, item: Mapping[str, Any], *, read_with: str, guards: bool = True) -> None:
+        """Refuses an item that is not this model's: a guard item, or another model's by its type attribute.
+
+        Decoded as this model, another model's item would lose that model's fields, and a save would
+        store it as this model. Entity names no model of the table declares (an entity renamed
+        since) are this model's.
+
+        Args:
+            item: The stored item.
+            read_with: How to read another model's item, with ``{model}`` for its name
+                (``"{model}.from_item()"``).
+            guards: Whether to refuse guard items of unique values.
+
+        Raises:
+            ItemDecodeError: The item is a guard item or another model's.
+        """
+        name = self.model.__name__
+        partition = self.partition_key
+        if guards and partition is not None:
+            value = item.get(partition.attribute)
+            if isinstance(value, str) and value.startswith(GUARD_PREFIX):
+                raise ItemDecodeError(
+                    f"cannot decode {name} from a stored item (see .key): it is the guard item of a unique value "
+                    f"({partition.attribute} starts with {GUARD_PREFIX!r}), which dynamoxy stores in the same table: "
+                    "skip such items (dynamoxy.constraints.is_guard(); dynamoxy.streams.changes() skips them)",
+                    model=self.model,
+                    key=self.key_values(item),
+                )
+        if self.type_attribute is None:
+            return
+        stored = item.get(self.type_attribute)
+        if stored is None or stored == self.entity or not isinstance(stored, str):
+            return
+        other = models_for_table(self.table or "").get(stored)
+        if other is None:
+            return
+        raise ItemDecodeError(
+            f"cannot decode {name} from a stored item (see .key): it stores another model, "
+            f"{other.__name__} ({self.type_attribute} is {stored!r}): read it with "
+            + read_with.format(model=other.__name__),
+            model=self.model,
+            key=self.key_values(item),
+        )
 
     def _decode(
         self, item: Mapping[str, Any], stored: dict[str, Any], repository: Repository[Any] | None = None

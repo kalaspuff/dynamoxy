@@ -81,7 +81,7 @@ from dynamoxy.schema import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
     from datetime import timedelta
 
     from dynamoxy.codecs import Codec, DateTimeFormat
@@ -360,13 +360,19 @@ class Document:
         return schema_of(type(self)).encode(self)
 
     @classmethod
-    def from_item(cls, item: dict[str, Any]) -> Self:
+    def from_item(cls, item: Mapping[str, Any]) -> Self:
         """An instance from a stored item (the inverse of :meth:`to_item`).
 
+        The instance is not bound to a repository: ``client.model(User).from_item(item)`` returns
+        one that is (and runs ``after_load`` hooks).
+
         Raises:
-            ItemDecodeError: The item does not fit the model.
+            ItemDecodeError: The item does not fit the model, is a guard item of a unique value, or
+                is another model's (its type attribute names another model of the table).
         """
-        return schema_of(cls).decode(item)
+        schema = schema_of(cls)
+        schema.check_stored(item, read_with="{model}.from_item()")
+        return schema.decode(item)
 
     def validate(self) -> None:
         """Validates every field and the model validators.
