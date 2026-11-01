@@ -47,6 +47,7 @@ A run on AWS takes about 15 minutes and costs cents; its tables are named `dynam
 deleted at the end (`cleanup --target aws` deletes what an interrupted run left). The runs are
 kept here: DynamoDB's in eu-north-1 on 2026-10-31 ([run 1](probe-aws-eu-north-1-2026-10-31.json),
 [run 2](probe-aws-eu-north-1-2026-10-31-run2.json) and [run 3](probe-aws-eu-north-1-2026-10-31-run3.json)),
+and on 2026-11-01 ([run 4](probe-aws-eu-north-1-2026-11-01.json), dynamoxy 0.4.0),
 [the in-memory backend](probe-memory.json), [MiniStack](probe-ministack-1.5.33.json) and
 [LocalStack](probe-localstack-2026.3.0.json).
 
@@ -60,6 +61,14 @@ outcome to dynamoxy. The runs led to fixes in the in-memory backend: `DescribeTi
 table being created, `ensure_tables` waiting before it, and how conditions, deletes and checks
 count toward a transaction's payload. Against the same facts, MiniStack differs from DynamoDB in
 57 and LocalStack in 53, each an emulator difference listed below.
+
+Run 4 repeated the probe after a day of fixes (#203 to #218) and completed every scenario at the
+first try. It answers every fact as runs 1 and 3 did, the in-memory backend answers it in every
+fact, and MiniStack and LocalStack differ from it in the same 57 and 53 facts as before. One
+LocalStack fact reads differently through dynamoxy: giving an index capacity on an on-demand table
+still gets an `InternalFailure` from LocalStack, which dynamoxy now settles as applied because the
+index already reads 1/1 (#215). DynamoDB Local lists the types of an `attribute_type` operand
+error in a different order on each start.
 
 ## What DynamoDB answered
 
@@ -185,7 +194,7 @@ value its size, `size(p)` 22 more than its path, and on top of its operands `att
 | switch to `PROVISIONED` with capacity for the table only (one global index) | `One or more parameter values were invalid: ProvisionedThroughput must be specified for index: gsi1` | accepted, the index at 0/0 | `InternalFailure` |
 | add a global index without `ProvisionedThroughput` to a provisioned table | `One or more parameter values were invalid: Both ReadCapacityUnits and WriteCapacityUnits must be specified for index: gsi2` | accepted | `InternalFailure` |
 | switch back to `PAY_PER_REQUEST` | the indexes' capacity reads 0/0 | 0/0 | keeps 1/1 |
-| give an index `ProvisionedThroughput` on an on-demand table | `One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput` | accepted | `InternalFailure` |
+| give an index `ProvisionedThroughput` on an on-demand table | `One or more parameter values were invalid: The only Updates for index: gsi1 when TableThroughputMode is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput` | accepted | `InternalFailure`; dynamoxy reports it applied (since #215 it describes the table after a 5xx, and the index kept 1/1) |
 | add a second global index while the first is `CREATING`, the table `UPDATING` or already `ACTIVE` again during the backfill (25 s to 506 s) | `LimitExceededException: Subscriber limit exceeded: Only 1 online index can be created or deleted simultaneously per table` | accepted (indexes are active at once) | same as DynamoDB |
 
 The in-memory backend answers like DynamoDB. It creates tables and indexes at once, but they read
