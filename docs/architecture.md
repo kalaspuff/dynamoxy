@@ -110,7 +110,11 @@ plain repository per model, on first use, and returns it afterwards.
 Every instance a repository decodes or writes keeps a `ModelState` in its `__dict__`: `stored`,
 the item as last read or written (used for optimistic locking, unique guard transitions and
 derived attributes), and `repository`, the repository that did it. Both are set together, by
-`_decode` for reads and by `_apply`/`_assign` for writes ([ADR 0011](adr/0011-instances-remember-their-repository.md)).
+`_decode` for reads and by `_apply`/`_assign_written` for writes ([ADR 0011](adr/0011-instances-remember-their-repository.md)).
+Each schema compiles a decoder of its own (`_compile_decoder`, generated code like a
+dataclass's `__init__`) that reads an item's field values in one pass; an item it cannot decode
+goes through `_decoded_values`, which reports every problem, so both give the same values and
+errors.
 Transactions and batch writers write an instance through its repository when it belongs to
 their client. Model classes hold no client; instances nobody read or wrote are unbound, and
 pickles drop the repository.

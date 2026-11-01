@@ -90,6 +90,8 @@ if TYPE_CHECKING:
 __all__ = ["Repository"]
 
 type WriteMode = Literal["create", "put", "save"]
+#: An update expression as rendered: (expression, names, values).
+type _RenderedUpdate = tuple[str | None, dict[str, str], dict[str, Any]]
 
 #: Native method, operation name and ``ReturnValues`` of the single operation of a plan, by kind.
 _SINGLE_OPERATIONS = {
@@ -506,6 +508,26 @@ class Repository[M]:
             )
         self._assign(instance, self._load(item), item)
         return instance
+
+    def _assign_written(self, instance: M, item: dict[str, Any], operation: str) -> None:
+        """Sets ``instance`` to the item a write returned (see :meth:`_load_written`).
+
+        Decoded straight into the instance when nothing else needs to see it decoded first: no
+        ``after_load`` hooks, an adapter that can (native models: pydantic models validate a new
+        instance), an item of this model that decodes. Otherwise through a decoded copy, whose
+        errors say that the write was made.
+        """
+        schema = self.schema
+        load_into = schema._load_into
+        if load_into is not None and not self.client.hooks.has("after_load", self.model_class):
+            type_attribute = schema.type_attribute
+            entity = item.get(type_attribute) if type_attribute is not None else None
+            if entity is None or entity == schema.entity:
+                values = schema._values_of(item)
+                if values is not None and len(values) == len(schema.fields):
+                    load_into(instance, values, dict(item), self)
+                    return
+        self._assign(instance, self._load_written(item, operation), item)
 
     def _assign(self, instance: M, source: M, item: dict[str, Any]) -> None:
         adapter = self.schema.adapter
@@ -1229,12 +1251,16 @@ class Repository[M]:
             actions_list.append(F(WRITE_ID_ATTRIBUTE).set(write_id))
         plan = _Plan()
         builder = ExpressionBuilder()
+        update_expression = builder.update(actions_list)
+        # The update as rendered, for evaluating it after a transaction commits (taken before the
+        # condition adds its own names and values, which the evaluator would refuse as unused).
+        rendered_update: _RenderedUpdate = (update_expression, dict(builder.names), dict(builder.values))
         plan.add(
             {
                 "kind": "update",
                 "table_name": self.table_name,
                 "key": key,
-                "update_expression": builder.update(actions_list),
+                "update_expression": update_expression,
                 "condition_expression": builder.condition(and_(*parts)) if parts else None,
                 "return_values_on_condition_check_failure": "ALL_OLD",
                 **builder.arguments(),
@@ -1252,9 +1278,11 @@ class Repository[M]:
             if instance is None:
                 return
             if attributes is None:  # in a transaction, which returns nothing
-                attributes = await self._refreshed_after_commit(stored_old, instance, actions_list, key)
+                attributes = await self._refreshed_after_commit(
+                    stored_old, instance, actions_list, key, rendered_update
+                )
             if attributes is not None:
-                self._assign(instance, self._load_written(attributes, "update"), attributes)
+                self._assign_written(instance, attributes, "update")
             if hooks.has("after_update", type(instance)):
                 await hooks.run("after_update", instance, self._context("update"))
 
@@ -1369,18 +1397,28 @@ class Repository[M]:
         return actions, values
 
     def _updated_locally(
-        self, stored: dict[str, Any] | None, instance: M, actions: Sequence[UpdateAction]
+        self,
+        stored: dict[str, Any] | None,
+        instance: M,
+        actions: Sequence[UpdateAction],
+        rendered: _RenderedUpdate | None = None,
     ) -> dict[str, Any]:
         """The item after ``actions``, evaluated like DynamoDB on the item as last read.
 
         Exact for versioned models (the version condition guarantees the stored item was the one
         loaded). For other models, changes other writers made meanwhile are not reflected.
-        Instances that were never loaded start from their own values.
+        Instances that were never loaded start from their own values. ``rendered`` is the update
+        as its plan rendered ``actions`` already.
         """
-        return self._evaluate(stored if stored is not None else self.schema.encode(instance), actions)
+        return self._evaluate(stored if stored is not None else self.schema.encode(instance), actions, rendered)
 
     async def _refreshed_after_commit(
-        self, stored: dict[str, Any] | None, instance: M, actions: Sequence[UpdateAction], key: dict[str, Any]
+        self,
+        stored: dict[str, Any] | None,
+        instance: M,
+        actions: Sequence[UpdateAction],
+        key: dict[str, Any],
+        rendered: _RenderedUpdate | None = None,
     ) -> dict[str, Any] | None:
         """The item an update in a committed transaction left, to refresh ``instance`` with.
 
@@ -1391,7 +1429,7 @@ class Repository[M]:
         forgets its stored copy, as if it had not been loaded, and ``None`` is returned.
         """
         try:
-            return self._updated_locally(stored, instance, actions)
+            return self._updated_locally(stored, instance, actions, rendered)
         except DynamoxyError:
             pass
         try:
@@ -1404,16 +1442,23 @@ class Repository[M]:
                 state.stored = None
         return current
 
-    def _evaluate(self, item: dict[str, Any], actions: Sequence[UpdateAction]) -> dict[str, Any]:
+    def _evaluate(
+        self, item: dict[str, Any], actions: Sequence[UpdateAction], rendered: _RenderedUpdate | None = None
+    ) -> dict[str, Any]:
         """``item`` (stored form) after ``actions``, evaluated by the core's evaluator like DynamoDB does.
+
+        ``rendered`` is ``actions`` rendered already (expression, names, values), which saves
+        rendering them again.
 
         Raises:
             ValidationError: The actions are invalid for ``item`` (DynamoDB's message).
         """
-        builder = ExpressionBuilder()
-        expression = builder.update(actions)
+        if rendered is None:
+            builder = ExpressionBuilder()
+            rendered = (builder.update(actions), builder.names, builder.values)
+        expression, names, values = rendered
         assert expression is not None, "updates have at least one action"
-        return _core._apply_update(item, expression, names=builder.names or None, values=builder.values or None)
+        return _core._apply_update(item, expression, names=names or None, values=values or None)
 
     async def update(
         self,
@@ -1889,11 +1934,12 @@ class Repository[M]:
         # By key: DynamoDB refuses a request that writes one key twice, so the last item wins.
         prepared: dict[Any, tuple[M, dict[str, Any], dict[str, Any]]] = {}
         hooks = self.client.hooks
+        key_identity = self.schema._key_identity
         for instance in items:
             if hooks.has("before_save", type(instance)):
                 await hooks.run("before_save", instance, self._context("batch_put"))
             item, changes, _ = self._prepare(instance, "batch")
-            identity = stored_identity(self.schema.key_values(item))
+            identity = key_identity(item)
             prepared.pop(identity, None)
             prepared[identity] = (instance, item, changes)
         if not prepared:
@@ -1919,14 +1965,15 @@ class Repository[M]:
         for target in targets:
             if self._own(target) is not None and hooks.has("before_delete", type(target)):
                 await hooks.run("before_delete", target, self._context("batch_delete"))
-        keys = {stored_identity(key): key for key in (self._target_key(target) for target in targets)}
+        key_identity = self.schema._key_identity
+        keys = {key_identity(key): key for key in (self._target_key(target) for target in targets)}
         if not keys:
             return
         left, error = await self._batch_write([("delete", key) for key in keys.values()])
         done = [
             target
             for target in targets
-            if isinstance(target, self.model_class) and stored_identity(self._target_key(target)) not in left
+            if isinstance(target, self.model_class) and key_identity(self._target_key(target)) not in left
         ]
         for target in done:
             self._apply(target, {}, None)
@@ -1948,7 +1995,8 @@ class Repository[M]:
             model=self.model_class,
             requests=[(self.table_name, kind, item) for kind, item in requests],
         )
-        left = {stored_identity(self.schema.key_values(item)): (kind, item) for _, kind, item in output["unprocessed"]}
+        key_identity = self.schema._key_identity
+        left = {key_identity(item): (kind, item) for _, kind, item in output["unprocessed"]}
         return left, output["error"]
 
     async def _run_hooks(

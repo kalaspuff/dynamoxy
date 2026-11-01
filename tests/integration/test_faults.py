@@ -397,6 +397,28 @@ async def test_batches_report_what_stays_unprocessed() -> None:
         assert len(emitted) == 1
 
 
+class Reading(Model, table="fault-readings"):
+    sensor: Attr[str] = partition_key()
+    value: Attr[float] = dynamoxy.sort_key()
+
+
+async def test_unprocessed_batch_writes_with_float_keys_leave_their_instances_as_they_were() -> None:
+    async with testing.memory_client(batch_max_rounds=1) as client:
+        await client.create_tables(Reading)
+        readings = client.model(Reading)
+        written = [Reading(sensor="s", value=value) for value in (0.1, 0.3, 2.5)]
+        await readings.batch_put(written)
+        # DynamoDB returns the keys of unprocessed requests as Decimal("0.1"): still these instances.
+        testing.inject_fault(client, operation="BatchWriteItem", unprocessed=True, times=10)
+        fresh = [Reading(sensor="t", value=value) for value in (0.1, 0.3)]
+        with pytest.raises(dynamoxy.UnprocessedItemsError):
+            await readings.batch_put(fresh)
+        assert not any(reading.is_loaded for reading in fresh)
+        with pytest.raises(dynamoxy.UnprocessedItemsError):
+            await readings.batch_delete([*written, {"sensor": "s", "value": 0.1}])
+        assert all(reading.is_loaded for reading in written)
+
+
 async def test_a_batch_request_that_fails_after_its_attempts_is_sent_again(client: dynamoxy.Client) -> None:
     events = client.model(Event)
     # Every attempt (3) of the first chunk's request is throttled; the next round writes it.
