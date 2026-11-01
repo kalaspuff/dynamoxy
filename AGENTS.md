@@ -147,6 +147,9 @@ protocol issue), fix, keep the test.
   MiniStack's and LocalStack's, with the probe script that asked them. Look there before guessing
   a message or a limit; when neither it nor the documentation settles a question, add a round of
   probes for a maintainer to run against AWS.
+* `DYNAMOXY_TEST_EVENT_LOOP=uvloop uv run pytest ...` runs every async test on uvloop's event loop
+  (CI does for `tests/unit/test_runtime.py` and `tests/integration` on Linux, Python 3.15);
+  `tests/unit/test_runtime.py` also runs its loop scenarios on both loops by itself.
 * Examples are tests: if you change the API, update `examples/`.
 * Never pipe test output through `head`/`tail` without `set -o pipefail`.
 
