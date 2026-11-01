@@ -1075,7 +1075,8 @@ async fn a_lost_last_attempt_of_a_table_operation_is_settled_by_describing_the_t
     let call = client.delete_table("things").await;
     assert_eq!(call.result.unwrap().table_status, TableStatus::Deleting);
 
-    // A lost attempt that applied nothing: the retryable error stands.
+    // No table after a lost CreateTable is no proof that nothing was created (DescribeTable is
+    // eventually consistent): the outcome is unknown.
     backend.inject_fault(Fault {
         operation: Some("CreateTable".into()),
         table: None,
@@ -1083,7 +1084,14 @@ async fn a_lost_last_attempt_of_a_table_operation_is_settled_by_describing_the_t
         times: 1,
     });
     let call = client.create_table(table_input("others", false)).await;
-    assert_eq!(call.result.unwrap_err().kind(), Some(ErrorKind::Internal));
+    assert!(unknown_message(&call).contains("describing the table to find out failed"), "{:?}", call.result);
+
+    // A lost UpdateTimeToLive that applied nothing: the retryable error stands.
+    client.create_table(table_input("others", false)).await.result.unwrap();
+    client.wait_for_table("others", true, Duration::from_secs(5)).await.unwrap();
+    backend.inject_fault(fail("UpdateTimeToLive", "InternalServerError", 1));
+    let ttl = UpdateTimeToLiveInput { table_name: "others".into(), enabled: true, attribute_name: "expires".into() };
+    assert_eq!(client.update_time_to_live(ttl).await.result.unwrap_err().kind(), Some(ErrorKind::Internal));
 }
 
 #[tokio::test(start_paused = true)]

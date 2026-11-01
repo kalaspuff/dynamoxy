@@ -50,8 +50,8 @@ use crate::expr::{Placeholders, is_idempotent, parse_update};
 use crate::metrics::{Metrics, Operation};
 use crate::retry::{backoff, backoff_at_least};
 use crate::types::{
-    BackupDescription, BackupDetails, BatchExecuteStatementInput, BatchExecuteStatementOutput, BatchGetItemInput,
-    BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, BillingMode, ConsumedCapacity,
+    BackupDescription, BackupDetails, BackupStatus, BatchExecuteStatementInput, BatchExecuteStatementOutput,
+    BatchGetItemInput, BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, BillingMode, ConsumedCapacity,
     ContinuousBackupsDescription, CreateTableInput, DeleteItemInput, ExecuteStatementInput, ExecuteStatementOutput,
     ExecuteTransactionInput, ExecuteTransactionOutput, GetItemInput, GetItemOutput, GlobalSecondaryIndexUpdate,
     IndexDescription, IndexStatus, KeySchema, KeysAndAttributes, ListBackupsInput, ListBackupsOutput, ListTablesInput,
@@ -397,14 +397,14 @@ impl<T> Safety<T> {
         }
     }
 
-    /// Requests that create something new each time they are applied (`CreateBackup`, restores):
-    /// never sent again after an attempt that may have been applied; `twice` says what sending it
-    /// again could do, and how to find out what happened.
     /// A read that settles a call in progress ([`Safety::lookup`]).
     fn lookup() -> Self {
         Self { lookup: true, ..Self::resendable() }
     }
 
+    /// Requests that create something new each time they are applied (`CreateBackup`, restores):
+    /// never sent again after an attempt that may have been applied; `twice` says what sending it
+    /// again could do, and how to find out what happened.
     fn once(twice: String) -> Self {
         Self { resend: false, twice: Some(twice), ..Self::transaction() }
     }
@@ -1408,8 +1408,8 @@ impl Client {
             Ok(description) if creates(request, &description) => Ok(description),
             // Another table: the earlier attempt did not create it.
             Ok(_) => result,
-            // No table: nothing was created, and sending the request again is safe.
-            Err(error) if !refused && error.kind() == Some(ErrorKind::ResourceNotFound) => result,
+            // No table is no proof either: DescribeTable is eventually consistent, and may not see a
+            // table that was just created yet.
             Err(error) => Err(unsettled(Operation::CreateTable, &earlier, &result, "describing the table", &error)),
         }
     }
@@ -1523,6 +1523,7 @@ impl Client {
             return result;
         }
         match self.describe_backup_as(backup_arn, Safety::lookup()).await.result {
+            Ok(description) if description.details.backup_status == BackupStatus::Deleted => Err(gone()),
             // Still there: nothing was deleted, and sending the request again is safe.
             Ok(_) => result,
             Err(error) if error.as_service().is_some_and(|service| service.code == "BackupNotFoundException") => {

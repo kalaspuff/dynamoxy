@@ -131,9 +131,10 @@ Table operations follow the same rule, settled by looking at the table:
   `retry_timeouts=False` stops after the first), the table is described the same way: a table
   that is the one requested, is gone, or shows the change settles the call as a success. The
   call raises the attempt's retryable `TransportError` only when the table shows that nothing
-  was applied (no table to create was found, the table to delete is still there, the change is
-  not there and nothing is changing), so sending it again is safe. When it cannot tell, it
-  raises `WriteOutcomeUnknownError`.
+  was applied (the table to delete is still there, the change is not there and nothing is
+  changing, the backup to delete is still available), so sending it again is safe. When it
+  cannot tell, it raises `WriteOutcomeUnknownError`: also for a `CreateTable` that finds no
+  table, since `DescribeTable` may not see a table just created yet.
 
 These lookups are part of the call: they also run after `client.close()`, which lets calls in
 progress finish.
