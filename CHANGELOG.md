@@ -8,6 +8,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
 ### Added
 
 - `Repository.verify_unique()` compares a model's items with its unique guard items in one scan
@@ -116,6 +118,43 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   schema is built, instead of reading their names at once: `Projection.include(name)` in the same
   class as `name` included the empty attribute name `''` without an error. A field that is never
   declared on a model class now raises `TypeError` saying to pass the field name as a string.
+
+### Features
+
+- **unique:** Verify and repair unique guard items (#210)
+- [**breaking**] Remove Client.repository(), deprecated in 0.4 (#222)
+
+### Bug fixes
+
+- **errors:** Errors cross process boundaries when an attribute does not pickle (#160)
+- **errors:** Errors unpickle without calling their constructor (#161)
+- **retry:** Writes that may have been applied are not retryable without retries of timeouts (#203)
+- **typing:** [**breaking**] PydanticModel constructors and create() are typed in pyright and mypy (#209)
+- **tables:** Ensure_tables() refuses an index that projects less than the models declare (#208)
+- **unique:** Guard deletes keep guards that another item owns (#206)
+- **py:** The extension declares that it needs the GIL on free-threaded Python (#212)
+- **client:** Writes that never left the process are sent again, not "outcome unknown" (#205)
+- **batch:** A failed chunk no longer fails a managed batch as a whole (#214)
+- **client:** Table operations settle their own lost attempt instead of failing on it or repeating it (#215)
+- **schema:** Projection.include() resolves fields of its own class body (#216)
+
+### Performance
+
+- **batch:** Managed batch_get splits keys in linear time (#204)
+
+### Documentation
+
+- **parity:** DynamoDB's answers of 2026-11-01 match the in-memory backend in every fact (#219)
+
+### Tests
+
+- Run the Python tests in parallel with pytest-xdist (#223)
+
+### Build and CI
+
+- Require Rust 1.99 instead of 1.94 (#159)
+- Run the asyncio bridge under uvloop (#218)
+- The packaging job keeps its cross-built crates cached and builds an optimized wheel (#220)
 
 ## [0.4.0] - 2026-10-31
 
