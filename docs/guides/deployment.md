@@ -9,6 +9,9 @@
   a fork refuses to work in the child process.
 - Close the client at shutdown (`async with` or `await client.close()`) so buffered events reach
   hooks. dynamoxy also stops its runtime cleanly when the interpreter exits.
+- Any asyncio event loop works, including [uvloop](https://github.com/MagicStack/uvloop) (which
+  uvicorn picks when it is installed): dynamoxy's test suite runs on both, against the in-memory
+  backend and an emulator.
 - AWS Lambda: create the client at module level and reuse it across invocations; dynamoxy
   connects lazily on first use.
 

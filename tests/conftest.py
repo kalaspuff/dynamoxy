@@ -9,6 +9,9 @@
   ``target`` tells which emulator it is (MiniStack, or LocalStack through
   ``DYNAMOXY_TEST_ENDPOINT_URL``; docs/parity shows how to run it).
   Emulator clients get a unique ``table_prefix`` per test, and their tables are deleted after it.
+
+``DYNAMOXY_TEST_EVENT_LOOP=uvloop`` runs every async test on uvloop's event loop instead of
+asyncio's (one CI job runs the runtime tests and the integration suite that way).
 """
 
 from __future__ import annotations
@@ -35,6 +38,32 @@ EMULATOR_ENV = {"GATEWAY_PORT": "{port}", "LOG_LEVEL": "WARNING"}
 HEALTH_PATH = "/_ministack/health"
 
 FAST_RETRIES = dynamoxy.RetryPolicy(max_attempts=4, base_delay=0.001, max_delay=0.01)
+
+
+EVENT_LOOPS = ("asyncio", "uvloop")
+
+
+class UvloopLoops:
+    """Runs async tests on uvloop's event loop (registered for ``DYNAMOXY_TEST_EVENT_LOOP=uvloop``)."""
+
+    def pytest_asyncio_loop_factories(self, config: pytest.Config, item: pytest.Item) -> dict[str, Any]:
+        import uvloop
+
+        return {"uvloop": uvloop.new_event_loop}
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    event_loop = os.environ.get("DYNAMOXY_TEST_EVENT_LOOP", "asyncio")
+    if event_loop not in EVENT_LOOPS:
+        raise pytest.UsageError(f"DYNAMOXY_TEST_EVENT_LOOP must be one of {', '.join(EVENT_LOOPS)}, not {event_loop!r}")
+    if event_loop == "uvloop":
+        try:
+            import uvloop  # noqa: F401
+        except ImportError as error:
+            raise pytest.UsageError(
+                "DYNAMOXY_TEST_EVENT_LOOP=uvloop needs uvloop installed (not on Windows)"
+            ) from error
+        config.pluginmanager.register(UvloopLoops(), "dynamoxy-uvloop")
 
 
 def unique_name(prefix: str = "t") -> str:

@@ -10,6 +10,8 @@ description: Run and debug dynamoxy's end-to-end tests against MiniStack (the pi
    with `uv run pytest -m e2e`, skip them with `-m "not e2e"`.
 2. **Reuse a running emulator**: `ministack` (with `GATEWAY_PORT=4599`) in another terminal, then
    `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4599 uv run pytest -m e2e`.
+   Prefix `DYNAMOXY_TEST_EVENT_LOOP=uvloop` to run the async tests on uvloop's event loop (real
+   sockets through uvloop's `add_reader`), as one CI step does for the integration suite.
 3. **Rust parity**: `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4599 cargo test -p dynamoxy-core
    --test emulator` (without the variable, the scenarios run on the memory backend only).
 4. **When a test fails only on the emulator**:

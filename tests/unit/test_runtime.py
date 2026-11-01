@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import os
 import threading
 import types
 import weakref
+from collections.abc import Callable
 from types import MappingProxyType
 from typing import Any
 
@@ -19,6 +21,17 @@ import pytest
 
 import dynamoxy
 from dynamoxy import testing
+
+
+def uvloop_factory() -> Callable[[], asyncio.AbstractEventLoop]:
+    uvloop = pytest.importorskip("uvloop")
+    return uvloop.new_event_loop
+
+
+@pytest.fixture(params=["asyncio", "uvloop"])
+def new_loop(request: pytest.FixtureRequest) -> Callable[[], asyncio.AbstractEventLoop]:
+    """Creates event loops of each kind the bridge is tested on."""
+    return asyncio.new_event_loop if request.param == "asyncio" else uvloop_factory()
 
 
 async def items_table(client: dynamoxy.Client) -> dynamoxy.Table:
@@ -32,6 +45,16 @@ async def wait_until(condition: Any, timeout: float = 5.0) -> None:
     async with asyncio.timeout(timeout):
         while not condition():  # noqa: ASYNC110 - polls client metrics (there is no event)
             await asyncio.sleep(0.001)
+
+
+async def test_async_tests_run_on_the_selected_event_loop() -> None:
+    loop = asyncio.get_running_loop()
+    if os.environ.get("DYNAMOXY_TEST_EVENT_LOOP") == "uvloop":
+        import uvloop
+
+        assert isinstance(loop, uvloop.Loop)
+    else:
+        assert type(loop).__module__.startswith("asyncio")
 
 
 async def test_in_memory_calls_yield_to_the_event_loop() -> None:
@@ -138,11 +161,11 @@ def test_loops_without_add_reader_are_woken_threadsafe() -> None:
         loop.close()
 
 
-def test_each_thread_and_loop_gets_its_own_results() -> None:
+def test_each_thread_and_loop_gets_its_own_results(new_loop: Callable[[], asyncio.AbstractEventLoop]) -> None:
     results: dict[int, Any] = {}
 
     def run(number: int) -> None:
-        results[number] = asyncio.run(scenario())
+        results[number] = asyncio.run(scenario(), loop_factory=new_loop)
 
     threads = [threading.Thread(target=run, args=(number,)) for number in range(4)]
     for thread in threads:
@@ -152,7 +175,7 @@ def test_each_thread_and_loop_gets_its_own_results() -> None:
     assert results == dict.fromkeys(range(4), EXPECTED)
 
 
-def test_a_closed_loop_does_not_keep_its_pending_calls() -> None:
+def test_a_closed_loop_does_not_keep_its_pending_calls(new_loop: Callable[[], asyncio.AbstractEventLoop]) -> None:
     async def start() -> asyncio.Task[Any]:
         client = testing.memory_client()
         table = await items_table(client)
@@ -161,13 +184,15 @@ def test_a_closed_loop_does_not_keep_its_pending_calls() -> None:
         await wait_until(lambda: client.metrics().in_flight == 1)
         return task
 
-    loop = asyncio.new_event_loop()
+    loop = new_loop()
     loop.set_exception_handler(lambda _loop, _context: None)  # "Task was destroyed but it is pending!"
     task = loop.run_until_complete(start())
     loop.close()  # the call is still pending: nobody cancelled its task
     closed = weakref.ref(loop)
     del loop, task
-    assert asyncio.run(scenario()) == EXPECTED  # a new loop: its port releases the closed loop's calls
+    assert (
+        asyncio.run(scenario(), loop_factory=new_loop) == EXPECTED
+    )  # a new loop: its port releases the closed loop's calls
     gc.collect()
     assert closed() is None
 
