@@ -109,6 +109,25 @@ may have caused itself, and never applies a write twice:
   apply the write twice. This holds for one attempt as well (`RetryPolicy.none()`), and for
   transactions, whose later attempts would only return the earlier one's result.
 
+Table operations follow the same rule, settled by looking at the table:
+
+- `create_tables()`/`CreateTable`: when the next attempt finds the table existing, dynamoxy
+  describes it; if it has the key, key types and indexes the request asks for, the earlier
+  attempt created it and the call succeeds. `DeleteTable` succeeds when the table is gone.
+- `UpdateTable` (`add_index()`, `delete_index()`, `update_settings()`) and `UpdateTimeToLive`
+  (`enable_time_to_live()`, `disable_time_to_live()`): when the next attempt is refused (an index
+  that already exists, "TimeToLive is already enabled", a table still updating), the call
+  succeeds if the description shows every change it asks for. A refusal that the table does not
+  explain stands (an index of that name with another key); when the table cannot be described,
+  or is still changing without showing the change, the call raises `WriteOutcomeUnknownError`.
+- `create_backup()` and the restores (`restore_backup()`, `restore_to()`) are not sent again: a
+  second backup would be a duplicate, and a second restore would fail on the table the first one
+  created. They raise `WriteOutcomeUnknownError`, whose message names the backup or the table to
+  look for. So does `delete_backup()` when the backup is gone after such an attempt (its
+  description went with it).
+- Tags and point-in-time recovery settings are sent again: they apply once however often they
+  are sent.
+
 Model writes settle most of these themselves. Each write that runs alone stores a random id in
 the item (`_wid`, [ADR 0016](../adr/0016-writes-store-a-write-id.md)); when the outcome is
 unknown, the repository looks at the item DynamoDB returned with the failed condition, or reads
@@ -140,8 +159,10 @@ costs twice the write units of a single write.
 `RetryPolicy(retry_timeouts=False)` sends nothing again after a timeout or a lost connection.
 A write whose attempt may have been applied raises `WriteOutcomeUnknownError` (a
 `TransportError` that is not `.retryable`), which model writes settle by their write id as
-above; reads, batch writes and table operations raise the attempt's `TransportError`, which is
-`.retryable` because sending them again is safe. A managed batch does not send such a chunk again
+above; reads, batch writes and the other table operations raise the attempt's `TransportError`,
+which is `.retryable` because sending them again is safe (a table operation that is sent again
+settles its own earlier attempt as above). `create_backup()` and the restores raise
+`WriteOutcomeUnknownError`. A managed batch does not send such a chunk again
 in a later round either: the other chunks go on, and `UnprocessedItemsError` reports the chunk's
 items with that `TransportError` in `.error`.
 

@@ -557,3 +557,29 @@ async def test_blocks_that_raise_keep_their_writes_queued() -> None:
         await other.flush()
         assert sorted(item["note_id"] for item in await client.table("notes").scan().all()) == ["a", "b", "c"]
         assert (len(batch), len(other)) == (0, 0)
+
+
+async def test_tables_created_by_an_attempt_whose_response_was_lost_are_created() -> None:
+    async with testing.memory_client(retry=dynamoxy.RetryPolicy(max_attempts=3, base_delay=0, max_delay=0)) as client:
+        testing.inject_fault(client, operation="CreateTable", lose_response=True)
+        assert await client.create_tables(User) == [client.table_name("users")]
+        assert client.metrics().operations["CreateTable"].attempts == 2
+        # Without a lost response, the table exists already.
+        with pytest.raises(dynamoxy.ResourceInUseError):
+            await client.create_tables(User)
+
+        table = client.table("users")
+        testing.inject_fault(client, operation="UpdateTimeToLive", lose_response=True)
+        assert (await table.enable_time_to_live("expires")).enabled
+        testing.inject_fault(client, operation="DeleteTable", lose_response=True)
+        await table.delete_table()
+        assert not await table.exists()
+
+
+async def test_backups_are_not_created_twice_after_a_lost_response(client: dynamoxy.Client) -> None:
+    table = client.table("users")
+    testing.inject_fault(client, operation="CreateBackup", lose_response=True)
+    with pytest.raises(dynamoxy.WriteOutcomeUnknownError, match="look for backup nightly"):
+        await table.create_backup("nightly")
+    assert [backup.name for backup in await table.backups()] == ["nightly"]
+    assert client.metrics().operations["CreateBackup"].attempts == 1
