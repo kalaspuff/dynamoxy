@@ -1,5 +1,5 @@
 {
-  "dynamoxy": "0.3.0",
+  "dynamoxy": "0.4.0",
   "facts": {
     "constraints": {
       "condition": {
@@ -22,12 +22,12 @@
       "attribute_type_path_filter": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
+        "message": "Invalid FilterExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {B,BOOL,DOUBLE,DECIMAL,N,FS,NULL,INTSET,SS,HDS,DECIMALSET,HD,S,M,DICT,INT,NS,FLOAT,BS,DOUBLESET,L}"
       },
       "attribute_type_path_update": {
         "code": "ValidationException",
         "error": "ValidationError",
-        "message": "Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {DOUBLE,NS,NULL,BOOL,L,M,DICT,DECIMAL,DECIMALSET,INTSET,HDS,FS,BS,INT,SS,FLOAT,S,N,B,DOUBLESET,HD}"
+        "message": "Invalid ConditionExpression: Incorrect operand type for operator or function; operator or function: attribute_type, operand type: {B,BOOL,DOUBLE,DECIMAL,N,FS,NULL,INTSET,SS,HDS,DECIMALSET,HD,S,M,DICT,INT,NS,FLOAT,BS,DOUBLESET,L}"
       },
       "dash_placeholder_put": {
         "code": "ValidationException",
@@ -341,9 +341,7 @@
         1
       ],
       "index_capacity_on_on_demand": {
-        "code": "InternalFailure",
-        "error": "InternalServerError",
-        "message": "The request processing has failed because of an unknown error, exception or failure."
+        "ok": true
       },
       "index_while_creating": {
         "ok": true
