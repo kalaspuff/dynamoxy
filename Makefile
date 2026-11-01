@@ -27,11 +27,11 @@ typecheck:  ## Python type checking (pyrefly; the typing suite and examples with
 	uv run pyrefly check
 	uv run python scripts/check_typing.py
 
-test:  ## Python tests (unit, integration on every backend, e2e)
-	uv run pytest
+test:  ## Python tests (unit, integration on every backend, e2e), one worker per CPU
+	uv run pytest -n auto --dist worksteal
 
 test-fast:  ## Python tests without the emulator
-	uv run pytest -m "not e2e"
+	uv run pytest -n auto --dist worksteal -m "not e2e"
 
 test-rust:  ## Rust unit tests (and parity scenarios on the in-memory backend)
 	cargo test --workspace

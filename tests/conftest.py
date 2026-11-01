@@ -3,7 +3,8 @@
 * ``name``: unique resource names, so tests never collide (also on a shared emulator).
 * ``emulator_endpoint``: URL of the DynamoDB emulator (MiniStack). Uses
   ``DYNAMOXY_TEST_ENDPOINT_URL`` when set; otherwise starts MiniStack for the test session on a
-  free port (no Docker: it is a pip package in the test dependency group).
+  free port (no Docker: it is a pip package in the test dependency group), one per worker when
+  the tests run in parallel (``-n auto``, pytest-xdist).
 * ``backend`` / ``client_factory`` / ``client``: integration scenarios run once per backend - the
   in-memory DynamoDB and the emulator (marked ``e2e``, so ``pytest -m "not e2e"`` skips it).
   ``target`` tells which emulator it is (MiniStack, or LocalStack through
@@ -120,6 +121,7 @@ def emulator_endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
 
 
 @pytest.fixture(params=["memory", pytest.param("emulator", marks=pytest.mark.e2e)])
