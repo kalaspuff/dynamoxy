@@ -34,6 +34,7 @@
 use dynamoxy_core::{Error, ErrorKind};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -147,10 +148,10 @@ pub fn error_in(py: Python<'_>, error: Error) -> PyErr {
 pub fn call_error_in(py: Python<'_>, error: Error, stats: &dynamoxy_core::OperationStats) -> PyErr {
     let err = error_in(py, error);
     let value = err.value(py);
-    let _ = value.setattr("attempts", stats.attempts);
-    let _ = value.setattr("throttles", stats.throttles);
-    let _ = value.setattr("requests", stats.requests);
-    let _ = value.setattr("duration", stats.duration.as_secs_f64());
+    let _ = value.setattr(intern!(py, "attempts"), stats.attempts);
+    let _ = value.setattr(intern!(py, "throttles"), stats.throttles);
+    let _ = value.setattr(intern!(py, "requests"), stats.requests);
+    let _ = value.setattr(intern!(py, "duration"), stats.duration.as_secs_f64());
     err
 }
 
@@ -167,16 +168,16 @@ fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {
         other => DynamoxyError::new_err(other.to_string()),
     };
     let value = err.value(py);
-    value.setattr("retryable", retryable)?;
+    value.setattr(intern!(py, "retryable"), retryable)?;
     match error {
         Error::Service(service) => {
-            value.setattr("code", &service.code)?;
-            value.setattr("message", &service.message)?;
-            value.setattr("operation", service.operation)?;
-            value.setattr("request_id", &service.request_id)?;
-            value.setattr("status_code", service.status)?;
+            value.setattr(intern!(py, "code"), &service.code)?;
+            value.setattr(intern!(py, "message"), &service.message)?;
+            value.setattr(intern!(py, "operation"), service.operation)?;
+            value.setattr(intern!(py, "request_id"), &service.request_id)?;
+            value.setattr(intern!(py, "status_code"), service.status)?;
             if let Some(item) = &service.item {
-                value.setattr("item", item_to_py(py, item)?)?;
+                value.setattr(intern!(py, "item"), item_to_py(py, item)?)?;
             }
             if service.kind == ErrorKind::TransactionCanceled {
                 let reasons = PyList::empty(py);
@@ -184,22 +185,22 @@ fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {
                     let item = reason.item.as_ref().map(|item| item_to_py(py, item)).transpose()?;
                     reasons.append((reason.code.as_str(), reason.message.as_deref(), item))?;
                 }
-                value.setattr("reasons", reasons)?;
+                value.setattr(intern!(py, "reasons"), reasons)?;
             }
         }
         Error::Transport { operation, message, .. } => {
-            value.setattr("operation", operation)?;
-            value.setattr("message", message)?;
+            value.setattr(intern!(py, "operation"), operation)?;
+            value.setattr(intern!(py, "message"), message)?;
         }
         Error::OutcomeUnknown { operation, message, item } => {
-            value.setattr("operation", operation)?;
-            value.setattr("message", message)?;
+            value.setattr(intern!(py, "operation"), operation)?;
+            value.setattr(intern!(py, "message"), message)?;
             if let Some(item) = &item {
-                value.setattr("item", item_to_py(py, item)?)?;
+                value.setattr(intern!(py, "item"), item_to_py(py, item)?)?;
             }
         }
         Error::Validation(message) | Error::Config(message) | Error::Credentials(message) => {
-            value.setattr("message", message)?;
+            value.setattr(intern!(py, "message"), message)?;
         }
         _ => {}
     }

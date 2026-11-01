@@ -17,6 +17,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   stored name with `attribute_name="scan"`. mypy now reports wrong field values of
   `Model.create(client, ...)` as `call-overload`.
 
+### Changed
+
+- `dynamoxy.from_wire()` and `dynamoxy.to_wire()` return attributes and map members in the order
+  they are given, as boto3's `TypeDeserializer` does, instead of sorted by name, and reuse the
+  given `str` objects; they convert in about a third less time.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

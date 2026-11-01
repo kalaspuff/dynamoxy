@@ -73,6 +73,10 @@ def test_numbers_read_back_as_int_or_decimal() -> None:
         (float("nan"), "cannot be NaN"),
         (float("inf"), "cannot be NaN or infinite"),
         (Decimal("NaN"), "cannot be NaN"),
+        (Decimal("-sNaN"), r"cannot be NaN or infinite, got Decimal\(-sNaN\)"),
+        (Decimal("NaN12"), r"got Decimal\(NaN12\)"),
+        (Decimal("-Infinity"), r"cannot be NaN or infinite, got Decimal\(-Infinity\)"),
+        (2**127 + 7, "38 significant digits"),
         (10**40 + 1, "38 significant digits"),
         (set(), "does not store empty sets"),
         ({1, "a"}, "same type"),
@@ -106,6 +110,17 @@ class Sneaky(int):
 def test_text_and_numbers_python_cannot_write_are_validation_errors(value: Any, message: str) -> None:
     with pytest.raises(dynamoxy.ValidationError, match=message):
         dynamoxy.to_wire({"value": value})
+
+
+def test_numbers_beyond_64_bits_and_decimals_keep_their_value() -> None:
+    values = {"a": 2**64 + 1, "b": -(2**100), "c": Decimal("-1.50E+3"), "d": Decimal("1E-130"), "e": 10**37}
+    assert dynamoxy.to_wire(values) == {
+        "a": {"N": str(2**64 + 1)},
+        "b": {"N": str(-(2**100))},
+        "c": {"N": "-1500"},
+        "d": {"N": "0." + "0" * 129 + "1"},
+        "e": {"N": "1" + "0" * 37},
+    }
 
 
 def test_int_subclasses_are_their_numbers() -> None:
@@ -260,6 +275,40 @@ def normalize(value: Any) -> Any:
 def test_round_trips_through_the_wire_format(item: dict[str, Any]) -> None:
     assert dynamoxy.from_wire(dynamoxy.to_wire(item)) == normalize(item)
     assert dynamoxy.from_wire(dynamoxy.to_wire(item, base64_binary=True)) == normalize(item)
+
+
+class Text(str):
+    __slots__ = ()
+
+
+def test_errors_name_where_the_value_is() -> None:
+    with pytest.raises(dynamoxy.ValidationError, match=r"^a\.b\[1\]: cannot store a value of type object"):
+        dynamoxy.to_wire({"a": {"b": [1, object()]}})
+    with pytest.raises(dynamoxy.ValidationError, match=r"^a\.b\[1\]: not a number"):
+        dynamoxy.from_wire({"a": {"M": {"b": {"L": [{"N": "1"}, {"N": "x"}]}}}})
+    with pytest.raises(dynamoxy.ValidationError, match=r"^a\.b: \"S\" must be text, got int"):
+        dynamoxy.from_wire({"a": {"M": {"b": {"S": 1}}}})
+    with pytest.raises(dynamoxy.ValidationError, match=r"^item must be a mapping of typed values"):
+        dynamoxy.from_wire([])  # type: ignore[arg-type]
+
+
+def test_conversions_keep_the_order_and_the_strings_of_their_input() -> None:
+    name, text = "".join(["na", "me"]), "".join(["te", "xt"])  # not interned
+    plain = dynamoxy.from_wire({"z": {"N": "1.50"}, name: {"S": text}, "a": {"N": "-0"}})
+    assert list(plain) == ["z", "name", "a"]
+    assert plain == {"z": Decimal("1.5"), "name": "text", "a": 0}
+    key = next(key for key in plain if key == "name")
+    assert key is name
+    assert plain["name"] is text
+    wire = dynamoxy.to_wire({"z": 1, name: text, "a": {"y": 1, "b": 2}})
+    assert list(wire) == ["z", "name", "a"]
+    assert list(wire["a"]["M"]) == ["y", "b"]
+    assert wire["name"]["S"] is text
+    # Subclasses of str come out as str.
+    for converted in (dynamoxy.to_wire({Text("k"): Text("v")}), dynamoxy.from_wire({Text("k"): {"S": Text("v")}})):
+        [(key, value)] = converted.items()
+        assert type(key) is str
+        assert type(value if isinstance(value, str) else value["S"]) is str
 
 
 def test_reserved_words() -> None:
