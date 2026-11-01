@@ -291,7 +291,7 @@ class Event(Model, table="events"):
 ```
 
 Index projections: `Projection.all()` (default), `Projection.keys_only()`,
-`Projection.include("a", "b")`. Index names default to the attribute name. Items without the
+`Projection.include("a", "b")` (or the fields: `Projection.include(a, b)`). Index names default to the attribute name. Items without the
 index key attributes are not in the index (sparse indexes). For models with an entity type,
 dynamoxy also projects the type attribute (`_type`) into `KEYS_ONLY`/`INCLUDE` indexes it creates.
 

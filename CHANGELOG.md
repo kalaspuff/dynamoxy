@@ -107,6 +107,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `WriteOutcomeUnknownError`, which names the backup or the table to look for, and so does a
   `DeleteBackup` whose backup is gone after such an attempt. Tags and point-in-time recovery
   settings are sent again as before: they apply once however often they are sent.
+- `Projection.include()` resolves fields of the class body that declares the index when the model's
+  schema is built, instead of reading their names at once: `Projection.include(name)` in the same
+  class as `name` included the empty attribute name `''` without an error. A field that is never
+  declared on a model class now raises `TypeError` saying to pass the field name as a string.
 
 ## [0.4.0] - 2026-10-31
 
