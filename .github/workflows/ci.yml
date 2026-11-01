@@ -85,10 +85,10 @@ jobs:
           enable-cache: true
       - run: uv sync
       - name: Tests (unit, integration on the in-memory backend and MiniStack, e2e)
-        run: uv run pytest --cov=dynamoxy --cov-report=term --cov-report=xml
+        run: uv run pytest -n auto --dist worksteal --durations=15 --cov=dynamoxy --cov-report=term --cov-report=xml
       - name: The runtime tests and the integration suite (in-memory backend and MiniStack) under uvloop
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.15'
-        run: uv run pytest tests/unit/test_runtime.py tests/integration
+        run: uv run pytest -n auto --dist worksteal tests/unit/test_runtime.py tests/integration
         env:
           DYNAMOXY_TEST_EVENT_LOOP: uvloop
       - uses: actions/upload-artifact@v7
@@ -114,7 +114,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync
       - name: Tests without the emulator
-        run: uv run pytest -m "not e2e"
+        run: uv run pytest -n auto --dist worksteal --durations=15 -m "not e2e"
 
   package:
     name: Packaging (sdist + cross-built wheel)

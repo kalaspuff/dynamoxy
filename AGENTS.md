@@ -44,8 +44,8 @@ Requirements: Rust (stable, see `rust-toolchain.toml`) and [uv](https://docs.ast
 | --- | --- |
 | Install/refresh everything (builds the extension) | `uv sync` |
 | All checks (what CI runs) | `make check` |
-| Python tests (unit, integration on memory and MiniStack, e2e) | `uv run pytest` |
-| Only fast tests (no emulator) | `uv run pytest -m "not e2e"` |
+| Python tests (unit, integration on memory and MiniStack, e2e) | `uv run pytest -n auto --dist worksteal` (`make test`; without `-n` they run one at a time, easier for debugging one test) |
+| Only fast tests (no emulator) | `uv run pytest -n auto --dist worksteal -m "not e2e"` |
 | Rust tests | `cargo test --workspace` |
 | Rust parity tests against the emulator | `DYNAMOXY_TEST_ENDPOINT_URL=<url> cargo test -p dynamoxy-core --test emulator` |
 | Lint/format Python | `uv run ruff check --fix python tests examples scripts && uv run ruff format python tests examples scripts` |
@@ -140,6 +140,9 @@ protocol issue), fix, keep the test.
   tests build their own memory client (`tests/integration/test_faults.py`).
 * Assert on events, stats, counts and `dynamoxy.collect()` records instead of sleeping. Use unique
   names; the fixtures give emulator clients a unique table prefix.
+* CI runs pytest in parallel (`-n auto --dist worksteal`, pytest-xdist), and each worker starts a
+  MiniStack of its own: a test must not depend on another having run before it or in the same
+  process, and wall-clock bounds must leave room for a loaded machine.
 * A test that fails only on MiniStack usually reveals real DynamoDB behaviour: check the DynamoDB
   documentation, model it in the memory backend, and only treat it as an emulator quirk (with a
   comment) when the documentation says otherwise.

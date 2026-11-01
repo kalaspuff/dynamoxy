@@ -55,6 +55,7 @@ test = [
     "pytest-asyncio>=1.4",
     "pytest-timeout>=2.4",
     "pytest-cov>=7",
+    "pytest-xdist>=3.8",
     "hypothesis>=6.140",
     "pydantic>=2.7",
     "opentelemetry-api>=1.25",

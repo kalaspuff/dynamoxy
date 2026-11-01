@@ -35,7 +35,7 @@ description: Default workflow for any change to the dynamoxy library (Rust core,
    uv run ruff format --check python tests examples scripts && uv run ruff check python tests examples scripts
    uvx --from actionlint-py actionlint && uv run pyrefly check && uv run python scripts/check_typing.py
    uv run python scripts/check_consistency.py
-   cargo test --workspace && uv run pytest
+   cargo test --workspace && uv run pytest -n auto --dist worksteal
    ```
 7. **Commit** with a conventional commit message (`feat(repository): ...`, `fix(core): ...`);
    breaking changes use `feat!:` and explain the migration - they feed the changelog. Push the

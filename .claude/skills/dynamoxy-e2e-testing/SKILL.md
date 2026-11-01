@@ -7,7 +7,8 @@ description: Run and debug dynamoxy's end-to-end tests against MiniStack (the pi
 
 1. **Python**: `uv run pytest` starts MiniStack automatically (session fixture in
    `tests/conftest.py`, free port, health check at `/_ministack/health`). Run only emulator tests
-   with `uv run pytest -m e2e`, skip them with `-m "not e2e"`.
+   with `uv run pytest -m e2e`, skip them with `-m "not e2e"`. With `-n auto` (pytest-xdist, as
+   in CI and `make test`) each worker starts a MiniStack of its own.
 2. **Reuse a running emulator**: `ministack` (with `GATEWAY_PORT=4599`) in another terminal, then
    `DYNAMOXY_TEST_ENDPOINT_URL=http://127.0.0.1:4599 uv run pytest -m e2e`.
    Prefix `DYNAMOXY_TEST_EVENT_LOOP=uvloop` to run the async tests on uvloop's event loop (real
