@@ -90,6 +90,23 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `BatchWriter` flush no longer requeues the writes of a request that failed: its
   `UnprocessedItemsError` reports them. Keys that `BatchGetItem` left for its 16 MB response limit
   are requested again at once, without backoff or a new round.
+- Table operations were sent again after an attempt that may have been applied (a timeout, a
+  lost connection, a 5xx), and failed on, or repeated, their own earlier attempt: `create_tables()`
+  raised `ResourceInUseError` for the table it had just created, `create_backup()` made two
+  backups, and `enable_time_to_live()`, `delete_table()`, `add_index()` and `delete_index()`
+  failed because the earlier attempt had already done what they asked. After such an attempt, a
+  refusal of the next one is now checked against the table: `CreateTable` succeeds when the table
+  that exists is the one it creates (same key, key types and indexes), `DeleteTable` when the
+  table is gone, `UpdateTable` when the description shows every change of the request, and
+  `UpdateTimeToLive` when Time to Live is as it sets it; a refusal the table does not explain
+  stands, and when the table cannot be described, or is still changing, the call raises
+  `WriteOutcomeUnknownError`. When no later attempt answers (the last attempt was the lost one,
+  also with `retry_timeouts=False`), the table is described the same way, and the call raises the
+  retryable `TransportError` only when the table shows that nothing was applied. These lookups
+  also run after `close()`. `CreateBackup` and the restores are not sent again: they raise
+  `WriteOutcomeUnknownError`, which names the backup or the table to look for, and so does a
+  `DeleteBackup` whose backup is gone after such an attempt. Tags and point-in-time recovery
+  settings are sent again as before: they apply once however often they are sent.
 
 ## [0.4.0] - 2026-10-31
 

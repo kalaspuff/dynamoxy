@@ -21,9 +21,16 @@
 //! operations) keep their retryable [`Error::Transport`]. An attempt that failed to connect sent
 //! nothing (`Error::Transport { sent: false, .. }`): it leaves no outcome unknown, and every write
 //! is sent again after it.
+//!
+//! Table operations are sent again too, and settle a refusal their earlier attempt may have
+//! caused, or the lack of an answer, by describing the table (`run_settled`): a `CreateTable`
+//! that finds its own table, a `DeleteTable` that finds none, an `UpdateTable` or
+//! `UpdateTimeToLive` whose change is there succeed; a retryable error stands only when the table
+//! shows that nothing was applied. `CreateBackup` and the restores, which would create a second backup or fail on their
+//! own table, are not sent again.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,21 +44,21 @@ use crate::backend::aws::AwsBackend;
 use crate::backend::memory::MemoryBackend;
 use crate::backend::memory::partiql::{self, Effect};
 use crate::config::ClientConfig;
-use crate::error::{Error, ErrorKind, Result};
+use crate::error::{Error, ErrorKind, Result, ServiceError};
 use crate::events::{Event, EventBus, EventKind};
 use crate::expr::{Placeholders, is_idempotent, parse_update};
 use crate::metrics::{Metrics, Operation};
 use crate::retry::{backoff, backoff_at_least};
 use crate::types::{
-    BackupDescription, BackupDetails, BatchExecuteStatementInput, BatchExecuteStatementOutput, BatchGetItemInput,
-    BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, ConsumedCapacity, ContinuousBackupsDescription,
-    CreateTableInput, DeleteItemInput, ExecuteStatementInput, ExecuteStatementOutput, ExecuteTransactionInput,
-    ExecuteTransactionOutput, GetItemInput, GetItemOutput, IndexStatus, KeysAndAttributes, ListBackupsInput,
-    ListBackupsOutput, ListTablesInput, ListTablesOutput, ListTagsOutput, PutItemInput, QueryInput, QueryOutput,
-    RestoreTableFromBackupInput, RestoreTableToPointInTimeInput, ReturnConsumedCapacity, ReturnValues, ScanInput,
-    TableDescription, TableStatus, TimeToLiveDescription, TransactGetItemsInput, TransactGetItemsOutput,
-    TransactWriteItemsInput, TransactWriteItemsOutput, UpdateItemInput, UpdateTableInput, UpdateTimeToLiveInput,
-    WriteItemOutput, WriteRequest,
+    BackupDescription, BackupDetails, BackupStatus, BatchExecuteStatementInput, BatchExecuteStatementOutput,
+    BatchGetItemInput, BatchGetItemOutput, BatchWriteItemInput, BatchWriteItemOutput, BillingMode, ConsumedCapacity,
+    ContinuousBackupsDescription, CreateTableInput, DeleteItemInput, ExecuteStatementInput, ExecuteStatementOutput,
+    ExecuteTransactionInput, ExecuteTransactionOutput, GetItemInput, GetItemOutput, GlobalSecondaryIndexUpdate,
+    IndexDescription, IndexStatus, KeySchema, KeysAndAttributes, ListBackupsInput, ListBackupsOutput, ListTablesInput,
+    ListTablesOutput, ListTagsOutput, Projection, PutItemInput, QueryInput, QueryOutput, RestoreTableFromBackupInput,
+    RestoreTableToPointInTimeInput, ReturnConsumedCapacity, ReturnValues, ScanInput, TableDescription, TableStatus,
+    TimeToLiveDescription, TimeToLiveStatus, TransactGetItemsInput, TransactGetItemsOutput, TransactWriteItemsInput,
+    TransactWriteItemsOutput, UpdateItemInput, UpdateTableInput, UpdateTimeToLiveInput, WriteItemOutput, WriteRequest,
 };
 use crate::value::{BATCH_GET_RESPONSE_LIMIT, Item, MAX_ITEM_SIZE, item_size};
 
@@ -362,19 +369,44 @@ struct Safety<T> {
     /// Whether the request writes, for capacity reported without a read/write split (`None`:
     /// as the operation's kind; PartiQL statements say it).
     writes: Option<bool>,
+    /// What sending the request again could do, when it is not sent again (`None`: apply a
+    /// write twice).
+    twice: Option<String>,
+    /// A lookup that settles a call in progress: sent after `close()` too, which lets calls in
+    /// progress finish.
+    lookup: bool,
 }
 
 impl<T> Safety<T> {
     /// Reads, and writes that apply once even when sent twice and whose answers stay the same
     /// (batch writes, which have no conditions and return nothing of the items).
     fn resendable() -> Self {
-        Self { resend: true, settle: None, old_values: OldValues::Trusted, writes: None }
+        Self { resend: true, settle: None, old_values: OldValues::Trusted, writes: None, twice: None, lookup: false }
     }
 
     /// Transactions: their token makes a later attempt return the earlier one's result, so only
     /// the lack of an answer leaves the outcome unknown.
     fn transaction() -> Self {
-        Self { resend: true, settle: Some(settle_write::<T>), old_values: OldValues::Trusted, writes: None }
+        Self {
+            resend: true,
+            settle: Some(settle_write::<T>),
+            old_values: OldValues::Trusted,
+            writes: None,
+            twice: None,
+            lookup: false,
+        }
+    }
+
+    /// A read that settles a call in progress ([`Safety::lookup`]).
+    fn lookup() -> Self {
+        Self { lookup: true, ..Self::resendable() }
+    }
+
+    /// Requests that create something new each time they are applied (`CreateBackup`, restores):
+    /// never sent again after an attempt that may have been applied; `twice` says what sending it
+    /// again could do, and how to find out what happened.
+    fn once(twice: String) -> Self {
+        Self { resend: false, twice: Some(twice), ..Self::transaction() }
     }
 }
 
@@ -427,7 +459,7 @@ fn settle_statement(result: &Result<ExecuteStatementOutput>, old_values: OldValu
 
 /// The [`Safety`] of a single-item write.
 fn item_write(resend: bool, old_values: OldValues) -> Safety<WriteItemOutput> {
-    Safety { resend, settle: Some(settle_item_write), old_values, writes: None }
+    Safety { resend, settle: Some(settle_item_write), old_values, writes: None, twice: None, lookup: false }
 }
 
 /// What a failed attempt says, for messages.
@@ -436,6 +468,159 @@ fn reason(error: &Error) -> String {
         Error::Transport { message, .. } => message.clone(),
         Error::Service(service) => format!("{}: {}", service.code, service.message),
         other => other.to_string(),
+    }
+}
+
+/// DynamoDB's refusal of a control-plane request after an attempt that may have been applied:
+/// an answer the earlier attempt may have caused (retryable failures answer nothing).
+fn refusal<T>(result: &Result<T>) -> Option<&ServiceError> {
+    match result {
+        Err(error) if !answers_nothing(error) => error.as_service(),
+        _ => None,
+    }
+}
+
+/// Whether a control-plane call ended without an answer after an attempt that may have been
+/// applied: the last attempt may have been applied itself, or later ones failed with retryable
+/// errors that say nothing about it.
+fn no_answer<T>(result: &Result<T>) -> bool {
+    matches!(result, Err(error) if answers_nothing(error))
+}
+
+/// The outcome of a control-plane request that could not be settled by looking at the resource.
+fn unsettled<T>(operation: Operation, earlier: &str, result: &Result<T>, lookup: &str, failed: &Error) -> Error {
+    let ended = match result {
+        Err(error) if no_answer(result) => format!("no later attempt answered whether it was ({})", reason(error)),
+        Err(error) => format!("the next attempt was refused ({})", reason(error)),
+        Ok(_) => "the next attempt succeeded".to_owned(),
+    };
+    Error::OutcomeUnknown {
+        operation: operation.as_str(),
+        message: format!(
+            "the outcome is unknown: an attempt may have been applied ({earlier}), {ended}, and {lookup} to find out \
+             failed ({})",
+            reason(failed)
+        ),
+        item: None,
+    }
+}
+
+fn same_projection(requested: &Projection, described: &Projection) -> bool {
+    fn attributes(projection: &Projection) -> BTreeSet<&str> {
+        projection.non_key_attributes.iter().map(String::as_str).collect()
+    }
+    requested.projection_type == described.projection_type && attributes(requested) == attributes(described)
+}
+
+/// Whether `description` is the table that `input` creates: its key, key types and indexes.
+fn creates(input: &CreateTableInput, description: &TableDescription) -> bool {
+    let same_indexes = |requested: Vec<(&String, &KeySchema, &Projection)>, described: &[IndexDescription]| {
+        requested.len() == described.len()
+            && requested.iter().all(|(name, key, projection)| {
+                described.iter().any(|index| {
+                    index.index_name == **name
+                        && index.key_schema == **key
+                        && same_projection(projection, &index.projection)
+                })
+            })
+    };
+    input.key_schema == description.key_schema
+        && input
+            .attribute_definitions
+            .iter()
+            .all(|definition| description.attribute_type(&definition.name) == Some(definition.attribute_type))
+        && same_indexes(
+            input
+                .global_secondary_indexes
+                .iter()
+                .map(|index| (&index.index_name, &index.key_schema, &index.projection))
+                .collect(),
+            &description.global_secondary_indexes,
+        )
+        && same_indexes(
+            input
+                .local_secondary_indexes
+                .iter()
+                .map(|index| (&index.index_name, &index.key_schema, &index.projection))
+                .collect(),
+            &description.local_secondary_indexes,
+        )
+}
+
+/// Whether `description` shows every change of `input` (encryption, which descriptions do not
+/// show as requested, never does).
+fn updated(input: &UpdateTableInput, description: &TableDescription) -> bool {
+    let index = |name: &str| description.global_secondary_indexes.iter().find(|index| index.index_name == name);
+    input.billing_mode.is_none_or(|mode| description.billing_mode == mode)
+        && input.provisioned_throughput.is_none_or(|throughput| description.provisioned_throughput == Some(throughput))
+        && input.on_demand_throughput.is_none_or(|limits| description.on_demand_throughput == Some(limits))
+        && input.global_secondary_index_updates.iter().all(|update| match update {
+            GlobalSecondaryIndexUpdate::Create(global) => index(&global.index_name).is_some_and(|index| {
+                index.key_schema == global.key_schema && same_projection(&global.projection, &index.projection)
+            }),
+            GlobalSecondaryIndexUpdate::Update { index_name, provisioned_throughput, .. } => index(index_name)
+                .is_some_and(|index| {
+                    provisioned_throughput.is_none_or(|throughput| index.provisioned_throughput == Some(throughput))
+                }),
+            GlobalSecondaryIndexUpdate::Delete { index_name } => {
+                index(index_name).is_none_or(|index| index.index_status == Some(IndexStatus::Deleting))
+            }
+        })
+        && input.stream_specification.is_none_or(|stream| {
+            let current = description.stream_specification.filter(|current| current.enabled);
+            match current {
+                Some(current) => stream.enabled && stream.view_type.is_none_or(|view| current.view_type == Some(view)),
+                None => !stream.enabled,
+            }
+        })
+        && input.sse_specification.is_none()
+        && input.table_class.is_none_or(|class| description.table_class == Some(class))
+        && input
+            .deletion_protection_enabled
+            .is_none_or(|protection| description.deletion_protection_enabled == protection)
+}
+
+/// Whether DynamoDB is still applying a change to the table or one of its global indexes.
+fn changing(description: &TableDescription) -> bool {
+    description.table_status != TableStatus::Active
+        || description
+            .global_secondary_indexes
+            .iter()
+            .any(|index| index.index_status.is_some_and(|status| status != IndexStatus::Active) || index.backfilling)
+}
+
+/// The [`Safety`] of a restore into `target`.
+fn restore_safety(target: &str) -> Safety<TableDescription> {
+    Safety::once(format!(
+        "sending it again would fail on the table it may have created: describe table {target} to see whether the \
+         restore started"
+    ))
+}
+
+/// What a `DeleteTable` that an earlier attempt applied returns: the table's name and `DELETING`
+/// (the table is gone, and so is its description).
+fn deleted(table_name: &str) -> TableDescription {
+    TableDescription {
+        table_name: table_name.to_owned(),
+        table_arn: None,
+        table_id: None,
+        table_status: TableStatus::Deleting,
+        creation_date_time: None,
+        key_schema: KeySchema { partition_key: String::new(), sort_key: None },
+        attribute_definitions: Vec::new(),
+        item_count: 0,
+        table_size_bytes: 0,
+        billing_mode: BillingMode::PayPerRequest,
+        provisioned_throughput: None,
+        on_demand_throughput: None,
+        global_secondary_indexes: Vec::new(),
+        local_secondary_indexes: Vec::new(),
+        stream_specification: None,
+        latest_stream_arn: None,
+        latest_stream_label: None,
+        sse_description: None,
+        table_class: None,
+        deletion_protection_enabled: false,
     }
 }
 
@@ -514,16 +699,32 @@ impl Client {
 
     /// Runs `attempt` with retries, timeouts, events and metrics; `safety` says what to do after
     /// an attempt that may have been applied.
-    async fn run<T, F, Fut>(
+    async fn run<T, F, Fut>(&self, operation: Operation, table: Option<&str>, safety: Safety<T>, attempt: F) -> Call<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+        T: ConsumedCapacityTotals,
+    {
+        self.run_settled(operation, table, safety, attempt, |result, _| std::future::ready(result)).await
+    }
+
+    /// [`Self::run`], and after an attempt that may have been applied, `settle` gets the call's
+    /// result and what that attempt failed with, and returns the result to report: control-plane
+    /// operations look at the table to tell an answer their own earlier attempt caused (a table
+    /// that already exists) from a real refusal.
+    async fn run_settled<T, F, Fut, S, SFut>(
         &self,
         operation: Operation,
         table: Option<&str>,
         safety: Safety<T>,
         mut attempt: F,
+        settle: S,
     ) -> Call<T>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T>>,
+        S: FnOnce(Result<T>, String) -> SFut,
+        SFut: Future<Output = Result<T>>,
         T: ConsumedCapacityTotals,
     {
         let started = Instant::now();
@@ -537,7 +738,7 @@ impl Client {
         let mut uncertain: Option<(String, u32)> = None;
         let result = loop {
             // Calls in progress finish their retries after `close()`; new calls are refused.
-            if attempts == 0 && self.is_closed() {
+            if attempts == 0 && !safety.lookup && self.is_closed() {
                 break Err(Error::Shutdown);
             }
             attempts += 1;
@@ -574,9 +775,9 @@ impl Client {
                     break Err(Error::OutcomeUnknown {
                         operation: operation.as_str(),
                         message: format!(
-                            "the outcome is unknown: the attempt may have been applied ({}), and sending the write \
-                             again could apply it twice",
-                            reason(&error)
+                            "the outcome is unknown: the attempt may have been applied ({}), and {}",
+                            reason(&error),
+                            safety.twice.as_deref().unwrap_or("sending the write again could apply it twice"),
                         ),
                         item: None,
                     });
@@ -609,6 +810,10 @@ impl Client {
                     .field("delay_ms", delay.as_millis())
             });
             tokio::time::sleep(delay).await;
+        };
+        let result = match &uncertain {
+            Some((earlier, _)) => settle(result, earlier.clone()).await,
+            None => result,
         };
         let writes = safety.writes;
         let unsettled = match (&uncertain, safety.settle) {
@@ -800,13 +1005,22 @@ impl Client {
                     (true, false) => OldValues::Present,
                     (true, true) => OldValues::Absent,
                 };
-                Safety { resend: true, settle: Some(settle_statement), old_values, writes: Some(true) }
+                Safety {
+                    resend: true,
+                    settle: Some(settle_statement),
+                    old_values,
+                    writes: Some(true),
+                    twice: None,
+                    lookup: false,
+                }
             }
             Effect::Once => Safety {
                 resend: false,
                 settle: Some(settle_statement),
                 old_values: OldValues::Trusted,
                 writes: Some(true),
+                twice: None,
+                lookup: false,
             },
         };
         call!(self, ExecuteStatement, None, execute_statement(input); safety)
@@ -851,26 +1065,50 @@ impl Client {
         });
     }
 
-    /// `CreateTable`.
+    /// `CreateTable`. After an attempt that may have been applied, a table that already exists
+    /// is described: when it is the one the request creates, the call succeeds with its
+    /// description.
     pub async fn create_table(&self, input: CreateTableInput) -> Call<TableDescription> {
         let table = input.table_name.clone();
-        let call = call!(self, CreateTable, Some(&table), create_table(input));
+        let backend = Arc::clone(&self.inner.backend);
+        let request = input.clone();
+        let call = self
+            .run_settled(
+                Operation::CreateTable,
+                Some(&table),
+                Safety::resendable(),
+                move || {
+                    let backend = Arc::clone(&backend);
+                    let input = input.clone();
+                    async move { backend.create_table(input).await }
+                },
+                |result, earlier| self.settle_create_table(&request, result, earlier),
+            )
+            .await;
         if let Ok(description) = &call.result {
             self.table_event(EventKind::TableCreated, "created", description);
         }
         call
     }
 
-    /// `DeleteTable`.
+    /// `DeleteTable`. After an attempt that may have been applied, a table that no longer exists
+    /// was deleted by it: the call succeeds, with only the table's name and `DELETING` in the
+    /// description.
     pub async fn delete_table(&self, table_name: &str) -> Call<TableDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
         let call = self
-            .run(Operation::DeleteTable, Some(table_name), Safety::resendable(), move || {
-                let backend = Arc::clone(&backend);
-                let name = name.clone();
-                async move { backend.delete_table(&name).await }
-            })
+            .run_settled(
+                Operation::DeleteTable,
+                Some(table_name),
+                Safety::resendable(),
+                move || {
+                    let backend = Arc::clone(&backend);
+                    let name = name.clone();
+                    async move { backend.delete_table(&name).await }
+                },
+                |result, earlier| self.settle_delete_table(table_name, result, earlier),
+            )
             .await;
         if let Ok(description) = &call.result {
             self.table_event(EventKind::TableDeleted, "deleted", description);
@@ -880,9 +1118,14 @@ impl Client {
 
     /// `DescribeTable`.
     pub async fn describe_table(&self, table_name: &str) -> Call<TableDescription> {
+        self.describe_table_as(table_name, Safety::resendable()).await
+    }
+
+    /// `DescribeTable` with `safety` (a lookup that settles a call, [`Safety::lookup`]).
+    async fn describe_table_as(&self, table_name: &str, safety: Safety<TableDescription>) -> Call<TableDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::DescribeTable, Some(table_name), Safety::resendable(), move || {
+        self.run(Operation::DescribeTable, Some(table_name), safety, move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.describe_table(&name).await }
@@ -890,10 +1133,27 @@ impl Client {
         .await
     }
 
-    /// `UpdateTable`.
+    /// `UpdateTable`. After an attempt that may have been applied, a refusal (an index that
+    /// already exists, a table still updating, ...) is settled by describing the table: when it
+    /// shows every change of the request, the call succeeds with its description; when it shows
+    /// none and nothing is in progress, the refusal stands; otherwise the outcome is unknown.
     pub async fn update_table(&self, input: UpdateTableInput) -> Call<TableDescription> {
         let table = input.table_name.clone();
-        let call = call!(self, UpdateTable, Some(&table), update_table(input));
+        let backend = Arc::clone(&self.inner.backend);
+        let request = input.clone();
+        let call = self
+            .run_settled(
+                Operation::UpdateTable,
+                Some(&table),
+                Safety::resendable(),
+                move || {
+                    let backend = Arc::clone(&backend);
+                    let input = input.clone();
+                    async move { backend.update_table(input).await }
+                },
+                |result, earlier| self.settle_update_table(&request, result, earlier),
+            )
+            .await;
         if let Ok(description) = &call.result {
             self.table_event(EventKind::TableUpdated, "updated", description);
         }
@@ -905,17 +1165,41 @@ impl Client {
         call!(self, ListTables, None, list_tables(input))
     }
 
-    /// `UpdateTimeToLive`.
+    /// `UpdateTimeToLive`. After an attempt that may have been applied, a refusal ("TimeToLive is
+    /// already enabled") is settled by describing Time to Live: when it is as the request sets it,
+    /// the call succeeds.
     pub async fn update_time_to_live(&self, input: UpdateTimeToLiveInput) -> Call<TimeToLiveDescription> {
         let table = input.table_name.clone();
-        call!(self, UpdateTimeToLive, Some(&table), update_time_to_live(input))
+        let backend = Arc::clone(&self.inner.backend);
+        let request = input.clone();
+        self.run_settled(
+            Operation::UpdateTimeToLive,
+            Some(&table),
+            Safety::resendable(),
+            move || {
+                let backend = Arc::clone(&backend);
+                let input = input.clone();
+                async move { backend.update_time_to_live(input).await }
+            },
+            |result, earlier| self.settle_time_to_live(&request, result, earlier),
+        )
+        .await
     }
 
     /// `DescribeTimeToLive`.
     pub async fn describe_time_to_live(&self, table_name: &str) -> Call<TimeToLiveDescription> {
+        self.describe_time_to_live_as(table_name, Safety::resendable()).await
+    }
+
+    /// `DescribeTimeToLive` with `safety` ([`Safety::lookup`]).
+    async fn describe_time_to_live_as(
+        &self,
+        table_name: &str,
+        safety: Safety<TimeToLiveDescription>,
+    ) -> Call<TimeToLiveDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let name = table_name.to_owned();
-        self.run(Operation::DescribeTimeToLive, Some(table_name), Safety::resendable(), move || {
+        self.run(Operation::DescribeTimeToLive, Some(table_name), safety, move || {
             let backend = Arc::clone(&backend);
             let name = name.clone();
             async move { backend.describe_time_to_live(&name).await }
@@ -1019,11 +1303,16 @@ impl Client {
         .await
     }
 
-    /// `CreateBackup`.
+    /// `CreateBackup`. Each request creates a backup, so it is not sent again after an attempt
+    /// that may have been applied: the call fails with [`Error::OutcomeUnknown`].
     pub async fn create_backup(&self, table_name: &str, backup_name: &str) -> Call<BackupDetails> {
         let backend = Arc::clone(&self.inner.backend);
         let (name, backup) = (table_name.to_owned(), backup_name.to_owned());
-        self.run(Operation::CreateBackup, Some(table_name), Safety::resendable(), move || {
+        let safety = Safety::once(format!(
+            "sending it again could create a second backup: look for backup {backup_name} in the backups of table \
+             {table_name} (ListBackups) before creating it again"
+        ));
+        self.run(Operation::CreateBackup, Some(table_name), safety, move || {
             let backend = Arc::clone(&backend);
             let (name, backup) = (name.clone(), backup.clone());
             async move { backend.create_backup(&name, &backup).await }
@@ -1033,9 +1322,14 @@ impl Client {
 
     /// `DescribeBackup`.
     pub async fn describe_backup(&self, backup_arn: &str) -> Call<BackupDescription> {
+        self.describe_backup_as(backup_arn, Safety::resendable()).await
+    }
+
+    /// `DescribeBackup` with `safety` ([`Safety::lookup`]).
+    async fn describe_backup_as(&self, backup_arn: &str, safety: Safety<BackupDescription>) -> Call<BackupDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = backup_arn.to_owned();
-        self.run(Operation::DescribeBackup, None, Safety::resendable(), move || {
+        self.run(Operation::DescribeBackup, None, safety, move || {
             let backend = Arc::clone(&backend);
             let arn = arn.clone();
             async move { backend.describe_backup(&arn).await }
@@ -1043,15 +1337,23 @@ impl Client {
         .await
     }
 
-    /// `DeleteBackup`.
+    /// `DeleteBackup`. After an attempt that may have been applied, a backup that no longer
+    /// exists may have been deleted by it, and its description is gone with it: the call fails
+    /// with [`Error::OutcomeUnknown`], not `BackupNotFoundException`.
     pub async fn delete_backup(&self, backup_arn: &str) -> Call<BackupDescription> {
         let backend = Arc::clone(&self.inner.backend);
         let arn = backup_arn.to_owned();
-        self.run(Operation::DeleteBackup, None, Safety::resendable(), move || {
-            let backend = Arc::clone(&backend);
-            let arn = arn.clone();
-            async move { backend.delete_backup(&arn).await }
-        })
+        self.run_settled(
+            Operation::DeleteBackup,
+            None,
+            Safety::resendable(),
+            move || {
+                let backend = Arc::clone(&backend);
+                let arn = arn.clone();
+                async move { backend.delete_backup(&arn).await }
+            },
+            |result, earlier| self.settle_delete_backup(backup_arn, result, earlier),
+        )
         .await
     }
 
@@ -1061,27 +1363,174 @@ impl Client {
         call!(self, ListBackups, table.as_deref(), list_backups(input))
     }
 
-    /// `RestoreTableFromBackup`.
+    /// `RestoreTableFromBackup`. Not sent again after an attempt that may have been applied (the
+    /// next attempt would fail on the table it created): the call fails with
+    /// [`Error::OutcomeUnknown`].
     pub async fn restore_table_from_backup(&self, input: RestoreTableFromBackupInput) -> Call<TableDescription> {
         let table = input.target_table_name.clone();
-        let call = call!(self, RestoreTableFromBackup, Some(&table), restore_table_from_backup(input));
+        let safety = restore_safety(&table);
+        let call = call!(self, RestoreTableFromBackup, Some(&table), restore_table_from_backup(input); safety);
         if let Ok(description) = &call.result {
             self.table_event(EventKind::TableCreated, "restored from a backup", description);
         }
         call
     }
 
-    /// `RestoreTableToPointInTime`.
+    /// `RestoreTableToPointInTime`. Not sent again after an attempt that may have been applied,
+    /// like [`Self::restore_table_from_backup`].
     pub async fn restore_table_to_point_in_time(
         &self,
         input: RestoreTableToPointInTimeInput,
     ) -> Call<TableDescription> {
         let table = input.target_table_name.clone();
-        let call = call!(self, RestoreTableToPointInTime, Some(&table), restore_table_to_point_in_time(input));
+        let safety = restore_safety(&table);
+        let call = call!(self, RestoreTableToPointInTime, Some(&table), restore_table_to_point_in_time(input); safety);
         if let Ok(description) = &call.result {
             self.table_event(EventKind::TableCreated, "restored to a point in time", description);
         }
         call
+    }
+
+    /// Settles a `CreateTable` after an attempt that may have been applied: a table that exists
+    /// (the next attempt's `ResourceInUseException`, or a table found when no attempt answered)
+    /// is the call's when it is the one the request creates.
+    async fn settle_create_table(
+        &self,
+        request: &CreateTableInput,
+        result: Result<TableDescription>,
+        earlier: String,
+    ) -> Result<TableDescription> {
+        let refused = refusal(&result).is_some_and(|refused| refused.kind == ErrorKind::ResourceInUse);
+        if !refused && !no_answer(&result) {
+            return result;
+        }
+        match self.describe_table_as(&request.table_name, Safety::lookup()).await.result {
+            Ok(description) if creates(request, &description) => Ok(description),
+            // Another table: the earlier attempt did not create it.
+            Ok(_) => result,
+            // No table is no proof either: DescribeTable is eventually consistent, and may not see a
+            // table that was just created yet.
+            Err(error) => Err(unsettled(Operation::CreateTable, &earlier, &result, "describing the table", &error)),
+        }
+    }
+
+    /// Settles a `DeleteTable` after an attempt that may have been applied: a table that is gone,
+    /// or being deleted when no attempt answered, was deleted by it.
+    async fn settle_delete_table(
+        &self,
+        table_name: &str,
+        result: Result<TableDescription>,
+        earlier: String,
+    ) -> Result<TableDescription> {
+        if refusal(&result).is_some_and(|refused| refused.kind == ErrorKind::ResourceNotFound) {
+            return Ok(deleted(table_name));
+        }
+        if !no_answer(&result) {
+            return result;
+        }
+        match self.describe_table_as(table_name, Safety::lookup()).await.result {
+            Ok(description) if description.table_status == TableStatus::Deleting => Ok(description),
+            Ok(_) => result,
+            Err(error) if error.kind() == Some(ErrorKind::ResourceNotFound) => Ok(deleted(table_name)),
+            Err(error) => Err(unsettled(Operation::DeleteTable, &earlier, &result, "describing the table", &error)),
+        }
+    }
+
+    /// Settles an `UpdateTable` after an attempt that may have been applied, when the next
+    /// attempt was refused or none answered: a table that shows every change was updated by it;
+    /// one that shows none and is not changing was not (the refusal or the retryable error
+    /// stands); otherwise the outcome is unknown.
+    async fn settle_update_table(
+        &self,
+        request: &UpdateTableInput,
+        result: Result<TableDescription>,
+        earlier: String,
+    ) -> Result<TableDescription> {
+        if refusal(&result).is_none() && !no_answer(&result) {
+            return result;
+        }
+        match self.describe_table_as(&request.table_name, Safety::lookup()).await.result {
+            Ok(description) if updated(request, &description) => Ok(description),
+            Ok(description) if !changing(&description) => result,
+            Ok(_) => Err(Error::OutcomeUnknown {
+                operation: Operation::UpdateTable.as_str(),
+                message: format!(
+                    "the outcome is unknown: an attempt may have been applied ({earlier}), the call ended with {}, \
+                     and the table is still changing: describe it once it is ACTIVE to see whether the change was \
+                     applied",
+                    result.as_ref().err().map(reason).unwrap_or_default()
+                ),
+                item: None,
+            }),
+            Err(error) => Err(unsettled(Operation::UpdateTable, &earlier, &result, "describing the table", &error)),
+        }
+    }
+
+    /// Settles an `UpdateTimeToLive` after an attempt that may have been applied, when the next
+    /// attempt was refused or none answered: Time to Live as the request sets it was set by it.
+    async fn settle_time_to_live(
+        &self,
+        request: &UpdateTimeToLiveInput,
+        result: Result<TimeToLiveDescription>,
+        earlier: String,
+    ) -> Result<TimeToLiveDescription> {
+        if refusal(&result).is_none() && !no_answer(&result) {
+            return result;
+        }
+        match self.describe_time_to_live_as(&request.table_name, Safety::lookup()).await.result {
+            Ok(current) => {
+                let applied = if request.enabled {
+                    matches!(current.status, TimeToLiveStatus::Enabled | TimeToLiveStatus::Enabling)
+                        && current.attribute_name.as_deref() == Some(request.attribute_name.as_str())
+                } else {
+                    matches!(current.status, TimeToLiveStatus::Disabled | TimeToLiveStatus::Disabling)
+                };
+                if !applied {
+                    return result;
+                }
+                // What UpdateTimeToLive returns.
+                Ok(TimeToLiveDescription {
+                    status: if request.enabled { TimeToLiveStatus::Enabled } else { TimeToLiveStatus::Disabled },
+                    attribute_name: Some(request.attribute_name.clone()),
+                })
+            }
+            Err(error) => {
+                Err(unsettled(Operation::UpdateTimeToLive, &earlier, &result, "describing Time to Live", &error))
+            }
+        }
+    }
+
+    /// Settles a `DeleteBackup` after an attempt that may have been applied: a backup that is gone
+    /// may have been deleted by it, and its description went with it, so the outcome is unknown.
+    async fn settle_delete_backup(
+        &self,
+        backup_arn: &str,
+        result: Result<BackupDescription>,
+        earlier: String,
+    ) -> Result<BackupDescription> {
+        let gone = || Error::OutcomeUnknown {
+            operation: Operation::DeleteBackup.as_str(),
+            message: format!(
+                "the outcome is unknown: an attempt may have been applied ({earlier}), and backup {backup_arn} no \
+                 longer exists: that attempt may have deleted it"
+            ),
+            item: None,
+        };
+        if refusal(&result).is_some_and(|refused| refused.code == "BackupNotFoundException") {
+            return Err(gone());
+        }
+        if !no_answer(&result) {
+            return result;
+        }
+        match self.describe_backup_as(backup_arn, Safety::lookup()).await.result {
+            Ok(description) if description.details.backup_status == BackupStatus::Deleted => Err(gone()),
+            // Still there: nothing was deleted, and sending the request again is safe.
+            Ok(_) => result,
+            Err(error) if error.as_service().is_some_and(|service| service.code == "BackupNotFoundException") => {
+                Err(gone())
+            }
+            Err(error) => Err(unsettled(Operation::DeleteBackup, &earlier, &result, "describing the backup", &error)),
+        }
     }
 
     /// Waits until a table is `ACTIVE` with every global secondary index `ACTIVE` (`exists`), or
