@@ -1,6 +1,7 @@
 # 0018: Models read items with an explicit client: `Model.get` and `Model.query`
 
-Status: Accepted (amends [0017](0017-models-create-items-with-an-explicit-client.md))
+Status: Accepted (amends [0017](0017-models-create-items-with-an-explicit-client.md)), amended by
+[0023](0023-models-scan-and-instances-create-themselves.md) (`Model.scan`)
 
 ## Context
 

@@ -47,6 +47,7 @@ from __future__ import annotations
 import copy as _copy
 import dataclasses
 import sys
+import types
 from collections.abc import Hashable
 from collections.abc import Set as AbstractSet
 from decimal import Decimal
@@ -85,7 +86,7 @@ if TYPE_CHECKING:
 
     from dynamoxy.codecs import Codec, DateTimeFormat
     from dynamoxy.expressions import Condition
-    from dynamoxy.query import Query
+    from dynamoxy.query import Query, Scan
     from dynamoxy.repository import Repository
     from dynamoxy.schema import GlobalIndex, LocalIndex
 
@@ -476,55 +477,116 @@ type _ListPath[E] = Path[list[E]] | Path[tuple[E, ...]] | Path[list[E] | None] |
 type _Condition = Condition | bool | None
 
 
-class _Persistence:
-    """Persistence methods of models (:class:`Model` and ``PydanticModel``).
+async def _create_from_values(model: Any, client: Client, /, *args: Any, **kwargs: Any) -> Any:
+    """Builds an instance from field values and writes it as a new item.
 
-    ``Model.create(client, ...)``, ``Model.get(client, ...)`` and ``Model.query(client, ...)``
-    go through ``client.model(Model)``. An instance remembers the repository that last read or
-    wrote it, next to the stored copy; the instance methods call that repository's public
-    methods (``save``, ``update``, ``delete``, ``refresh``), so they behave exactly like them
-    (validation, hooks, versions, unique guards, automatic and derived fields) and go through
-    the overrides of repository subclasses. Instances no repository read or wrote (new ones,
-    ``copy()``, unpickled ones) are not bound: their methods raise ``RuntimeError`` before any
-    I/O.
+    ``await User.create(client, user_id="u1", name="Ada")`` is
+    ``await client.model(User).create(User(user_id="u1", name="Ada"))``: the values are
+    validated like constructor arguments, the write fails if the key exists, and the
+    instance returned is stored and bound to ``client.model(User)``, so its ``save()``,
+    ``update()``, ``delete()``, ... work. ``before_save`` and ``after_save`` hooks run.
+    An instance built already is written with ``await instance.create(client)``.
+
+    The client comes first and positionally, so a field may be named ``client``.
+
+    Example::
+
+        ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+        await ada.increment(User.visits)
+
+    Raises:
+        ItemAlreadyExistsError: An item with the same key exists.
+        UniqueConstraintError: A unique value is taken.
+        ValidationError: A value is invalid (pydantic's for ``PydanticModel``), before any I/O.
+        TypeError: Before any I/O: ``client`` is not a ``dynamoxy.Client``, a value is
+            positional or not a settable field, or the model is not stored in a table.
+    """
+    repository = _model_on(model, client, "create")
+    if args:
+        raise TypeError(
+            f"{model.__name__}.create() takes field values as keyword arguments, got {len(args)} positional: "
+            + _usage(model, "create")
+        )
+    return await repository.create(model(**kwargs))
+
+
+async def _create_instance(instance: Any, client: Client, /) -> Any:
+    """Writes this instance as a new item (``client.model(type(instance)).create(instance)``).
+
+    ``await User(user_id="u1", name="Ada").create(client)`` is ``await User.create(client,
+    user_id="u1", name="Ada")`` for an instance built already: the write fails if the key
+    exists, the instance gets its automatic fields (versions, timestamps) and is bound to
+    ``client.model(User)``, so its ``save()``, ``update()``, ``delete()``, ... work.
+    ``before_save`` and ``after_save`` hooks run. It returns the instance itself.
+
+    Example::
+
+        ada = User(user_id="u1", email="ada@example.com", name="Ada")
+        await ada.create(client)
+        await ada.increment(User.visits)
+
+    Raises:
+        ItemAlreadyExistsError: An item with the same key exists.
+        UniqueConstraintError: A unique value is taken.
+        ValidationError: The instance is invalid, before any I/O.
+        TypeError: ``client`` is not a ``dynamoxy.Client``, or the model is not stored in a
+            table, before any I/O.
+    """
+    model = type(instance)
+    if not isinstance(client, Client):
+        raise TypeError(
+            f"{model.__name__}.create() of an instance takes a dynamoxy.Client, got {type(client).__name__}: "
+            "`await instance.create(client)`"
+        )
+    return await client.model(model).create(instance)
+
+
+class _CreateMethod:
+    """``create`` of models: ``Model.create(client, **fields)`` on the class, ``instance.create(client)``.
+
+    Type checkers see the overloads in ``_Persistence`` instead (they type the class form with
+    the model's constructor, which a descriptor's ``__get__`` cannot do for mypy).
     """
 
     __slots__ = ()
 
-    # `cls` is typed as the constructor, so type checkers check the field values of `create`
-    # like those of `Model(...)`: names, types and required fields.
-    @classmethod
-    async def create[**P, M](cls: Callable[P, M], client: Client, /, *args: P.args, **kwargs: P.kwargs) -> M:
-        """Builds an instance from field values and writes it as a new item.
+    def __get__(self, instance: Any, owner: Any = None, /) -> Any:
+        if instance is None:
+            return types.MethodType(_create_from_values, owner)
+        return types.MethodType(_create_instance, instance)
 
-        ``await User.create(client, user_id="u1", name="Ada")`` is
-        ``await client.model(User).create(User(user_id="u1", name="Ada"))``: the values are
-        validated like constructor arguments, the write fails if the key exists, and the
-        instance returned is stored and bound to ``client.model(User)``, so its ``save()``,
-        ``update()``, ``delete()``, ... work. ``before_save`` and ``after_save`` hooks run.
 
-        The client comes first and positionally, so a field may be named ``client``.
+class _Persistence:
+    """Persistence methods of models (:class:`Model` and ``PydanticModel``).
 
-        Example::
+    ``Model.create(client, ...)``, ``instance.create(client)``, ``Model.get(client, ...)``,
+    ``Model.query(client, ...)`` and ``Model.scan(client)`` go through ``client.model(Model)``.
+    An instance remembers the repository that last read or wrote it, next to the stored copy;
+    the instance methods call that repository's public methods (``save``,
+    ``update``, ``delete``, ``refresh``), so they behave exactly like them (validation, hooks,
+    versions, unique guards, automatic and derived fields) and go through the overrides of
+    repository subclasses. Instances no repository read or wrote (new ones, ``copy()``,
+    unpickled ones) are not bound: their methods other than ``create(client)`` raise
+    ``RuntimeError`` before any I/O.
+    """
 
-            ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
-            await ada.increment(User.visits)
+    __slots__ = ()
 
-        Raises:
-            ItemAlreadyExistsError: An item with the same key exists.
-            UniqueConstraintError: A unique value is taken.
-            ValidationError: A value is invalid (pydantic's for ``PydanticModel``), before any I/O.
-            TypeError: Before any I/O: ``client`` is not a ``dynamoxy.Client``, a value is
-                positional or not a settable field, or the model is not stored in a table.
-        """
-        model: Any = cls
-        repository = _model_on(model, client, "create")
-        if args:
-            raise TypeError(
-                f"{model.__name__}.create() takes field values as keyword arguments, got {len(args)} positional: "
-                + _usage(model, "create")
-            )
-        return await repository.create(model(**kwargs))
+    if TYPE_CHECKING:
+        # `cls` is typed as the constructor, so type checkers check the field values of
+        # `Model.create(client, ...)` like those of `Model(...)`: names, types and required
+        # fields. The second form is `instance.create(client)`, which takes no values.
+        @overload
+        @classmethod
+        async def create[**P, M](cls: Callable[P, M], client: Client, /, *args: P.args, **kwargs: P.kwargs) -> M: ...
+        @overload
+        @classmethod
+        async def create[M](cls: type[M], client: Client, /) -> M: ...
+        @classmethod
+        async def create(cls, client: Client, /, *args: Any, **kwargs: Any) -> Any:
+            """``Model.create(client, **fields)`` or ``instance.create(client)``: writes a new item."""
+    else:
+        create = _CreateMethod()
 
     @classmethod
     async def get(cls, client: Client, /, *key: Any, consistent: bool = False, **key_values: Any) -> Self | None:
@@ -575,6 +637,32 @@ class _Persistence:
                 table.
         """
         return _model_on(cls, client, "query").query(index=index, consistent=consistent, **key_values)
+
+    @classmethod
+    def scan(
+        cls, client: Client, /, *, index: str | GlobalIndex | LocalIndex | None = None, consistent: bool = False
+    ) -> Scan[Self]:
+        """Every item of the model, in the table or an index (``client.model(Model).scan``).
+
+        It returns the immutable :class:`dynamoxy.Scan` of ``Repository.scan``, and reads
+        nothing yet: refine it with ``filter()``, ``segments(n)``, ``limit()``, ... and read it
+        with ``async for``, ``all()``, ``first()``, ``page()``, ``count()``, ... The instances it
+        reads are bound to ``client.model(Model)``. A scan reads the whole table (every model
+        stored in it), so prefer ``query`` where a key is known.
+
+        Example::
+
+            rich = await Customer.scan(client).filter(dynamoxy.attr(Customer.credit) > 10).all()
+            async for user in User.scan(client, index=User.by_email):
+                ...
+
+        Raises:
+            ValueError: The index is unknown, or ``consistent=True`` targets a global secondary
+                index.
+            TypeError: ``client`` is not a ``dynamoxy.Client``, or the model is not stored in a
+                table.
+        """
+        return _model_on(cls, client, "scan").scan(index=index, consistent=consistent)
 
     async def save(self, *, condition: Condition | bool | None = None) -> Self:
         """Writes the instance: creates the item, or replaces the stored one (``repository.save``).
@@ -768,10 +856,10 @@ class _Persistence:
 
 #: How the classmethods of models are called, for the messages of wrong calls.
 _USAGE = {
-    "create": "`await {name}.create(client, field=value, ...)`; "
-    "to write an instance, `await client.model({name}).create(instance)`",
+    "create": "`await {name}.create(client, field=value, ...)`; to write an instance, `await instance.create(client)`",
     "get": "`await {name}.get(client, <key values>)`",
     "query": "`{name}.query(client, <partition key field>=value, ...)`",
+    "scan": "`{name}.scan(client)`",
 }
 
 

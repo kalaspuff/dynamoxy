@@ -8,6 +8,15 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+### Added
+
+- `Model.scan(client)` scans a model's items like `client.model(Model).scan()`, next to
+  `Model.get` and `Model.query`, and `await instance.create(client)` writes an instance built
+  already as a new item (`ItemAlreadyExistsError` when the key exists) and returns it, stored
+  and bound. [**breaking**] Fields can no longer be named `scan`: rename the field and keep the
+  stored name with `attribute_name="scan"`. mypy now reports wrong field values of
+  `Model.create(client, ...)` as `call-overload`.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

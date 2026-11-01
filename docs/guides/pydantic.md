@@ -82,7 +82,7 @@ Models can also share fields through an abstract `PydanticModel`
 their defaults and validators, as in pydantic.
 
 Fields cannot take the names of the model API (`key`, `to_item`, `create`, `get`, `query`,
-`save`, `update`, `delete`, ... as in [native models](modeling.md#names-to-avoid)): the class
+`scan`, `save`, `update`, `delete`, ... as in [native models](modeling.md#names-to-avoid)): the class
 raises `TypeError` when it is defined. When an existing model has such a field, give it another
 Python name and keep its name in pydantic's input and output with an alias, and in DynamoDB with
 `AttributeName`:
@@ -123,7 +123,7 @@ At runtime, class attributes are expression paths (`Customer.credit > 10`). Type
 pydantic's field types instead, so wrap them for static typing:
 
 ```python
-rich = await customers.scan().filter(dynamoxy.attr(Customer.credit) > 10).all()
+rich = await Customer.scan(client).filter(dynamoxy.attr(Customer.credit) > 10).all()
 await customers.update(customer, dynamoxy.attr(Customer.credit).add(Decimal(5)))
 ```
 

@@ -33,7 +33,15 @@ in one call:
 ada = await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
 # the same as: ada = await client.model(User).create(User(user_id="u1", ...))
 await ada.increment(User.visits)                      # `ada` is stored and bound
+
+bo = User(user_id="u2", email="bo@example.com", name="Bo")
+await bo.create(client)                               # an instance built already
 ```
+
+`user.create(client)` writes an instance you built (or got from elsewhere) as a new item, like
+`client.model(User).create(user)`: it returns the instance itself, now stored, with its automatic
+fields set, and bound to `client.model(User)`. It takes no field values and no condition; for a
+condition, use `client.model(User).create(user, condition=...)`.
 
 - The values are validated like constructor arguments, before any I/O, and type checkers
   check them like the constructor's: names, types and required fields.
@@ -83,8 +91,8 @@ await user.delete()                                   # users.delete(user)
   `refresh`), and so does every write (`create`, `put`, `save`, `update`, batch writes,
   transactions). An instance stays with the repository, and client, that last read or wrote it;
   transactions and batch writers keep that binding.
-- New instances are not bound until a repository writes them: `await users.create(user)` (or
-  `save`/`put`, or `User.create(client, ...)`) first. `copy()` results and unpickled instances
+- New instances are not bound until a repository writes them: `await user.create(client)` (or
+  `users.create(user)`, `save`/`put`, `User.create(client, ...)`) first. `copy()` results and unpickled instances
   are not bound either. Their methods raise `RuntimeError` before any I/O.
 - `add`, `increment` and `decrement` check the value against the attribute before any I/O, and
   type checkers check it too: `increment(User.name)` raises `TypeError`,

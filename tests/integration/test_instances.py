@@ -130,13 +130,71 @@ async def test_create_refuses_bad_arguments_before_any_io(client: dynamoxy.Clien
         with pytest.raises(TypeError, match=r"User\.create\(\) takes a dynamoxy\.Client first, got User: "):
             await User.create(user)  # type: ignore[arg-type,call-arg]
         with pytest.raises(
-            TypeError, match=r"takes field values as keyword arguments, got 1 positional: .*client\.model"
+            TypeError,
+            match=r"takes field values as keyword arguments, got 1 positional: .*`await instance\.create\(client\)`",
         ):
             await User.create(client, user)  # type: ignore[call-arg]
         with pytest.raises(TypeError, match="Base is not stored in a table"):
             await Base.create(client, pk="b1")
     assert usage.calls == 0
     assert await client.model(User).count() == 0
+
+
+async def test_instances_create_themselves(client: dynamoxy.Client) -> None:
+    await client.create_tables(User)
+    ada = User(user_id="u1", email="ada@example.com", name="Ada")
+    assert not ada.is_loaded
+    with dynamoxy.collect() as usage:
+        created = await ada.create(client)
+    assert_type(created, User)
+    assert created is ada, "the instance itself is written, stored and bound"
+    assert usage.calls == 1, "the item and its unique guard, in one transaction"
+    assert ada.is_loaded
+    assert re.fullmatch(r"[0-9a-f]{16}", ada.version or "")
+    assert ada.created_at is not None
+    assert await client.model(User).get_or_raise("u1") == ada
+    await ada.increment(User.visits)  # bound to client.model(User)
+    assert (await client.model(User).get_or_raise("u1")).visits == 1
+    with pytest.raises(dynamoxy.ItemAlreadyExistsError):
+        await User(user_id="u1", email="bo@example.com", name="Bo").create(client)
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await User(user_id="u2", email="ada@example.com", name="Bo").create(client)
+    with pytest.raises(dynamoxy.ItemAlreadyExistsError):
+        await ada.create(client)  # create never replaces, also for a loaded instance
+    assert await client.model(User).count() == 1
+
+
+async def test_instance_create_refuses_bad_arguments_before_any_io(client: dynamoxy.Client) -> None:
+    class Base(dynamoxy.Model, abstract=True):
+        pk: Attr[str] = partition_key()
+
+    await client.create_tables(User)
+    user = User(user_id="u1", email="ada@example.com", name="Ada")
+    with dynamoxy.collect() as usage:
+        with pytest.raises(
+            TypeError, match=r"User\.create\(\) of an instance takes a dynamoxy\.Client, got str: .*instance\.create"
+        ):
+            await user.create("db")  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            await user.create()  # type: ignore[call-overload]
+        with pytest.raises(TypeError):
+            await user.create(client, name="Bo")  # type: ignore[call-overload]
+        with pytest.raises(TypeError, match="Base is not stored in a table"):
+            await Base(pk="b1").create(client)
+    assert usage.calls == 0
+    assert not user.is_loaded
+
+
+async def test_pydantic_instances_create_themselves(client: dynamoxy.Client) -> None:
+    await client.create_tables(Account)
+    account = Account(account_id="a1", owner="Ada", handle="ada")
+    assert await account.create(client) is account
+    assert account.version is not None
+    assert account.is_loaded
+    await account.increment(dynamoxy.attr(Account.balance), 5)
+    assert (await Account.get(client, "a1")) == account
+    with pytest.raises(dynamoxy.UniqueConstraintError):
+        await Account(account_id="a2", owner="Bo", handle="ada").create(client)
 
 
 async def test_create_runs_save_hooks(client: dynamoxy.Client) -> None:
@@ -248,6 +306,47 @@ async def test_reads_from_the_model_refuse_bad_arguments_before_any_io(client: d
             await Base.get(client, "b1")
         with pytest.raises(TypeError, match="Base is not stored in a table"):
             Base.query(client, pk="b1")
+    assert usage.calls == 0
+
+
+async def test_models_scan_their_items(client: dynamoxy.Client) -> None:
+    await client.create_tables(Order, User, Account)
+    placed_at = datetime(2026, 10, 30, tzinfo=UTC)
+    for n in range(3):
+        await Order.create(client, customer_id=f"c{n}", order_id="o1", placed_at=placed_at, total=Decimal(n))
+    scan = Order.scan(client)
+    assert_type(scan, dynamoxy.Scan[Order])
+    orders = await scan.all()
+    assert sorted(order.customer_id for order in orders) == ["c0", "c1", "c2"]
+    assert all(order.is_loaded for order in orders)
+    big = await Order.scan(client, consistent=True).filter(Order.total >= 1).all()
+    assert sorted(order.customer_id for order in big) == ["c1", "c2"]
+    await big[0].update(Order.status.set(OrderStatus.PAID))  # bound to client.model(Order)
+    paid = await Order.scan(client, index=Order.by_status).all()
+    assert [order.customer_id for order in paid if order.status == OrderStatus.PAID] == [big[0].customer_id]
+    assert await Order.scan(client).count() == 3
+
+    await User.create(client, user_id="u1", email="ada@example.com", name="Ada")
+    assert [user.user_id for user in await User.scan(client).all()] == ["u1"], "guard items are not users"
+    await Account.create(client, account_id="a1", owner="Ada", handle="ada")
+    accounts = await Account.scan(client).all()
+    assert_type(accounts, list[Account])
+    assert [account.account_id for account in accounts] == ["a1"]
+
+
+async def test_scans_from_the_model_refuse_bad_arguments_before_any_io(client: dynamoxy.Client) -> None:
+    class Base(dynamoxy.Model, abstract=True):
+        pk: Attr[str] = partition_key()
+
+    with dynamoxy.collect() as usage:
+        with pytest.raises(
+            TypeError, match=r"User\.scan\(\) takes a dynamoxy\.Client first, got str: `User\.scan\(client\)`"
+        ):
+            User.scan("u1")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="User has no index 'by_nothing'"):
+            User.scan(client, index="by_nothing")
+        with pytest.raises(TypeError, match="Base is not stored in a table"):
+            Base.scan(client)
     assert usage.calls == 0
 
 

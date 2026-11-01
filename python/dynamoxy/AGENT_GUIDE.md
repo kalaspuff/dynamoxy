@@ -17,8 +17,9 @@ optimistic locking · transactions · single-table design · tables · the dict-
 1. **Create one `dynamoxy.Client` per process and share it.** It holds the connection pool,
    retries and metrics. Create it after `fork()` (worker processes create their own) and close it
    at shutdown (`async with client:` or `await client.close()`).
-2. **Reach models through the client.** `User.create(client, ...)`, `User.get(client, ...)`
-   and `User.query(client, ...)` create, read and query items; `client.model(User)` gives
+2. **Reach models through the client.** `User.create(client, ...)` (or
+   `await user.create(client)` for an instance), `User.get(client, ...)`, `User.query(client,
+   ...)` and `User.scan(client)` create, read, query and scan items; `client.model(User)` gives
    every typed operation (a `dynamoxy.Repository[User]`). Collect the queries of an aggregate
    in a subclass of `dynamoxy.Repository` instead of scattering raw calls. Instances a
    repository read or wrote write themselves through it: `await user.save()`,
@@ -348,8 +349,9 @@ many = await users.batch_get(["u1", "u2", "u3"])  # any number of keys; missing 
 
 Keys are given positionally (partition, then sort), by key field name, or by the fields a key
 template uses: `orders.get(customer_id="c1", order_id="o1")`. `User.key("u1")` builds a stored
-key for APIs that take one. `User.get(client, ...)` and `User.query(client, ...)` take the same
-arguments as the repository's `get` and `query`, after the client.
+key for APIs that take one. `User.get(client, ...)`, `User.query(client, ...)` and
+`User.scan(client)` take the same arguments as the repository's `get`, `query` and `scan`, after
+the client.
 
 Key values (of `get`, `query` and index queries, `User.key(...)`, writes by key) are validated
 like stored values: a normalizing validator applies (`field(validators=(str.lower,))` makes
@@ -426,6 +428,7 @@ an entity type or unique attributes (whose reads carry a filter dynamoxy adds).
 ```python
 async for user in users.scan().filter(User.visits > 100):  # reads the whole table
     ...
+busy = await User.scan(client).filter(User.visits > 100).all()  # the same from the model
 everyone = await users.scan().segments(4).all()  # parallel scan
 part = users.scan().segment(0, 8)  # one segment of a scan spread over workers
 ```
@@ -449,7 +452,7 @@ hatch for hand-written expressions.
 
 ```python
 user = await User.create(client, user_id="u2", email="bob@example.com", name="Bob")  # new key only
-# or, with an instance: user = await users.create(User(user_id="u2", ...))
+# or, with an instance: user = User(user_id="u2", ...); await user.create(client)
 await users.put(user)  # create or replace
 user.name = "Robert"
 await users.save(user)  # replace, but only if nobody changed it since it was loaded
@@ -477,7 +480,8 @@ fields a key template uses. Keys can be stored keys or field values
 `User.create(client, ...)` validates its values like the constructor (type checkers check
 them too) and writes through `client.model(User)`, a plain repository: code that relies on the
 overrides of a repository subclass calls the subclass's `create()`. The client comes first, so
-a field may be named `client`.
+a field may be named `client`. `await user.create(client)` writes an instance built already the
+same way and returns it, stored and bound.
 
 Every write of a repository takes `condition=`; when it does not hold,
 `ConditionalCheckFailedError` is raised with `.item` set to the stored item.
@@ -513,7 +517,7 @@ deleted = await user.delete()  # users.delete(user)
 missing lists). `add`, `increment` and `decrement` take nested paths too
 (`player.increment(Player.stats["wins"])`) and validate the value against the attribute before
 any I/O. New instances, `copy()` results and unpickled instances are not bound: write them with
-a repository first (`await users.create(user)`, or build and write in one call with
+a repository first (`await user.create(client)`, or build and write in one call with
 `User.create(client, ...)`); their methods raise `RuntimeError` before any I/O. Instance
 updates check the version of versioned models; update hot counters by key instead.
 

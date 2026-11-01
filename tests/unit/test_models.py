@@ -428,7 +428,7 @@ def test_fields_must_not_shadow_the_model_api() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["create", "get", "query", "save", "delete", "update", "add", "increment", "decrement", "refresh"]
+    "name", ["create", "get", "query", "scan", "save", "delete", "update", "add", "increment", "decrement", "refresh"]
 )
 def test_persistence_methods_are_part_of_the_model_api(name: str) -> None:
     namespace = {"__annotations__": {"pk": Attr[str], name: Attr[int]}, "pk": partition_key()}

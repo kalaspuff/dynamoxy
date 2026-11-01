@@ -9,13 +9,15 @@ user = await User.get(client, "u1")                           # None when missin
 order = await Order.get(client, customer_id="c1", order_id="o1", consistent=True)
 recent = await Order.query(client, customer_id="c1").descending().limit(10).all()
 ada = await User.query(client, index=User.by_email, email="ada@example.com").first()
+busy = await User.scan(client).filter(User.visits > 100).all()  # reads the whole table
 ```
 
-`User.get(client, ...)` is `client.model(User).get(...)` and `User.query(client, ...)` is
-`client.model(User).query(...)`: the same arguments, the same results, and instances bound to
-`client.model(User)`, so their `save()`, `update()` and `delete()` work. Type checkers know the
-results: `User | None` and `Query[User]`. Everything else on this page (`get_or_raise`,
-`batch_get`, `scan`, `count`, ...) is a method of the repository, `users = client.model(User)`,
+`User.get(client, ...)` is `client.model(User).get(...)`, `User.query(client, ...)` is
+`client.model(User).query(...)` and `User.scan(client)` is `client.model(User).scan()`: the
+same arguments, the same results, and instances bound to `client.model(User)`, so their
+`save()`, `update()` and `delete()` work. Type checkers know the results: `User | None`,
+`Query[User]` and `Scan[User]`. Everything else on this page (`get_or_raise`, `batch_get`,
+`count`, ...) is a method of the repository, `users = client.model(User)`,
 or of your own repository subclass. `client.model(User)` returns the same repository every time,
 so calling it where you need it costs a dictionary lookup.
 
@@ -163,7 +165,7 @@ Entries of an index with a `KEYS_ONLY` or `INCLUDE` projection hold only some at
 ## Scans
 
 ```python
-async for user in users.scan().filter(User.visits > 100):
+async for user in users.scan().filter(User.visits > 100):  # or User.scan(client).filter(...)
     ...
 total = await users.scan().count()
 everything = await users.scan().segments(8).all()        # parallel segments
