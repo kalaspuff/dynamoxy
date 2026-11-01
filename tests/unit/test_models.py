@@ -266,6 +266,29 @@ def test_schema_describes_the_model() -> None:
     assert schema_of(Order).entity == "Order"
 
 
+def test_projection_includes_fields_of_its_own_class_body() -> None:
+    class Thing(Model, table="things"):
+        pk: Attr[str] = partition_key()
+        kind: Attr[str] = field(default="")
+        name: Attr[str] = field(default="", attribute_name="nm")
+
+        by_kind = dynamoxy.GlobalIndex(partition_key=kind, projection=dynamoxy.Projection.include(name, "extra"))
+
+    assert schema_of(Thing).indexes["by_kind"].projection == dynamoxy.Projection.include("name", "extra")
+    assert dynamoxy.table.definitions_for([Thing])[0].indexes[0].projection.attributes == ("nm", "extra")
+    assert dynamoxy.Projection.include(Thing.name) == dynamoxy.Projection("INCLUDE", ("name",))
+
+
+def test_projection_refuses_a_field_that_is_never_declared() -> None:
+    class Thing(Model, table="things"):
+        pk: Attr[str] = partition_key()
+
+        by_pk = dynamoxy.GlobalIndex(partition_key=pk, projection=dynamoxy.Projection.include(field()))
+
+    with pytest.raises(TypeError, match=r"Thing: index 'by_pk': .* pass the field name as a string"):
+        schema_of(Thing)
+
+
 def test_schema_errors_are_explained() -> None:
     class NoKey(Model, table="broken"):
         name: Attr[str]

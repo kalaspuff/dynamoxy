@@ -90,6 +90,10 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   `BatchWriter` flush no longer requeues the writes of a request that failed: its
   `UnprocessedItemsError` reports them. Keys that `BatchGetItem` left for its 16 MB response limit
   are requested again at once, without backoff or a new round.
+- `Projection.include()` resolves fields of the class body that declares the index when the model's
+  schema is built, instead of reading their names at once: `Projection.include(name)` in the same
+  class as `name` included the empty attribute name `''` without an error. A field that is never
+  declared on a model class now raises `TypeError` saying to pass the field name as a string.
 
 ## [0.4.0] - 2026-10-31
 

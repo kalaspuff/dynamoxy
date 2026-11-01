@@ -196,6 +196,9 @@ class Projection:
 
     type: Literal["ALL", "KEYS_ONLY", "INCLUDE"] = "ALL"
     attributes: tuple[str, ...] = ()
+    # The arguments of include() while one of them is a field not yet bound to its name (a field
+    # of the class body that declares the index): the model's schema resolves them.
+    _pending: tuple[str | FieldPath[Any], ...] = field(default=(), compare=False, repr=False)
 
     @classmethod
     def all(cls) -> Projection:
@@ -209,11 +212,38 @@ class Projection:
 
     @classmethod
     def include(cls, *attributes: str | FieldPath[Any]) -> Projection:
-        """The keys plus ``attributes``."""
-        names = tuple(attribute if isinstance(attribute, str) else attribute.field_name for attribute in attributes)
-        if not names:
+        """The keys plus ``attributes``.
+
+        Fields may be given as class attributes, also those of the class body that declares the
+        index (their names are resolved with the model's schema).
+        """
+        if not attributes:
             raise ValueError("Projection.include() needs at least one attribute")
-        return cls("INCLUDE", names)
+        if any(not isinstance(attribute, str) and not attribute.field_name for attribute in attributes):
+            return cls("INCLUDE", (), attributes)
+        return cls("INCLUDE", tuple(_include_name(attribute) for attribute in attributes))
+
+    def resolved(self) -> Projection:
+        """This projection with every field given to :meth:`include` named.
+
+        Raises:
+            TypeError: A field is not declared on a model class.
+        """
+        if not self._pending:
+            return self
+        return Projection("INCLUDE", tuple(_include_name(attribute) for attribute in self._pending))
+
+
+def _include_name(attribute: str | FieldPath[Any]) -> str:
+    if isinstance(attribute, str):
+        return attribute
+    name = attribute.field_name
+    if not name:
+        raise TypeError(
+            "Projection.include() was given a field that is not declared on a model class: "
+            "pass the field name as a string"
+        )
+    return name
 
 
 class _IndexDeclaration:
@@ -818,6 +848,12 @@ class ModelSchema:
             )
         return spec
 
+    def _resolve_projection(self, projection: Projection, index: str) -> Projection:
+        try:
+            return projection.resolved()
+        except TypeError as error:
+            raise TypeError(f"{self.model.__name__}: index {index!r}: {error}") from None
+
     def _add_index(self, declaration: _IndexDeclaration) -> None:
         name = declaration.name
         if name is None:
@@ -838,7 +874,7 @@ class ModelSchema:
             kind=declaration.kind,
             partition_key=partition,
             sort_key=sort,
-            projection=declaration.projection,
+            projection=self._resolve_projection(declaration.projection, name),
             throughput=declaration.throughput,
         )
 
