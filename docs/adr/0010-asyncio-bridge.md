@@ -26,8 +26,14 @@ bridge, and every AWS call spent comparable CPU time on handoffs.
   they are handed to the runtime. When they finish there (no injected latency), the awaitable
   is a `Ready` object that yields to the event loop once, like real I/O, and then returns the
   result.
-* Cancelling the asyncio future aborts the Tokio task. A panic in a task becomes a
-  `DynamoxyError` on its future.
+* Results are built on the loop's thread for at most about a millisecond at a time
+  (`STEP_BUDGET`): the item lists of queries, scans, batch reads and PartiQL statements convert
+  in steps (`Deferred::in_steps`, `ItemsInSteps`). A drain stops when its budget is spent and
+  schedules itself again with `loop.call_soon`, so other tasks run between the steps of a large
+  result and between the results of many calls; a `Ready` awaitable yields between its steps.
+  Each step converts some items, so every result makes progress.
+* Cancelling the asyncio future aborts the Tokio task, or drops a result that is being
+  converted. A panic in a task becomes a `DynamoxyError` on its future.
 * A port holds the futures of its pending calls, which keeps tasks that nobody references alive
   while they wait (as a transport does for real I/O). Creating a port releases the pending
   calls of ports whose loop is closed, as asyncio drops a closed loop's callbacks; otherwise a
@@ -37,7 +43,9 @@ bridge, and every AWS call spent comparable CPU time on handoffs.
 
 * An in-memory call costs a few microseconds instead of 50-80 µs; AWS calls save the handoffs
   and the GIL contention. `pyo3-async-runtimes` is no longer a dependency.
-* Results are converted on the loop's thread, which holds the GIL anyway.
+* Results are converted on the loop's thread, which holds the GIL anyway, and a large result
+  stalls the loop for about a millisecond at a time instead of for its whole conversion (a page
+  of 20,000 items took 15-20 ms in one go). The total CPU time stays the same.
 * Awaitables of in-memory calls are not always `asyncio.Future`s (they are awaitables, as the
   stubs declare). Every call, in memory or not, still yields to the event loop at least once.
 * The bridge holds weak references to loops and ports; it relies on loops supporting weak
