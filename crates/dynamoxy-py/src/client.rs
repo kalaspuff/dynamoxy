@@ -7,13 +7,13 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dynamoxy_core::backend::memory::{Fault, FaultKind, MemoryBackend};
 use dynamoxy_core::events::{Event, EventKind};
 use dynamoxy_core::metrics::LATENCY_BUCKETS_MS;
 use dynamoxy_core::types::*;
-use dynamoxy_core::{Call, Client, ClientConfig};
+use dynamoxy_core::{Call, Client, ClientConfig, Item};
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::intern;
@@ -22,9 +22,9 @@ use pyo3::types::{PyDict, PyList, PyString};
 use pythonize::depythonize;
 
 use crate::convert::{
-    PyItem, PyStrMap, PyValueList, PyValues, as_dict, backup_description, backup_details, backup_summary, capacities,
-    collection_metrics, collection_metrics_map, continuous_backups, items_to_py, keys_and_attributes,
-    optional_capacity, optional_item, py_to_item, stats, table_description, ttl_to_py, write_request_to_py,
+    ItemsInSteps, PyItem, PyStrMap, PyValueList, PyValues, as_dict, backup_description, backup_details, backup_summary,
+    capacities, collection_metrics, collection_metrics_map, continuous_backups, keys_and_attributes, optional_capacity,
+    optional_item, py_to_item, stats, table_description, ttl_to_py, write_request_to_py,
 };
 use crate::errors::{ConfigurationError, ShutdownError, ValidationError, call_error_in, error_in, to_py_err};
 use crate::runtime::{Deferred, future_into_py, future_into_py_in, future_into_py_inline};
@@ -75,6 +75,32 @@ fn finish<T: Send + 'static>(
     })
 }
 
+/// [`finish`] for outputs that hold lists of items: `lists` takes them out of the output, and
+/// they are converted in steps (see [`Deferred::in_steps`]) before `convert` builds the rest
+/// with the converted lists, in the same order.
+fn finish_in_steps<T: Send + 'static>(
+    call: Call<T>,
+    lists: impl FnOnce(&mut T) -> Vec<Vec<Item>>,
+    convert: impl for<'py> FnOnce(Python<'py>, Vec<Bound<'py, PyList>>, T) -> PyResult<Py<PyAny>> + Send + 'static,
+) -> Deferred {
+    let call_stats = call.stats;
+    let mut output = match call.result {
+        Ok(output) => output,
+        Err(error) => return Deferred::new(move |py| Err(call_error_in(py, error, &call_stats))),
+    };
+    let mut items = ItemsInSteps::new(lists(&mut output));
+    let mut rest = Some((output, convert));
+    Deferred::in_steps(move |py: Python<'_>, deadline: Instant| {
+        let lists = match items.step(py, deadline) {
+            Ok(Some(lists)) => lists,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+        let (output, convert) = rest.take()?;
+        Some(convert(py, lists, output).and_then(|value| (value, stats(&call_stats)).into_py_any(py)))
+    })
+}
+
 /// The error that left requests of a managed batch unprocessed, as an exception object, or `None`.
 fn batch_error(py: Python<'_>, error: Option<dynamoxy_core::Error>) -> Bound<'_, PyAny> {
     match error {
@@ -103,11 +129,17 @@ fn write_output(py: Python<'_>, output: WriteItemOutput) -> PyResult<Py<PyAny>> 
     )
 }
 
-fn query_output(py: Python<'_>, output: QueryOutput) -> PyResult<Py<PyAny>> {
+/// A `Query` or `Scan` page, its items converted in steps.
+fn finish_query(call: Call<QueryOutput>) -> Deferred {
+    finish_in_steps(call, |output| vec![std::mem::take(&mut output.items)], query_output)
+}
+
+fn query_output(py: Python<'_>, mut lists: Vec<Bound<'_, PyList>>, output: QueryOutput) -> PyResult<Py<PyAny>> {
+    let items = lists.pop().unwrap_or_else(|| PyList::empty(py));
     dict(
         py,
         &[
-            (intern!(py, "items"), items_to_py(py, &output.items)?.into_any()),
+            (intern!(py, "items"), items.into_any()),
             (intern!(py, "count"), output.count.into_pyobject(py)?.into_any()),
             (intern!(py, "scanned_count"), output.scanned_count.into_pyobject(py)?.into_any()),
             (intern!(py, "last_evaluated_key"), optional_item(py, output.last_evaluated_key.as_ref())?),
@@ -326,11 +358,26 @@ fn write_request(kind: &str, item: &Bound<'_, PyAny>) -> PyResult<WriteRequest> 
     }
 }
 
-fn batch_get_output(py: Python<'_>, output: BatchGetItemOutput) -> PyResult<Py<PyAny>> {
+/// The items of each table of a `BatchGetItem` answer, taken out (to convert in steps).
+fn take_responses(responses: &mut BTreeMap<String, Vec<Item>>) -> Vec<Vec<Item>> {
+    responses.values_mut().map(std::mem::take).collect()
+}
+
+/// Tables with their converted items (in the order of [`take_responses`]).
+fn responses_dict<'py>(
+    py: Python<'py>,
+    tables: &BTreeMap<String, Vec<Item>>,
+    lists: Vec<Bound<'py, PyList>>,
+) -> PyResult<Bound<'py, PyDict>> {
     let responses = PyDict::new(py);
-    for (table, items) in &output.responses {
-        responses.set_item(table, items_to_py(py, items)?)?;
+    for (table, items) in tables.keys().zip(lists) {
+        responses.set_item(table, items)?;
     }
+    Ok(responses)
+}
+
+fn batch_get_output(py: Python<'_>, lists: Vec<Bound<'_, PyList>>, output: BatchGetItemOutput) -> PyResult<Py<PyAny>> {
+    let responses = responses_dict(py, &output.responses, lists)?;
     let unprocessed = PyDict::new(py);
     for (table, keys) in &output.unprocessed_keys {
         unprocessed.set_item(table, keys_and_attributes(py, keys)?)?;
@@ -705,7 +752,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        self.run(py, async move { finish(client.query(input).await, query_output) })
+        self.run(py, async move { finish_query(client.query(input).await) })
     }
 
     /// `Scan` (one page).
@@ -748,7 +795,7 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        self.run(py, async move { finish(client.scan(input).await, query_output) })
+        self.run(py, async move { finish_query(client.scan(input).await) })
     }
 
     /// `BatchGetItem`: one request (at most 100 keys). See `batch_get` for any number of keys.
@@ -771,7 +818,13 @@ impl PyCoreClient {
                 "return_consumed_capacity"
             )?,
         };
-        self.run(py, async move { finish(client.batch_get_item(input).await, batch_get_output) })
+        self.run(py, async move {
+            finish_in_steps(
+                client.batch_get_item(input).await,
+                |output| take_responses(&mut output.responses),
+                batch_get_output,
+            )
+        })
     }
 
     /// `BatchWriteItem`: one request (at most 25 writes) of `("put", item)` / `("delete", key)`
@@ -843,25 +896,27 @@ impl PyCoreClient {
         let request_items = request_items.into_iter().map(|(table, keys)| (table, keys.into_core())).collect();
         let capacity = constant!(return_consumed_capacity, ReturnConsumedCapacity, "return_consumed_capacity")?;
         self.run(py, async move {
-            finish(client.batch_get(request_items, capacity).await, |py, output| {
-                let items = PyDict::new(py);
-                for (table, found) in &output.items {
-                    items.set_item(table, items_to_py(py, found)?)?;
-                }
-                let unprocessed = PyDict::new(py);
-                for (table, keys) in &output.unprocessed {
-                    unprocessed.set_item(table, keys_and_attributes(py, keys)?)?;
-                }
-                dict(
-                    py,
-                    &[
-                        (intern!(py, "items"), items.into_any()),
-                        (intern!(py, "unprocessed_keys"), unprocessed.into_any()),
-                        (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
-                        (intern!(py, "error"), batch_error(py, output.error)),
-                    ],
-                )
-            })
+            let output = client.batch_get(request_items, capacity).await;
+            finish_in_steps(
+                output,
+                |output| take_responses(&mut output.items),
+                |py, lists, output| {
+                    let items = responses_dict(py, &output.items, lists)?;
+                    let unprocessed = PyDict::new(py);
+                    for (table, keys) in &output.unprocessed {
+                        unprocessed.set_item(table, keys_and_attributes(py, keys)?)?;
+                    }
+                    dict(
+                        py,
+                        &[
+                            (intern!(py, "items"), items.into_any()),
+                            (intern!(py, "unprocessed_keys"), unprocessed.into_any()),
+                            (intern!(py, "consumed_capacity"), capacities(py, &output.consumed_capacity)?.into_any()),
+                            (intern!(py, "error"), batch_error(py, output.error)),
+                        ],
+                    )
+                },
+            )
         })
     }
 
@@ -1016,17 +1071,26 @@ impl PyCoreClient {
             )?,
         };
         self.run(py, async move {
-            finish(client.execute_statement(input).await, |py, output| {
-                dict(
-                    py,
-                    &[
-                        (intern!(py, "items"), items_to_py(py, &output.items)?.into_any()),
-                        (intern!(py, "next_token"), output.next_token.into_pyobject(py)?.into_any()),
-                        (intern!(py, "last_evaluated_key"), optional_item(py, output.last_evaluated_key.as_ref())?),
-                        (intern!(py, "consumed_capacity"), optional_capacity(py, output.consumed_capacity.as_ref())?),
-                    ],
-                )
-            })
+            let output = client.execute_statement(input).await;
+            finish_in_steps(
+                output,
+                |output| vec![std::mem::take(&mut output.items)],
+                |py, mut lists, output| {
+                    let items = lists.pop().unwrap_or_else(|| PyList::empty(py));
+                    dict(
+                        py,
+                        &[
+                            (intern!(py, "items"), items.into_any()),
+                            (intern!(py, "next_token"), output.next_token.into_pyobject(py)?.into_any()),
+                            (intern!(py, "last_evaluated_key"), optional_item(py, output.last_evaluated_key.as_ref())?),
+                            (
+                                intern!(py, "consumed_capacity"),
+                                optional_capacity(py, output.consumed_capacity.as_ref())?,
+                            ),
+                        ],
+                    )
+                },
+            )
         })
     }
 

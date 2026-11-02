@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::time::Instant;
 
 use dynamoxy_core::types::{
     BackupDescription, BackupDetails, BackupSummary, Capacity, ConsumedCapacity, ContinuousBackupsDescription,
@@ -471,6 +472,66 @@ pub fn items_to_py<'py>(py: Python<'py>, items: &[Item]) -> PyResult<Bound<'py, 
         list.append(convert.item(item)?)?;
     }
     Ok(list)
+}
+
+/// How many items [`ItemsInSteps`] converts between two looks at the clock.
+const ITEMS_PER_CHECK: usize = 32;
+
+/// Up to how many converted items [`ItemsInSteps`] frees on the event loop's thread.
+const FREED_HERE: usize = 1_000;
+
+/// Lists of items converted to Python lists a bounded amount at a time, for outcomes built in
+/// steps (`runtime::Deferred::in_steps`): a page of thousands of items does not hold the event
+/// loop for its whole conversion.
+pub struct ItemsInSteps {
+    lists: Vec<Vec<Item>>,
+    /// The list being converted, and how many of its items are.
+    list: usize,
+    done: usize,
+    built: Vec<Py<PyList>>,
+}
+
+impl ItemsInSteps {
+    /// Lists to convert, in order.
+    pub fn new(lists: Vec<Vec<Item>>) -> Self {
+        Self { lists, list: 0, done: 0, built: Vec::new() }
+    }
+
+    /// Converts items until every list is converted (returning them) or `deadline` has passed
+    /// (`None`; call it again). Each call converts some items, so that steps make progress.
+    pub fn step<'py>(&mut self, py: Python<'py>, deadline: Instant) -> PyResult<Option<Vec<Bound<'py, PyList>>>> {
+        let mut converted = false;
+        while self.list < self.lists.len() {
+            if self.built.len() == self.list {
+                self.built.push(PyList::empty(py).unbind());
+            }
+            let target = self.built[self.list].bind(py);
+            let items = &self.lists[self.list];
+            // Names and decimals are shared between the items of one step.
+            let mut convert = ToPython::new(py, items.len() - self.done > 1);
+            while self.done < items.len() {
+                if converted && Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                let end = (self.done + ITEMS_PER_CHECK).min(items.len());
+                for item in &items[self.done..end] {
+                    target.append(convert.item(item)?)?;
+                }
+                self.done = end;
+                converted = true;
+            }
+            self.list += 1;
+            self.done = 0;
+        }
+        // Freeing thousands of items takes milliseconds (more when the allocator returns their
+        // memory to the system), which the event loop's thread need not spend; a few are freed
+        // here, which costs less than handing them over.
+        let lists = std::mem::take(&mut self.lists);
+        if lists.iter().map(Vec::len).sum::<usize>() > FREED_HERE {
+            crate::runtime::drop_elsewhere(lists);
+        }
+        Ok(Some(std::mem::take(&mut self.built).into_iter().map(|list| list.into_bound(py)).collect()))
+    }
 }
 
 /// A dict argument holding attribute values (`item`, `key`, `exclusive_start_key`).
