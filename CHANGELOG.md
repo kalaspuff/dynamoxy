@@ -8,6 +8,8 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
 ### Added
 
 - `Model.scan(client)` scans a model's items like `client.model(Model).scan()`, next to
@@ -46,6 +48,22 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - A call on a new event loop no longer fails now and then with `RuntimeError: dictionary changed
   size during iteration` on Python 3.12-3.14 while another thread makes its first call on a loop
   of its own.
+
+### Features
+
+- **models:** [**breaking**] Model.scan(client), and instances create themselves with instance.create(client) (#225)
+- **streams:** Decode DynamoDB Streams records into models (#228)
+- **query:** Prefetch() requests the next pages of a query or scan ahead (#232)
+
+### Bug fixes
+
+- **runtime:** Registering a new event loop no longer races other threads (#233)
+
+### Performance
+
+- **models:** Generate a decoder per model and skip repeated work on writes (#229)
+- **binding:** Convert wire items in one pass, and Decimals and service errors faster (#230)
+- **runtime:** Convert large results in steps, letting other tasks run in between (#231)
 
 ## [0.5.0] - 2026-11-01
 
