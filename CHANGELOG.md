@@ -34,9 +34,6 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - `Model.from_item()` (and `PydanticModel.from_item()`) refuse guard items of unique values and
   items whose type attribute names another model of the table with an `ItemDecodeError` that
   says so, instead of failing on missing fields or decoding another entity's item.
-
-### Changed
-
 - `dynamoxy.from_wire()` and `dynamoxy.to_wire()` return attributes and map members in the order
   they are given, as boto3's `TypeDeserializer` does, instead of sorted by name, and reuse the
   given `str` objects; they convert in about a third less time.
