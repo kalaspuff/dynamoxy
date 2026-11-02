@@ -76,6 +76,16 @@ async def test_writes_whose_returned_item_does_not_decode_say_they_were_applied(
     assert await accounts.table.get({"account_id": "a1"}) is None
 
 
+async def test_updates_of_instances_whose_returned_item_does_not_decode_say_they_were_applied(
+    accounts: dynamoxy.Repository[Account],
+) -> None:
+    account = await accounts.create(Account(account_id="a1"))
+    await accounts.table.put({"account_id": "a1", "credits": Decimal("2.5")})  # another writer
+    with pytest.raises(dynamoxy.ItemDecodeError, match="the update was applied"):
+        await account.update(Account.note.set("checked"))
+    assert (await accounts.table.get({"account_id": "a1"}) or {})["note"] == "checked"
+
+
 class Device(Model, table="decoding-devices"):
     pk: Attr[str] = partition_key(template="DEVICE#{device_id}")
     day: Attr[date] = sort_key()

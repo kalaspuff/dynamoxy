@@ -31,7 +31,6 @@ from dynamoxy.codecs import (
     Codec,
     DateTimeCodec,
     DecimalCodec,
-    FloatCodec,
     IntCodec,
     OptionalCodec,
     _check_datetime_format,
@@ -775,7 +774,9 @@ class ModelSchema:
         self._key_identity: Callable[[Mapping[str, Any]], Any] = (
             operator.itemgetter(*attributes) if attributes else lambda _: ()
         )
-        if any(isinstance(_inner_codec(spec.codec), FloatCodec) for spec in self._key_specs):
+        # Number keys may hold floats where stored keys hold Decimals: a raw key a caller gives
+        # ({"n": 0.1}) is the item DynamoDB returns as Decimal("0.1").
+        if any(spec.codec.key_type() == "N" for spec in self._key_specs):
             self._key_identity = lambda key: tuple(_float_key(key[attribute]) for attribute in attributes)
         self._immutable: tuple[FieldSpec, ...] = tuple(
             spec for spec in fields if spec.immutable and spec.role is None and spec.template is None
@@ -808,8 +809,18 @@ class ModelSchema:
         self._decoders: dict[str, tuple[str, Callable[[Any], Any] | None, type | None]] = {
             spec.attribute: (spec.name, *_decoding(spec.codec)) for spec in fields
         }
+        # The values of a stored item's fields in one pass, or None when the item needs the slow path of
+        # `_decode` (an attribute that does not decode, a required attribute missing), which reports why.
+        self._values_of: Callable[[Mapping[str, Any]], dict[str, Any] | None] = _compile_decoder(
+            self.model.__name__, fields
+        )
         self._load_stored: Callable[[dict[str, Any], dict[str, Any], Repository[Any] | None], Any] | None = getattr(
             self.adapter, "load_stored", None
+        )
+        # Sets an instance's fields and stored item at once (adapters whose instances take decoded
+        # values as they are: native models).
+        self._load_into: Callable[[Any, dict[str, Any], dict[str, Any], Repository[Any] | None], None] | None = getattr(
+            self.adapter, "load_into", None
         )
         # (name, settable in the constructor, spec, check of non-None values) in field order.
         self._init_plan: tuple[tuple[str, bool, FieldSpec, Callable[[Any], Any]], ...] = tuple(
@@ -1012,6 +1023,37 @@ class ModelSchema:
 
         ``repository`` is the repository that read the item (``None`` for :meth:`decode`).
         """
+        values = self._values_of(item)
+        if values is None:
+            values = self._decoded_values(item)
+        try:
+            load_stored = self._load_stored
+            if load_stored is not None:
+                return load_stored(values, stored, repository)
+            instance = self.adapter.load(values)
+        except ItemDecodeError:
+            raise
+        except Exception as cause:
+            raise ItemDecodeError(
+                f"cannot decode {self.model.__name__}: {cause}",
+                model=self.model,
+                key=self.key_values(item) if self.is_table else None,
+            ) from cause
+        state = self.adapter.state(instance)
+        if state is not None:
+            state.stored = stored
+            state.repository = repository
+        return instance
+
+    def _decoded_values(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """The field values of a stored item, the slow way: every problem is reported.
+
+        The decoder generated per model (``_values_of``) gives the same values in one pass, and
+        hands items it cannot decode to this.
+
+        Raises:
+            ItemDecodeError: The item does not fit the model.
+        """
         values: dict[str, Any] = {}
         errors: list[FieldError] = []
         decoders = self._decoders
@@ -1055,24 +1097,7 @@ class ModelSchema:
             )
             error.errors = tuple(errors)
             raise error
-        load_stored = self._load_stored
-        if load_stored is not None:
-            return load_stored(values, stored, repository)
-        try:
-            instance = self.adapter.load(values)
-        except Exception as cause:
-            if isinstance(cause, ItemDecodeError):
-                raise
-            raise ItemDecodeError(
-                f"cannot decode {self.model.__name__}: {cause}",
-                model=self.model,
-                key=self.key_values(item) if self.is_table else None,
-            ) from cause
-        state = self.adapter.state(instance)
-        if state is not None:
-            state.stored = stored
-            state.repository = repository
-        return instance
+        return values
 
     def validate(self, instance: Any) -> None:
         """Validates every field and the model validators.
@@ -1144,13 +1169,17 @@ class ModelSchema:
         writes use it as stored.
         """
         stored_key = self.key_values(stored)
-        if stored_identity(stored_key) == stored_identity(self.key_values(key)):
+        expected = self.key_values(key)
+        # Values of these exact types are equal when DynamoDB's are (the common case: no stored_identity).
+        if stored_key == expected and all(value.__class__ in _PLAIN_KEY_TYPES for value in stored_key.values()):
+            return stored_key
+        if stored_identity(stored_key) == stored_identity(expected):
             return stored_key
         try:
             rendered = self._key_from_values(self.decode_values(stored))
         except (ValueError, TypeError, ArithmeticError):
             return None
-        return stored_key if stored_identity(rendered) == stored_identity(self.key_values(key)) else None
+        return stored_key if stored_identity(rendered) == stored_identity(expected) else None
 
     def _key_from_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
         key: dict[str, Any] = {}
@@ -1247,6 +1276,9 @@ class ModelSchema:
         return value, remaining
 
 
+#: Key value types whose ``==`` agrees with :func:`stored_identity` (exact types: not ``bool``, ``float``).
+_PLAIN_KEY_TYPES = frozenset({str, bytes, int, Decimal})
+
 #: DynamoDB types of values that cannot be unique.
 _COLLECTION_TYPES = frozenset({"SS", "NS", "BS", "L", "M"})
 
@@ -1292,6 +1324,62 @@ def _decoding(codec: Codec[Any]) -> tuple[Callable[[Any], Any] | None, type | No
     if _decodes_unchanged(inner):  # also when optional: None decodes to None
         return None, None
     return _decoder(codec), _UNCHANGED.get(type(inner))
+
+
+#: What the generated decoders catch: the errors that :meth:`ModelSchema._decoded_values` reports.
+_DECODE_ERRORS = (ValueError, TypeError, ArithmeticError)
+
+
+def _compile_decoder(model: str, fields: Iterable[FieldSpec]) -> Callable[[Mapping[str, Any]], dict[str, Any] | None]:
+    """A function that decodes the field values of a stored item in one pass, generated for ``fields``.
+
+    It walks the fields rather than the item, and applies what :meth:`ModelSchema._decoded_values`
+    does for each of them (skipping the decode function for values of its unchanged type, and the
+    missing-attribute rule of :meth:`FieldSpec.empty`), with every decision taken here once instead
+    of per item. It returns ``None`` for an item it cannot decode (an attribute that does not decode,
+    a required attribute missing), and the slow path then reports every problem: messages and errors
+    stay the same. Names are written into the source with ``repr()``, and every function and type
+    is a parameter of the generated code, as dataclasses do.
+    """
+    namespace: dict[str, Any] = {"MISSING": MISSING, "_Errors": _DECODE_ERRORS}
+    lines = ["def values_of(item):", "    get = item.get", "    values = {}", "    try:"]
+    for position, spec in enumerate(fields):
+        decode, unchanged = _decoding(spec.codec)
+        name, attribute = repr(spec.name), repr(spec.attribute)
+        if decode is None:
+            present = "raw"
+        else:
+            namespace[f"d{position}"] = decode
+            if unchanged is None:
+                present = f"d{position}(raw)"
+            else:
+                namespace[f"u{position}"] = unchanged
+                present = f"raw if raw.__class__ is u{position} else d{position}(raw)"
+        lines += [
+            f"        raw = get({attribute}, MISSING)",
+            "        if raw is not MISSING:",
+            f"            values[{name}] = {present}",
+        ]
+        # Missing attributes, as `_decoded_values` reads them (None and empty sets are stored as no
+        # attribute; other fields read their default).
+        empty = spec.empty()
+        if empty is None:
+            lines += ["        else:", f"            values[{name}] = None"]
+        elif empty is not MISSING:
+            namespace[f"e{position}"] = spec.codec.decode  # a new empty set per item
+            lines += ["        else:", f"            values[{name}] = e{position}(None)"]
+        elif spec.default_factory_takes_data:
+            pass  # pydantic calls it with the validated data, in declaration order
+        elif spec.has_default:
+            namespace[f"i{position}"] = spec.initial
+            lines += ["        else:", f"            values[{name}] = i{position}()"]
+        else:
+            lines += ["        else:", "            return None"]
+    lines += ["        pass", "    except _Errors:", "        return None", "    return values"]
+    exec("\n".join(lines), namespace)  # noqa: S102 - generated from field names written with repr()
+    function = namespace["values_of"]
+    function.__qualname__ = f"{model}.values_of"
+    return function
 
 
 def schema_of(model: type) -> ModelSchema:
@@ -1431,6 +1519,12 @@ def _ttl_codec(codec: Codec[Any], where: str) -> Codec[Any]:
     raise TypeError(f"{where}: a TTL field must be a datetime or an int (epoch seconds), not {codec.describe()}")
 
 
+#: Base classes of models that declare no hooks or validators (``Document``, ``Model``,
+#: ``BaseModel``, ...): :func:`collect_hooks` skips their attributes. The modules that define them
+#: add them.
+LIBRARY_BASES: set[type] = {object}
+
+
 def collect_hooks(model: type) -> tuple[list[Callable[[Any], None]], dict[HookPoint, list[Callable[..., Any]]]]:
     """Validators and lifecycle hooks declared on a model class (and its bases)."""
     import inspect
@@ -1438,7 +1532,11 @@ def collect_hooks(model: type) -> tuple[list[Callable[[Any], None]], dict[HookPo
     validators: list[Callable[[Any], None]] = []
     hooks: dict[HookPoint, list[Callable[..., Any]]] = {point: [] for point in HOOK_POINTS}
     # Every attribute name, base classes first; the most derived definition wins (like lookup).
-    names = dict.fromkeys(name for klass in reversed(model.__mro__) for name in vars(klass))
+    # The library's own base classes declare no hooks: only names that models define are looked
+    # up (a model that redefines one of their names still has it in its own namespace).
+    names = dict.fromkeys(
+        name for klass in reversed(model.__mro__) if klass not in LIBRARY_BASES for name in vars(klass)
+    )
     for name in names:
         value = inspect.getattr_static(model, name)
         function = value.__func__ if isinstance(value, (classmethod, staticmethod)) else value

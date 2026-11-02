@@ -52,6 +52,7 @@ from dynamoxy.attributes import (
 from dynamoxy.codecs import DateTimeCodec, UseCodec
 from dynamoxy.models import _STATE, _Persistence
 from dynamoxy.schema import (
+    LIBRARY_BASES,
     ModelOptions,
     ModelSchema,
     ModelState,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
     from dynamoxy.codecs import DateTimeFormat
+    from dynamoxy.repository import Repository
 
 __all__ = ["PydanticModel", "build_plain_schema"]
 
@@ -80,6 +82,8 @@ class PydanticAdapter:
 
     def __init__(self, model: type[BaseModel]) -> None:
         self.model = model
+        # Plain pydantic models (nested documents) have no persistence state.
+        self._tracks_state = issubclass(model, PydanticModel)
 
     def get(self, instance: Any, name: str) -> Any:
         return instance.__dict__.get(name)
@@ -99,6 +103,23 @@ class PydanticAdapter:
             return self.model.model_validate(values)
         except PydanticValidationError as error:
             raise _without_inputs(error) from None
+
+    def load_stored(self, values: dict[str, Any], stored: dict[str, Any], repository: Repository[Any] | None) -> Any:
+        """``load``, recording ``stored`` as the instance's stored item read by ``repository``.
+
+        One step per item: pydantic's validator builds the instance, and its state goes straight
+        into ``__dict__`` (where :meth:`state` finds it).
+
+        Raises:
+            ValueError: Pydantic refused the values (the message leaves out the input values).
+        """
+        try:
+            instance = self.model.__pydantic_validator__.validate_python(values)
+        except PydanticValidationError as error:
+            raise _without_inputs(error) from None
+        if self._tracks_state:
+            instance.__dict__[_STATE] = ModelState(stored, repository)
+        return instance
 
     def state(self, instance: Any) -> ModelState | None:
         if not isinstance(instance, PydanticModel):
@@ -490,3 +511,6 @@ class PydanticModel(BaseModel, _Persistence, metaclass=_ModelMetaclass):
 _MODEL_API = frozenset(
     name for klass in (PydanticModel, _Persistence) for name in vars(klass) if not name.startswith(("_", "model_"))
 )
+
+
+LIBRARY_BASES.update((BaseModel, PydanticModel))
