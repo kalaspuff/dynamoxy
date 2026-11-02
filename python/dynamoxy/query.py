@@ -490,9 +490,19 @@ class _Reader[T]:
         ahead = _ReadAhead(self, start, remaining, self._prefetch) if self._prefetch else None
         try:
             while True:
-                output = await ahead.next() if ahead is not None else None
+                request = self._request_limit(remaining, growth)
+                output = None
+                if ahead is not None:
+                    taken = await ahead.next()
+                    if taken is not None and taken[0] == request:
+                        output = taken[1]
+                    elif taken is not None:
+                        # Checks on the client removed items, so this request asks for another
+                        # Limit than the page needs: the pages would differ. Read one by one.
+                        await ahead.close()
+                        ahead = None
                 if output is None:  # no read-ahead, or it stopped: the request is made here
-                    output = await self._request(start, self._request_limit(remaining, growth))
+                    output = await self._request(start, request)
                 page, entries = await self._page_of(output)
                 if remaining is not None and len(page.items) >= remaining:
                     yield await self._truncate(page, entries, remaining) if len(page.items) > remaining else page
@@ -666,8 +676,10 @@ class _ReadAhead:
     key, at most ``depth`` ahead of the page the reader works on: a slot is taken for each
     request, and the reader frees one when it asks for its next page. The task stops at the
     last page, after an error (which the reader raises when it reaches it), and when the items
-    returned reach the read's limit; when checks on the client removed items, the reader makes
-    the requests that follow itself.
+    returned reach the read's limit. It counts the items requests return, where the reader
+    counts those left after its checks on the client (``where()`` prefixes, hydrated items
+    deleted meanwhile): the reader uses an answer only when its request had the ``Limit`` the
+    reader would have sent, and makes the requests itself otherwise.
     """
 
     def __init__(self, reader: _Reader[Any], start: dict[str, Any] | None, remaining: int | None, depth: int) -> None:
@@ -682,8 +694,9 @@ class _ReadAhead:
         try:
             while True:
                 await self._slots.acquire()
-                output = await reader._request(start, reader._request_limit(remaining, growth))
-                self._outputs.put_nowait(("output", output))
+                limit = reader._request_limit(remaining, growth)
+                output = await reader._request(start, limit)
+                self._outputs.put_nowait(("output", (limit, output)))
                 last, count = output["last_evaluated_key"], len(output["items"])
                 if last is None:
                     break
@@ -701,8 +714,8 @@ class _ReadAhead:
             return
         self._outputs.put_nowait(("end", None))
 
-    async def next(self) -> dict[str, Any] | None:
-        """The output of the next request, or ``None`` once the requests ahead stopped.
+    async def next(self) -> tuple[int | None, dict[str, Any]] | None:
+        """The ``Limit`` and the output of the next request, or ``None`` once the requests ahead stopped.
 
         Raises:
             Exception: The error of the next request.

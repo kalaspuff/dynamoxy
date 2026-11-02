@@ -54,6 +54,18 @@ async def test_reads_ahead_keep_limits_filters_and_cursors(events: dynamoxy.Repo
     assert [event.seq for event in page.items] + rest == list(range(9))
 
 
+async def test_reads_ahead_give_the_same_pages_when_checks_on_the_client_remove_items(
+    events: dynamoxy.Repository[Event],
+) -> None:
+    even = events.query(stream="s").page_size(4)._replace(checks=(lambda item: item["seq"] % 2 == 0,))
+    for limit in (5, 2, None):
+        reader = even.limit(limit) if limit is not None else even
+        expected = await pages_of(reader)
+        assert [seq for seqs, _ in expected for seq in seqs] == [0, 2, 4, 6, 8][:limit]
+        assert await pages_of(reader.prefetch()) == expected
+        assert await pages_of(reader.prefetch(3)) == expected
+
+
 async def test_prefetch_needs_a_page() -> None:
     async with testing.memory_client() as client:
         with pytest.raises(ValueError, match="at least 1 page"):
