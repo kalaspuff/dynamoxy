@@ -423,6 +423,11 @@ can be empty while `cursor` is set. `pages()` cuts its last page at the limit, w
 after the page's last item. `first()` and `limit()` read only what they need, also for models with
 an entity type or unique attributes (whose reads carry a filter dynamoxy adds).
 
+`.prefetch(pages=1)` makes iteration, `pages()` and `all()` request up to `pages` pages ahead, so
+the next round trip overlaps with decoding, hydration and your loop's work (exports, backfills,
+migrations). Results, cursors and errors are the same; a read that stops early may have read up to
+`pages` pages for nothing.
+
 ### Scans
 
 ```python

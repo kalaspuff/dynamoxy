@@ -147,6 +147,10 @@ applied, so none of this makes `commit()` raise.
    model instances (`after_load` hooks run), or hydrated with `BatchGetItem`: entries of a
    global index that does not hold every field are never decoded into instances, and reads of
    such a local index ask for every attribute (`Select=ALL_ATTRIBUTES`).
+   With `prefetch(n)`, a task (`_ReadAhead`) sends the requests of the next pages, at most `n`
+   ahead of the page being read, while the reader hydrates, decodes and hands over pages in
+   order; it uses an answer only when its `Limit` is the one the reader would have sent (checks
+   on the client may have removed items), and makes the requests itself otherwise.
 
 ### Events
 
