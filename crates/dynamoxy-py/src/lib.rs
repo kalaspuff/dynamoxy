@@ -14,8 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::convert::{
-    PyStrMap, PyValues, av_from_wire, av_to_py, av_to_wire, item_from_wire, item_to_py, item_to_wire, py_to_av,
-    py_to_item,
+    PyStrMap, PyValues, item_to_py, py_item_to_wire, py_to_item, py_to_wire, wire_item_to_py, wire_value_to_py,
 };
 use crate::errors::to_py_err;
 
@@ -37,28 +36,28 @@ fn operation_names() -> Vec<&'static str> {
 /// Converts an item of plain Python values to DynamoDB's typed JSON shape (`{"a": {"S": "x"}}`).
 #[pyfunction]
 #[pyo3(signature = (item, *, base64_binary = false))]
-fn to_wire<'py>(py: Python<'py>, item: &Bound<'py, PyAny>, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
-    item_to_wire(py, &py_to_item(item, "item")?, base64_binary)
+fn to_wire<'py>(item: &Bound<'py, PyAny>, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
+    py_item_to_wire(item, base64_binary)
 }
 
 /// Converts an item in DynamoDB's typed JSON shape (boto3 client, DynamoDB Streams, exports) to
 /// plain Python values.
 #[pyfunction]
-fn from_wire<'py>(py: Python<'py>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
-    item_to_py(py, &item_from_wire(item, "")?)
+fn from_wire<'py>(item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
+    wire_item_to_py(item)
 }
 
 /// Converts one plain value to DynamoDB's typed JSON shape (`{"N": "1.5"}`).
 #[pyfunction]
 #[pyo3(signature = (value, *, base64_binary = false))]
-fn value_to_wire<'py>(py: Python<'py>, value: &Bound<'py, PyAny>, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
-    av_to_wire(py, &py_to_av(value, "value")?, base64_binary)
+fn value_to_wire<'py>(value: &Bound<'py, PyAny>, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
+    py_to_wire(value, "value", base64_binary)
 }
 
 /// Converts one value in DynamoDB's typed JSON shape to a plain value.
 #[pyfunction]
-fn value_from_wire<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    av_to_py(py, &av_from_wire(value, "value")?)
+fn value_from_wire<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    wire_value_to_py(value, "value")
 }
 
 /// Whether `name` is a DynamoDB reserved word (it must be written with a `#placeholder`).
