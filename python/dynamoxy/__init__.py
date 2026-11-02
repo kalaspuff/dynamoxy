@@ -48,6 +48,7 @@ from dynamoxy import query as query
 from dynamoxy import repository as repository
 from dynamoxy import results as results
 from dynamoxy import schema as schema
+from dynamoxy import streams as streams
 from dynamoxy import table as table
 from dynamoxy import telemetry as telemetry
 from dynamoxy import transactions as transactions
@@ -99,6 +100,7 @@ from dynamoxy.errors import (
     ResourceNotFoundError,
     ServiceError,
     ShutdownError,
+    StreamRecordError,
     ThrottlingError,
     TransactionCanceledError,
     TransactionConflictError,
@@ -221,6 +223,7 @@ __all__ = [
     "ServiceError",
     "ShutdownError",
     "SortKey",
+    "StreamRecordError",
     "Table",
     "TableDefinition",
     "TableDescription",

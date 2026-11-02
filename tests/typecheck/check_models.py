@@ -9,7 +9,7 @@ line type-checks, and the script fails when pyrefly's errors fall on any other l
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, assert_type
+from typing import Annotated, Any, Literal, assert_type
 
 import pydantic
 
@@ -157,3 +157,20 @@ async def errors(client: dynamoxy.Client) -> None:
         assert_type(error.field, str)
     except dynamoxy.DynamoxyError as error:
         assert_type(error, dynamoxy.DynamoxyError)
+
+
+def stream_changes(event: dict[str, Any], client: dynamoxy.Client) -> None:
+    for change in dynamoxy.streams.changes(event, Customer, Order):
+        assert_type(change, dynamoxy.streams.Change[Customer | Order])
+        assert_type(change.new, Customer | Order | None)
+        assert_type(change.model, type[Customer | Order])
+        assert_type(change.event_name, Literal["INSERT", "MODIFY", "REMOVE"])
+    for user_change in dynamoxy.streams.changes(event["Records"], User, client=client):
+        assert_type(user_change.old, User | None)
+    dynamoxy.streams.changes(event, User, client="users")  # type: ignore[call-overload]
+    assert_type(client.model(User).from_item({"user_id": "u1"}), User)
+    assert_type(Wallet.from_item({"wallet_id": "w1"}), Wallet)
+    try:
+        next(dynamoxy.streams.changes(event, User))
+    except dynamoxy.StreamRecordError as error:
+        assert_type(error.sequence_number, str | None)

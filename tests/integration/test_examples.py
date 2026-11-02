@@ -25,6 +25,7 @@ EXPECTED: dict[str, Any] = {
     "unique_constraints": lambda outcomes: len(outcomes) == 3,
     "testing_with_faults": lambda checks: len(checks) == 3,
     "raw_tables": lambda low: len(low) == 2,
+    "stream_handler": lambda totals: totals == (1, Decimal("12.5")),
 }
 
 
