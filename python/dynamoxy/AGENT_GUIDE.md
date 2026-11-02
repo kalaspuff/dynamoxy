@@ -746,6 +746,49 @@ Values are plain Python values (`str`, `int`, `Decimal`, `bytes`, `bool`, `None`
 `dict`, `set`). PartiQL statements take physical table names. `dynamoxy.to_wire()` and
 `dynamoxy.from_wire()` convert items to and from DynamoDB's typed JSON (boto3, Streams, exports).
 
+### Streams and Lambda
+
+Turn DynamoDB Streams records (a Lambda event) into changes of models with `dynamoxy.streams`;
+never decode stream images by hand: guard items of unique values and other entities of the table
+come through the stream too.
+
+```python
+from dynamoxy import streams
+
+client = dynamoxy.Client()  # module level, reused across invocations
+
+
+async def handle(event):
+    current = None
+    try:
+        for change in streams.changes(event, Order, client=client):  # Iterator[Change[Order]]
+            current = change.sequence_number
+            if change.event_name == "INSERT":  # "INSERT" | "MODIFY" | "REMOVE"
+                await project(change.new)  # change.new / change.old: Order | None
+            elif change.expired:  # a REMOVE by Time to Live
+                ...
+    except dynamoxy.StreamRecordError as error:  # an image that does not fit, a malformed record
+        return {"batchItemFailures": [{"itemIdentifier": error.sequence_number}]}
+    except dynamoxy.DynamoxyError:
+        return {"batchItemFailures": [{"itemIdentifier": current}]}
+    return {"batchItemFailures": []}
+
+
+def handler(event, context):
+    return asyncio.run(handle(event))
+```
+
+- Guard items and entities not given are skipped; images are dispatched by the type attribute,
+  records without images (`KEYS_ONLY`) by key templates. `change.new`/`change.old` follow the
+  stream's view type (`None` when it leaves the image out); `change.key` is the stored key.
+- `client=` binds instances to the client's repositories (`save()` works, `after_load` hooks
+  run, versions are checked) and reads only the records of the models' tables. Without it,
+  instances are unbound and no client is needed.
+- One image: `client.model(User).from_item(dynamoxy.from_wire(image))` (bound) or
+  `User.from_item(...)` (unbound); both refuse guard items and other models' items
+  (`ItemDecodeError`).
+- Lambda delivers records at least once: make effects idempotent (section 12).
+
 ## 12. Application patterns
 
 ### Repositories as the data layer
