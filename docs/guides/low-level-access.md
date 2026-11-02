@@ -67,7 +67,9 @@ Use these to exchange items with boto3's low-level client, DynamoDB Streams and 
 take any mapping, and refuse what DynamoDB would with `ValidationError`: a typed value that is not
 one (`{"N": 5}`, `{"NULL": false}`, an empty `{"SS": []}`), base64 that is not strict standard
 base64, text that is not valid Unicode (a lone surrogate) and numbers out of DynamoDB's range.
-To turn a stream image into a model: `dynamoxy.schema_of(User).decode(dynamoxy.from_wire(image))`.
+To turn stream records into changes of models, use `dynamoxy.streams.changes()` ([Streams and
+Lambda](streams.md)); one image into a model: `User.from_item(dynamoxy.from_wire(image))`, or
+`client.model(User).from_item(...)` for an instance bound to the repository.
 
 ## Calls without a wrapper
 

@@ -57,6 +57,11 @@ It is authoritative for the installed version; this skill only summarizes it.
 9. Never log item contents; use `dynamoxy.collect()` and events for observability. Error
    messages leave out keys and values (they are in `error.key`, `error.value`,
    `FieldError.value`), so logging `str(error)` is safe.
+10. DynamoDB Streams handlers (Lambda) read records with
+    `dynamoxy.streams.changes(event, Model, ..., client=client)`, never by decoding images by
+    hand (guard items and other entities come through the stream too), and report
+    `StreamRecordError.sequence_number` (or the sequence number of the change whose processing
+    failed) in `batchItemFailures`.
 
 ## Skeleton
 
