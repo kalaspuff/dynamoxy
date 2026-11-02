@@ -20,8 +20,8 @@
 //! and resolves their futures: no thread waits for the GIL, and conversions run where the GIL
 //! is held anyway. A drain builds results for about [`STEP_BUDGET`] and then schedules itself
 //! again (`loop.call_soon`), and large results (pages of items) are built in steps of that
-//! length, so that other tasks run in between. Loops without `add_reader` (the Windows proactor loop) are woken with
-//! `call_soon_threadsafe` from a blocking thread instead.
+//! length, so that other tasks run in between. Loops without `add_reader` (the Windows
+//! proactor loop) are woken with `call_soon_threadsafe` from a blocking thread instead.
 //!
 //! In-memory clients poll their future once on the calling thread first ([`future_into_py_inline`]):
 //! operations without injected latency finish right there, with no thread hop. Their awaitable
