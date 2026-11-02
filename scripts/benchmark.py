@@ -253,7 +253,7 @@ async def stall_of(awaitable: Awaitable[object]) -> float:
 async def longest_stall(client: dynamoxy.Client, rounds: int) -> float:
     """The longest time another task waits for the event loop while a page of 20,000 items is converted.
 
-    The query waits a millisecond (injected latency), so that the result arrives like one from
+    The query waits 10 ms (injected latency), so that the result arrives like one from
     DynamoDB, through the event loop's port, and its conversion is all that runs on the loop.
     """
     table = client.table("stall")
@@ -261,7 +261,7 @@ async def longest_stall(client: dynamoxy.Client, rounds: int) -> float:
     await table.batch_write(puts=[{"pk": "p", "n": n, "text": f"item {n}"} for n in range(20_000)])
     stalls = []
     for _ in range(rounds):
-        testing.inject_fault(client, operation="Query", latency=0.001)
+        testing.inject_fault(client, operation="Query", latency=0.01)
         stalls.append(await stall_of(anext(aiter(table.query(F("pk") == "p").pages()))))
     stall = statistics.median(stalls)
     print(f"{'memory':<12} {'longest loop stall, query of 20,000 items':<42} {duration(stall)}")
