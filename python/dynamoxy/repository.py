@@ -1623,6 +1623,17 @@ class Repository[M]:
 
     def _conflict(self, write: _WritePlan, error: DynamoxyError, stored: dict[str, Any] | None) -> DynamoxyError:
         """The specific error for a failed condition of a planned write."""
+        specific = self._specific_conflict(write, error, stored)
+        if specific is not None:
+            return specific
+        if isinstance(error, ConditionalCheckFailedError):
+            error.key = write.key
+        return error
+
+    def _specific_conflict(
+        self, write: _WritePlan, error: DynamoxyError, stored: dict[str, Any] | None
+    ) -> DynamoxyError | None:
+        """:meth:`_conflict` when the stored item explains the failure, else ``None``."""
         name = self.model_class.__name__
         key, expected, mode = write.key, write.expected, write.mode
         version = self.schema.version_field
@@ -1654,9 +1665,7 @@ class Repository[M]:
                     item=stored,
                     cause=error,
                 )
-        if isinstance(error, ConditionalCheckFailedError):
-            error.key = key
-        return error
+        return None
 
     def _cancellation(self, write: _WritePlan, error: TransactionCanceledError) -> DynamoxyError:
         """The specific error for a canceled transaction of one planned write."""
@@ -1700,6 +1709,10 @@ class Repository[M]:
             )
             owned.item = item
             return owned
+        # The stored item explains most failures (create() of an existing key, a version conflict).
+        specific = self._specific_conflict(write, cause, item)
+        if specific is not None:
+            return specific
         message = f"{self.model_class.__name__}: the condition of {write.mode} failed (see .key)"
         if write.stale:
             message += (
@@ -1711,11 +1724,12 @@ class Repository[M]:
             message += " (another writer changed the fields derived attributes are rendered from: retry)"
         failed = ConditionalCheckFailedError(message)
         failed.item = item
+        failed.key = write.key
         for name in ("code", "operation", "request_id", "status_code", "attempts", "throttles", "requests", "duration"):
             value = getattr(cause, name, None)
             if value is not None:
                 setattr(failed, name, value)
-        return self._conflict(write, failed, item)
+        return failed
 
     # ---- unique guards: verification and repair --------------------------------------------
 

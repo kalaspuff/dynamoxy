@@ -102,13 +102,13 @@ fn text(value: &Bound<'_, PyString>, path: &dyn std::fmt::Display) -> PyResult<S
 /// refused before they are written out, which Python refuses above 4,300 digits.
 fn big_int(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<Number> {
     let py = value.py();
-    let bits: u64 = py.get_type::<PyInt>().call_method1("bit_length", (value,))?.extract()?;
+    let bits: u64 = py.get_type::<PyInt>().call_method1(intern!(py, "bit_length"), (value,))?.extract()?;
     if bits > 419 {
         return Err(ValidationError::new_err(format!(
             "{path}: the number is too large for DynamoDB (its numbers are below 1E+126)"
         )));
     }
-    let digits = py.get_type::<PyInt>().call_method1("__repr__", (value,))?;
+    let digits = py.get_type::<PyInt>().call_method1(intern!(py, "__repr__"), (value,))?;
     number(&digits.cast::<PyString>()?.to_cow()?, path)
 }
 
@@ -153,6 +153,10 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         if let Ok(small) = value.extract::<i64>() {
             return Ok(AttributeValue::N(Number::from(small)));
         }
+        if let Ok(wide) = value.extract::<i128>() {
+            // Up to 39 digits: Number::parse refuses more than 38 significant ones, as for others.
+            return Ok(AttributeValue::N(number(&wide.to_string(), path)?));
+        }
         return Ok(AttributeValue::N(big_int(value, path)?));
     }
     if let Ok(float) = value.cast::<PyFloat>() {
@@ -165,6 +169,9 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         return Number::parse_owned(float.to_string())
             .map(AttributeValue::N)
             .map_err(|error| ValidationError::new_err(format!("{path}: {error}")));
+    }
+    if value.get_type().is(decimal_type(py)?) {
+        return decimal(value, path);
     }
     if let Ok(dict) = value.cast::<PyDict>() {
         return Ok(AttributeValue::M(dict_to_item(dict, path, depth + 1)?));
@@ -186,17 +193,12 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         return Ok(AttributeValue::B(bytes.to_vec()));
     }
     if value.is_instance_of::<PyMemoryView>() {
-        return Ok(AttributeValue::B(value.call_method0("tobytes")?.cast::<PyBytes>()?.as_bytes().to_vec()));
+        return Ok(AttributeValue::B(
+            value.call_method0(intern!(py, "tobytes"))?.cast::<PyBytes>()?.as_bytes().to_vec(),
+        ));
     }
     if value.is_instance(decimal_type(py)?)? {
-        let finite: bool = value.call_method0("is_finite")?.extract()?;
-        if !finite {
-            return Err(ValidationError::new_err(format!(
-                "{path}: DynamoDB numbers cannot be NaN or infinite, got Decimal({})",
-                value.str()?
-            )));
-        }
-        return Ok(AttributeValue::N(number(&value.str()?.to_cow()?, path)?));
+        return decimal(value, path);
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
         let mut values = Vec::with_capacity(tuple.len());
@@ -210,7 +212,7 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
     }
     if value.is_instance(mapping_type(py)?)? {
         let dict = PyDict::new(py);
-        for pair in value.call_method0("items")?.try_iter()? {
+        for pair in value.call_method0(intern!(py, "items"))?.try_iter()? {
             let (key, element): (Bound<'_, PyAny>, Bound<'_, PyAny>) = pair?.extract()?;
             dict.set_item(key, element)?;
         }
@@ -220,6 +222,20 @@ fn to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResu
         "{path}: cannot store a value of type {} in DynamoDB; use str, int, float, Decimal, bytes, bool, None, list, tuple, dict or a set of str/numbers/bytes",
         type_name(value)
     )))
+}
+
+/// A `decimal.Decimal` (or a subclass) as a number. Its text tells NaN and infinities apart
+/// (`NaN`, `sNaN`, `Infinity`, never in the text of a finite one), which saves calling
+/// `is_finite()`.
+fn decimal(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<AttributeValue> {
+    let text = value.str()?;
+    let text = text.to_cow()?;
+    if text.bytes().any(|byte| byte == b'N' || byte == b'I') {
+        return Err(ValidationError::new_err(format!(
+            "{path}: DynamoDB numbers cannot be NaN or infinite, got Decimal({text})"
+        )));
+    }
+    Ok(AttributeValue::N(number(&text, path)?))
 }
 
 fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<AttributeValue> {
@@ -258,7 +274,11 @@ fn set_to_av(value: &Bound<'_, PyAny>, path: &ValuePath<'_>, depth: usize) -> Py
                 // 1 and 1.0 are the same DynamoDB number (one canonical text): keep the set valid,
                 // in linear time, since the conversion holds the GIL.
                 let mut seen = HashSet::with_capacity(numbers.len());
-                AttributeValue::Ns(numbers.into_iter().filter(|number| seen.insert(number.clone())).collect())
+                let first: Vec<bool> = numbers.iter().map(|number| seen.insert(number.as_str())).collect();
+                drop(seen);
+                AttributeValue::Ns(
+                    numbers.into_iter().zip(first).filter_map(|(number, first)| first.then_some(number)).collect(),
+                )
             }),
         AttributeValue::B(_) => converted
             .into_iter()
@@ -419,11 +439,6 @@ impl<'py, 'i> ToPython<'py, 'i> {
     }
 }
 
-/// Converts an attribute value to a Python object.
-pub fn av_to_py<'py>(py: Python<'py>, value: &AttributeValue) -> PyResult<Bound<'py, PyAny>> {
-    ToPython::new(py, false).value(value)
-}
-
 /// A number as `int` when it is integral, otherwise as `decimal.Decimal`.
 pub fn number_to_py<'py>(py: Python<'py>, number: &Number) -> PyResult<Bound<'py, PyAny>> {
     if number.is_integer() {
@@ -481,7 +496,7 @@ pub fn as_dict<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyD
         return Ok(None);
     }
     let dict = PyDict::new(py);
-    for pair in value.call_method0("items")?.try_iter()? {
+    for pair in value.call_method0(intern!(py, "items"))?.try_iter()? {
         let (key, element): (Bound<'py, PyAny>, Bound<'py, PyAny>) = pair?.extract()?;
         dict.set_item(key, element)?;
     }
@@ -788,54 +803,214 @@ pub fn keys_and_attributes<'py>(py: Python<'py>, request: &KeysAndAttributes) ->
     Ok(dict)
 }
 
-/// An attribute value in DynamoDB's typed JSON shape (`{"S": "x"}`, `{"N": "1"}`, ...).
-/// Binary values are `bytes`, or base64 text with `base64_binary`.
-pub fn av_to_wire<'py>(py: Python<'py>, value: &AttributeValue, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    let binary = |bytes: &[u8]| -> PyResult<Bound<'py, PyAny>> {
-        if base64_binary {
-            Ok(PyString::new(py, &base64_encode(bytes)).into_any())
+/// The keys of DynamoDB's typed JSON shape, looked up once per conversion.
+struct WireTags<'py> {
+    s: Bound<'py, PyString>,
+    n: Bound<'py, PyString>,
+    b: Bound<'py, PyString>,
+    bool_: Bound<'py, PyString>,
+    null: Bound<'py, PyString>,
+    l: Bound<'py, PyString>,
+    m: Bound<'py, PyString>,
+    ss: Bound<'py, PyString>,
+    ns: Bound<'py, PyString>,
+    bs: Bound<'py, PyString>,
+}
+
+impl<'py> WireTags<'py> {
+    fn new(py: Python<'py>) -> Self {
+        Self {
+            s: intern!(py, "S").clone(),
+            n: intern!(py, "N").clone(),
+            b: intern!(py, "B").clone(),
+            bool_: intern!(py, "BOOL").clone(),
+            null: intern!(py, "NULL").clone(),
+            l: intern!(py, "L").clone(),
+            m: intern!(py, "M").clone(),
+            ss: intern!(py, "SS").clone(),
+            ns: intern!(py, "NS").clone(),
+            bs: intern!(py, "BS").clone(),
+        }
+    }
+}
+
+/// Converts values to DynamoDB's typed JSON shape (`{"S": "x"}`, `{"N": "1"}`, ...). Binary
+/// values are `bytes`, or base64 text with `base64_binary`.
+struct ToWire<'py> {
+    py: Python<'py>,
+    tags: WireTags<'py>,
+    base64_binary: bool,
+}
+
+impl<'py> ToWire<'py> {
+    fn new(py: Python<'py>, base64_binary: bool) -> Self {
+        Self { py, tags: WireTags::new(py), base64_binary }
+    }
+
+    /// `{tag: inner}`.
+    fn tagged(&self, tag: &Bound<'py, PyString>, inner: impl IntoPyObject<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(self.py);
+        dict.set_item(tag, inner)?;
+        Ok(dict)
+    }
+
+    fn binary(&self, bytes: &[u8]) -> Bound<'py, PyAny> {
+        if self.base64_binary {
+            PyString::new(self.py, &base64_encode(bytes)).into_any()
         } else {
-            Ok(PyBytes::new(py, bytes).into_any())
-        }
-    };
-    match value {
-        AttributeValue::S(text) => dict.set_item("S", text)?,
-        AttributeValue::N(number) => dict.set_item("N", number.as_str())?,
-        AttributeValue::B(bytes) => dict.set_item("B", binary(bytes)?)?,
-        AttributeValue::Bool(flag) => dict.set_item("BOOL", *flag)?,
-        AttributeValue::Null => dict.set_item("NULL", true)?,
-        AttributeValue::L(values) => {
-            let list = PyList::empty(py);
-            for value in values {
-                list.append(av_to_wire(py, value, base64_binary)?)?;
-            }
-            dict.set_item("L", list)?;
-        }
-        AttributeValue::M(values) => dict.set_item("M", item_to_wire(py, values, base64_binary)?)?,
-        AttributeValue::Ss(values) => dict.set_item("SS", values.clone())?,
-        AttributeValue::Ns(values) => dict.set_item("NS", values.iter().map(Number::as_str).collect::<Vec<_>>())?,
-        AttributeValue::Bs(values) => {
-            let list = PyList::empty(py);
-            for bytes in values {
-                list.append(binary(bytes)?)?;
-            }
-            dict.set_item("BS", list)?;
+            PyBytes::new(self.py, bytes).into_any()
         }
     }
-    Ok(dict)
-}
 
-/// An item in DynamoDB's typed JSON shape.
-pub fn item_to_wire<'py>(py: Python<'py>, item: &Item, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (name, value) in item {
-        dict.set_item(name, av_to_wire(py, value, base64_binary)?)?;
+    /// A converted attribute value in the typed shape.
+    fn value(&self, value: &AttributeValue) -> PyResult<Bound<'py, PyDict>> {
+        let py = self.py;
+        let tags = &self.tags;
+        match value {
+            AttributeValue::S(text) => self.tagged(&tags.s, text),
+            AttributeValue::N(number) => self.tagged(&tags.n, number.as_str()),
+            AttributeValue::B(bytes) => self.tagged(&tags.b, self.binary(bytes)),
+            AttributeValue::Bool(flag) => self.tagged(&tags.bool_, *flag),
+            AttributeValue::Null => self.tagged(&tags.null, true),
+            AttributeValue::L(values) => {
+                let list = PyList::empty(py);
+                for value in values {
+                    list.append(self.value(value)?)?;
+                }
+                self.tagged(&tags.l, list)
+            }
+            AttributeValue::M(values) => self.tagged(&tags.m, self.item(values)?),
+            AttributeValue::Ss(values) => {
+                self.tagged(&tags.ss, PyList::new(py, values.iter().map(|text| PyString::new(py, text)))?)
+            }
+            AttributeValue::Ns(values) => {
+                self.tagged(&tags.ns, PyList::new(py, values.iter().map(|number| PyString::new(py, number.as_str())))?)
+            }
+            AttributeValue::Bs(values) => {
+                self.tagged(&tags.bs, PyList::new(py, values.iter().map(|bytes| self.binary(bytes)))?)
+            }
+        }
     }
-    Ok(dict)
+
+    fn item(&self, item: &Item) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(self.py);
+        for (name, value) in item {
+            dict.set_item(name, self.value(value)?)?;
+        }
+        Ok(dict)
+    }
+
+    /// A Python value in the typed shape, in one pass for strings, maps and lists, and through
+    /// [`to_av`] for the others: the checks, messages and canonical numbers are [`to_av`]'s. The
+    /// `str` objects of the value (attribute names, `S` values) are reused.
+    fn python(&self, value: &Bound<'py, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<Bound<'py, PyDict>> {
+        if depth > MAX_DEPTH {
+            return Err(too_deep(path));
+        }
+        if let Ok(string) = value.cast_exact::<PyString>() {
+            check_text(string, path)?;
+            return self.tagged(&self.tags.s, string);
+        }
+        if value.is_instance_of::<PyBool>() || value.is_instance_of::<PyInt>() || value.is_instance_of::<PyFloat>() {
+            return self.value(&to_av(value, path, depth)?);
+        }
+        if let Ok(dict) = value.cast::<PyDict>() {
+            return self.tagged(&self.tags.m, self.python_dict(dict, path, depth + 1)?);
+        }
+        if let Ok(list) = value.cast::<PyList>() {
+            let values = PyList::empty(self.py);
+            for (index, element) in list.iter().enumerate() {
+                values.append(self.python(&element, &ValuePath::Element(path, index), depth + 1)?)?;
+            }
+            return self.tagged(&self.tags.l, values);
+        }
+        if let Some(dict) = self.other_mapping(value)? {
+            return self.tagged(&self.tags.m, self.python_dict(&dict, path, depth + 1)?);
+        }
+        self.value(&to_av(value, path, depth)?)
+    }
+
+    /// A mapping that is no `dict` (a `MappingProxyType`, a `UserDict`) copied into one, in
+    /// its order, when [`to_av`] would take it as a map: it checks the types before `Mapping`
+    /// first.
+    fn other_mapping(&self, value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if value.is_none()
+            || value.is_instance_of::<PyString>()
+            || value.is_instance_of::<PyBytes>()
+            || value.is_instance_of::<PyByteArray>()
+            || value.is_instance_of::<PyMemoryView>()
+            || value.is_instance_of::<PyTuple>()
+            || value.is_instance_of::<PySet>()
+            || value.is_instance_of::<PyFrozenSet>()
+            || value.is_instance(decimal_type(self.py)?)?
+        {
+            return Ok(None);
+        }
+        as_dict(value)
+    }
+
+    /// The members of a map whose values are `depth` levels deep (see [`dict_to_item`]).
+    fn python_dict(
+        &self,
+        dict: &Bound<'py, PyDict>,
+        path: &ValuePath<'_>,
+        depth: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(self.py);
+        for (key, value) in dict.iter() {
+            let Ok(name) = key.cast::<PyString>() else {
+                return Err(ValidationError::new_err(format!(
+                    "{path}: attribute names must be str, got {}",
+                    type_name(&key)
+                )));
+            };
+            let text = checked_text(name, path)?;
+            let converted = self.python(&value, &ValuePath::Member(path, &text), depth)?;
+            if name.is_exact_instance_of::<PyString>() {
+                out.set_item(name, converted)?;
+            } else {
+                out.set_item(&*text, converted)?;
+            }
+        }
+        Ok(out)
+    }
 }
 
-fn wire_binary(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Vec<u8>> {
+/// A Python value (`path` names it in errors) in DynamoDB's typed JSON shape, checked as
+/// [`py_to_av`] checks it.
+pub fn py_to_wire<'py>(value: &Bound<'py, PyAny>, path: &str, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
+    ToWire::new(value.py(), base64_binary).python(value, &ValuePath::Root(path), 1)
+}
+
+/// A Python item (or key) in DynamoDB's typed JSON shape, checked as [`py_to_item`] checks it.
+pub fn py_item_to_wire<'py>(value: &Bound<'py, PyAny>, base64_binary: bool) -> PyResult<Bound<'py, PyDict>> {
+    let convert = ToWire::new(value.py(), base64_binary);
+    if let Ok(dict) = value.cast::<PyDict>() {
+        return convert.python_dict(dict, &ValuePath::Root(""), 1);
+    }
+    // Other mappings in their order; members are named `item.<name>` in errors, as py_to_item names them.
+    if let Some(dict) = convert.other_mapping(value)? {
+        return convert.python_dict(&dict, &ValuePath::Root("item"), 2);
+    }
+    convert.item(&py_to_item(value, "item")?)
+}
+
+/// Whether a `str` is valid Unicode, as [`text`] checks it.
+fn check_text(value: &Bound<'_, PyString>, path: &dyn std::fmt::Display) -> PyResult<()> {
+    checked_text(value, path).map(|_| ())
+}
+
+/// The text of a `str`, borrowed where Python allows it (see [`text`]).
+fn checked_text<'a>(
+    value: &'a Bound<'_, PyString>,
+    path: &dyn std::fmt::Display,
+) -> PyResult<std::borrow::Cow<'a, str>> {
+    value.to_str().map(std::borrow::Cow::Borrowed).map_err(|_| {
+        ValidationError::new_err(format!("{path}: the text is not valid Unicode (it contains a lone surrogate)"))
+    })
+}
+
+fn wire_binary(value: &Bound<'_, PyAny>, path: &ValuePath<'_>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(bytes.as_bytes().to_vec());
     }
@@ -848,17 +1023,33 @@ fn wire_binary(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Vec<u8>> {
     base64_decode(&text).ok_or_else(|| ValidationError::new_err(format!("{path}: invalid base64 binary value")))
 }
 
-/// Parses an attribute value in DynamoDB's typed JSON shape.
-pub fn av_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<AttributeValue> {
-    wire_to_av(value, path, 1)
+/// A binary value of the typed shape as `bytes`: the object itself when it is one.
+fn wire_bytes<'py>(value: &Bound<'py, PyAny>, path: &ValuePath<'_>) -> PyResult<Bound<'py, PyAny>> {
+    if value.is_exact_instance_of::<PyBytes>() {
+        return Ok(value.clone());
+    }
+    Ok(PyBytes::new(value.py(), &wire_binary(value, path)?).into_any())
 }
 
-/// Parses a typed value `depth` levels deep (see [`MAX_DEPTH`]). Anything that is not one
-/// DynamoDB accepts raises `ValidationError`, with DynamoDB's wording where it has one.
-fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<AttributeValue> {
+/// Converts a value in DynamoDB's typed JSON shape to a plain Python value, in one pass.
+pub fn wire_value_to_py<'py>(value: &Bound<'py, PyAny>, path: &str) -> PyResult<Bound<'py, PyAny>> {
+    wire_to_py(value, &ValuePath::Root(path), 1)
+}
+
+/// Converts an item in DynamoDB's typed JSON shape to a `dict` of plain Python values, in one pass.
+pub fn wire_item_to_py<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
+    wire_item(value, &ValuePath::Root(""), 1)
+}
+
+/// A typed value `depth` levels deep (see [`MAX_DEPTH`]) as a plain Python value: what the
+/// conversion of the parsed attribute value gives (numbers in their canonical form, as `int`
+/// or `Decimal`), reusing the `str` and `bytes` objects of the input. Anything that is not a
+/// value DynamoDB accepts raises `ValidationError`, with DynamoDB's wording where it has one.
+fn wire_to_py<'py>(value: &Bound<'py, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<Bound<'py, PyAny>> {
     if depth > MAX_DEPTH {
-        return Err(too_deep(&path));
+        return Err(too_deep(path));
     }
+    let py = value.py();
     let invalid = || {
         ValidationError::new_err(format!(
             "{path}: expected a typed DynamoDB value such as {{\"S\": \"text\"}} or {{\"N\": \"1\"}}"
@@ -869,26 +1060,41 @@ fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<At
         return Err(invalid());
     }
     let (kind, inner) = dict.iter().next().ok_or_else(invalid)?;
-    let kind = kind.cast::<PyString>().map_err(|_| invalid())?.to_cow()?.into_owned();
+    let kind = kind.cast_into::<PyString>().map_err(|_| invalid())?;
+    let kind = kind.to_cow()?;
     let expected =
         |what: &str| ValidationError::new_err(format!("{path}: \"{kind}\" must be {what}, got {}", type_name(&inner)));
-    let string = |element: &Bound<'_, PyAny>| match element.cast::<PyString>() {
-        Ok(string) => text(string, &path),
-        Err(_) => Err(expected("text")),
+    // A text element as a Python `str`: the element itself when it is exactly one.
+    let string = |element: &Bound<'py, PyAny>| -> PyResult<Bound<'py, PyAny>> {
+        let Ok(string) = element.cast::<PyString>() else {
+            return Err(expected("text"));
+        };
+        let text = checked_text(string, path)?;
+        Ok(if string.is_exact_instance_of::<PyString>() {
+            element.clone()
+        } else {
+            PyString::new(py, &text).into_any()
+        })
     };
-    let elements = || -> PyResult<Vec<Bound<'_, PyAny>>> {
+    let numeric = |element: &Bound<'py, PyAny>| -> PyResult<Bound<'py, PyAny>> {
+        let Ok(string) = element.cast::<PyString>() else {
+            return Err(expected("text"));
+        };
+        number_to_py(py, &number(&checked_text(string, path)?, path)?)
+    };
+    let elements = || -> PyResult<Vec<Bound<'py, PyAny>>> {
         if !(inner.is_instance_of::<PyList>() || inner.is_instance_of::<PyTuple>()) {
             return Err(expected("a list"));
         }
         inner.try_iter()?.collect()
     };
-    let set = || -> PyResult<Vec<Bound<'_, PyAny>>> {
+    let set = || -> PyResult<Vec<Bound<'py, PyAny>>> {
         let elements = elements()?;
         if elements.is_empty() {
             // DynamoDB's wording, as the in-memory backend's (`AttributeValue::validate`).
             return Err(ValidationError::new_err(format!(
                 "{path}: One or more parameter values were invalid: {}",
-                match kind.as_str() {
+                match &*kind {
                     "SS" => "An string set  may not be empty",
                     "NS" => "An number set  may not be empty",
                     _ => "Binary sets should not be empty",
@@ -897,47 +1103,51 @@ fn wire_to_av(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<At
         }
         Ok(elements)
     };
-    Ok(match kind.as_str() {
-        "S" => AttributeValue::S(string(&inner)?),
-        "N" => AttributeValue::N(number(&string(&inner)?, &ValuePath::Root(path))?),
-        "B" => AttributeValue::B(wire_binary(&inner, path)?),
-        "BOOL" => AttributeValue::Bool(inner.cast::<PyBool>().map_err(|_| expected("true or false"))?.is_true()),
+    Ok(match &*kind {
+        "S" => string(&inner)?,
+        "N" => numeric(&inner)?,
+        "B" => wire_bytes(&inner, path)?,
+        "BOOL" => PyBool::new(py, inner.cast::<PyBool>().map_err(|_| expected("true or false"))?.is_true())
+            .to_owned()
+            .into_any(),
         "NULL" => {
             if !inner.cast::<PyBool>().is_ok_and(|flag| flag.is_true()) {
                 return Err(ValidationError::new_err(format!(
                     "{path}: One or more parameter values were invalid: Null attribute value types must have the value of true"
                 )));
             }
-            AttributeValue::Null
+            py.None().into_bound(py)
         }
-        "L" => AttributeValue::L(
-            elements()?
-                .iter()
-                .enumerate()
-                .map(|(index, element)| wire_to_av(element, &format!("{path}[{index}]"), depth + 1))
-                .collect::<PyResult<_>>()?,
-        ),
-        "M" => AttributeValue::M(wire_to_item(&inner, path, depth + 1)?),
-        "SS" => AttributeValue::Ss(set()?.iter().map(string).collect::<PyResult<_>>()?),
-        "NS" => AttributeValue::Ns(
-            set()?.iter().map(|element| number(&string(element)?, &ValuePath::Root(path))).collect::<PyResult<_>>()?,
-        ),
-        "BS" => AttributeValue::Bs(set()?.iter().map(|element| wire_binary(element, path)).collect::<PyResult<_>>()?),
+        "L" => {
+            let list = PyList::empty(py);
+            for (index, element) in elements()?.iter().enumerate() {
+                list.append(wire_to_py(element, &ValuePath::Element(path, index), depth + 1)?)?;
+            }
+            list.into_any()
+        }
+        "M" => wire_item(&inner, path, depth + 1)?.into_any(),
+        "SS" => {
+            let values = set()?.iter().map(string).collect::<PyResult<Vec<_>>>()?;
+            PySet::new(py, values)?.into_any()
+        }
+        "NS" => {
+            let values = set()?.iter().map(numeric).collect::<PyResult<Vec<_>>>()?;
+            PySet::new(py, values)?.into_any()
+        }
+        "BS" => {
+            let values = set()?.iter().map(|element| wire_bytes(element, path)).collect::<PyResult<Vec<_>>>()?;
+            PySet::new(py, values)?.into_any()
+        }
         _ => return Err(invalid()),
     })
 }
 
-/// Parses an item in DynamoDB's typed JSON shape.
-pub fn item_from_wire(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Item> {
-    wire_to_item(value, path, 1)
-}
-
-/// Parses the members of a typed map whose values are `depth` levels deep.
-fn wire_to_item(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<Item> {
-    let what = if path.is_empty() { "item" } else { path };
+/// The members of a typed map whose values are `depth` levels deep, as a `dict`.
+fn wire_item<'py>(value: &Bound<'py, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<Bound<'py, PyDict>> {
+    let what: &dyn std::fmt::Display = if path.is_empty() { &"item" } else { path };
     let dict =
         as_dict(value)?.ok_or_else(|| ValidationError::new_err(format!("{what} must be a mapping of typed values")))?;
-    let mut item = Item::new();
+    let out = PyDict::new(value.py());
     for (name, value) in dict.iter() {
         let Ok(name) = name.cast::<PyString>() else {
             return Err(ValidationError::new_err(format!(
@@ -945,11 +1155,15 @@ fn wire_to_item(value: &Bound<'_, PyAny>, path: &str, depth: usize) -> PyResult<
                 type_name(&name)
             )));
         };
-        let name = text(name, &what)?;
-        let child = if path.is_empty() { name.clone() } else { format!("{path}.{name}") };
-        item.insert(name, wire_to_av(&value, &child, depth)?);
+        let text = checked_text(name, what)?;
+        let converted = wire_to_py(&value, &ValuePath::Member(path, &text), depth)?;
+        if name.is_exact_instance_of::<PyString>() {
+            out.set_item(name, converted)?;
+        } else {
+            out.set_item(&*text, converted)?;
+        }
     }
-    Ok(item)
+    Ok(out)
 }
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
