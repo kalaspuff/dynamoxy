@@ -304,6 +304,13 @@ def test_conversions_keep_the_order_and_the_strings_of_their_input() -> None:
     assert list(wire) == ["z", "name", "a"]
     assert list(wire["a"]["M"]) == ["y", "b"]
     assert wire["name"]["S"] is text
+    # Other mappings keep their order too, at the top and nested.
+    proxied = dynamoxy.to_wire(MappingProxyType({"b": 1, "a": UserDict({"y": 1, "x": 2})}))
+    assert list(proxied) == ["b", "a"]
+    assert list(proxied["a"]["M"]) == ["y", "x"]
+    assert list(dynamoxy.from_wire(UserDict({"b": {"N": "1"}, "a": {"N": "2"}}))) == ["b", "a"]
+    with pytest.raises(dynamoxy.ValidationError, match=r"^item\.b: cannot store a value of type object"):
+        dynamoxy.to_wire(MappingProxyType({"b": object()}))
     # Subclasses of str come out as str.
     for converted in (dynamoxy.to_wire({Text("k"): Text("v")}), dynamoxy.from_wire({Text("k"): {"S": Text("v")}})):
         [(key, value)] = converted.items()
