@@ -16,6 +16,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   and bound. [**breaking**] Fields can no longer be named `scan`: rename the field and keep the
   stored name with `attribute_name="scan"`. mypy now reports wrong field values of
   `Model.create(client, ...)` as `call-overload`.
+- `.prefetch(pages=1)` on queries and scans requests up to `pages` pages ahead of the page being
+  read, so the round trips of long reads overlap with decoding, hydration and the caller's work;
+  a read that stops early may have read up to `pages` pages for nothing.
 
 ### Changed
 
