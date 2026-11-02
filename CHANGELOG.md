@@ -38,6 +38,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   they are given, as boto3's `TypeDeserializer` does, instead of sorted by name, and reuse the
   given `str` objects; they convert in about a third less time.
 
+### Fixed
+
+- A call on a new event loop no longer fails now and then with `RuntimeError: dictionary changed
+  size during iteration` on Python 3.12-3.14 while another thread makes its first call on a loop
+  of its own.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

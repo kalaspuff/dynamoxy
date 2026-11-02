@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import sys
 import threading
 import types
 import weakref
@@ -289,6 +290,45 @@ def test_each_thread_and_loop_gets_its_own_results(new_loop: Callable[[], asynci
     for thread in threads:
         thread.join(timeout=60)
     assert results == dict.fromkeys(range(4), EXPECTED)
+
+
+def test_threads_registering_loops_at_once(new_loop: Callable[[], asyncio.AbstractEventLoop]) -> None:
+    """A thread's first call on a new loop goes over the registered loops (to release the closed
+    ones) while other threads register theirs: before Python 3.15, iterating the registry's
+    ``items()`` failed with "dictionary changed size during iteration" then."""
+
+    async def call() -> None:
+        async with testing.memory_client() as client:
+            table = await items_table(client)
+            testing.inject_fault(client, operation="GetItem", latency=0.001)
+            await table.get({"pk": "a"})
+
+    closed: list[asyncio.AbstractEventLoop] = []  # stay registered while referenced
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        for _ in range(15):
+            loop = new_loop()
+            try:
+                loop.run_until_complete(call())
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                loop.close()
+            closed.append(loop)
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # switch threads often, inside the registry's iteration too
+    try:
+        threads = [threading.Thread(target=run) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+    finally:
+        sys.setswitchinterval(interval)
+    assert errors == []
+    assert len(closed) == 90
 
 
 def test_a_closed_loop_does_not_keep_its_pending_calls(new_loop: Callable[[], asyncio.AbstractEventLoop]) -> None:

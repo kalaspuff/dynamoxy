@@ -53,7 +53,7 @@ use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::PyWeakrefReference;
+use pyo3::types::{PyDict, PyWeakrefReference};
 use pyo3::{IntoPyObjectExt, intern};
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::task::AbortHandle;
@@ -559,12 +559,18 @@ fn port_for<'py>(event_loop: &Bound<'py, PyAny>, pid: u32) -> PyResult<Bound<'py
 /// Drops the pending calls of ports whose event loop is closed: nobody can await them any more,
 /// and their futures would keep the loop (and, through the registry, the port) alive for good.
 /// asyncio drops the callbacks of a closed loop too. Their tasks finish on their own.
+///
+/// It goes over a copy of the registry's dict (weak references to loops, and their ports), taken
+/// in one step: before Python 3.15 `WeakKeyDictionary.items()` iterates the dict itself in Python
+/// code, so another thread that registers its loop in between makes it raise `RuntimeError`.
 fn release_closed(registry: &Bound<'_, PyAny>) -> PyResult<()> {
     let py = registry.py();
+    let entries = registry.getattr(intern!(py, "data"))?.cast_into::<PyDict>()?.copy()?;
     let mut closed = Vec::new();
-    for entry in registry.call_method0(intern!(py, "items"))?.try_iter()? {
-        let (event_loop, port): (Bound<'_, PyAny>, Bound<'_, PyAny>) = entry?.extract()?;
-        if let Ok(port) = port.cast_into::<Port>()
+    for (reference, port) in entries.iter() {
+        let event_loop = reference.call0()?;
+        if !event_loop.is_none()
+            && let Ok(port) = port.cast_into::<Port>()
             && event_loop.call_method0(intern!(py, "is_closed"))?.is_truthy()?
         {
             closed.push(port);
