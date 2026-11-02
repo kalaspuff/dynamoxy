@@ -173,7 +173,7 @@ async def test_large_results_are_converted_in_steps_between_which_other_tasks_ru
     async with testing.memory_client() as client:
         read = await large_page(client)
         if path == "port":
-            testing.inject_fault(client, operation="Query", latency=0.001)
+            testing.inject_fault(client, operation="Query", latency=0.01)
         (output, _), ticks = await ticks_while(read())
         assert [item["n"] for item in output["items"]] == list(range(20_000))
         assert output["items"][3] == {"pk": "p", "n": 3, "text": "item 3", "flag": False}
@@ -185,7 +185,7 @@ async def test_large_results_are_converted_in_steps_between_which_other_tasks_ru
 async def test_a_call_cancelled_while_its_result_is_converted_drops_it() -> None:
     async with testing.memory_client() as client:
         read = await large_page(client)
-        testing.inject_fault(client, operation="Query", latency=0.001)
+        testing.inject_fault(client, operation="Query", latency=0.01)
 
         async def query() -> Any:
             return await read()
@@ -225,11 +225,13 @@ def test_results_arriving_while_others_convert_add_no_second_chain_of_drains() -
         async with testing.memory_client() as client:
             read = await large_page(client)
             core = await client._core()
-            testing.inject_fault(client, operation="Query", latency=0.001)
+            # Long enough that the call cannot finish when it is made (a Ready awaitable converts
+            # without the port): the timer of a slow machine may count 1 ms as elapsed at once.
+            testing.inject_fault(client, operation="Query", latency=0.01)
             page = read()
             # Small results that arrive (and wake the loop) while the page is converted.
             gets = []
-            for delay in range(2, 40, 2):
+            for delay in range(12, 80, 2):
                 testing.inject_fault(client, operation="GetItem", latency=delay / 1000)
                 gets.append(core.get_item(client.table("large").physical_name, key={"pk": "p", "n": 1}))
             return await asyncio.gather(page, *gets)
