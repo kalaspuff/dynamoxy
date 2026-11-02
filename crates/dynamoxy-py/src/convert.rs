@@ -924,7 +924,29 @@ impl<'py> ToWire<'py> {
             }
             return self.tagged(&self.tags.l, values);
         }
+        if let Some(dict) = self.other_mapping(value)? {
+            return self.tagged(&self.tags.m, self.python_dict(&dict, path, depth + 1)?);
+        }
         self.value(&to_av(value, path, depth)?)
+    }
+
+    /// A mapping that is no `dict` (a `MappingProxyType`, a `UserDict`) copied into one, in
+    /// its order, when [`to_av`] would take it as a map: it checks the types before `Mapping`
+    /// first.
+    fn other_mapping(&self, value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if value.is_none()
+            || value.is_instance_of::<PyString>()
+            || value.is_instance_of::<PyBytes>()
+            || value.is_instance_of::<PyByteArray>()
+            || value.is_instance_of::<PyMemoryView>()
+            || value.is_instance_of::<PyTuple>()
+            || value.is_instance_of::<PySet>()
+            || value.is_instance_of::<PyFrozenSet>()
+            || value.is_instance(decimal_type(self.py)?)?
+        {
+            return Ok(None);
+        }
+        as_dict(value)
     }
 
     /// The members of a map whose values are `depth` levels deep (see [`dict_to_item`]).
@@ -965,6 +987,10 @@ pub fn py_item_to_wire<'py>(value: &Bound<'py, PyAny>, base64_binary: bool) -> P
     let convert = ToWire::new(value.py(), base64_binary);
     if let Ok(dict) = value.cast::<PyDict>() {
         return convert.python_dict(dict, &ValuePath::Root(""), 1);
+    }
+    // Other mappings in their order; members are named `item.<name>` in errors, as py_to_item names them.
+    if let Some(dict) = convert.other_mapping(value)? {
+        return convert.python_dict(&dict, &ValuePath::Root("item"), 2);
     }
     convert.item(&py_to_item(value, "item")?)
 }
