@@ -200,6 +200,50 @@ async def test_a_call_cancelled_while_its_result_is_converted_drops_it() -> None
         assert len(output["items"]) == 20_000
 
 
+class ContinuationsLoop(asyncio.SelectorEventLoop):
+    """Counts the drains of the port scheduled with ``call_soon`` to go on converting results."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending = self.most = 0
+
+    def call_soon(self, callback: Callable[..., object], *args: Any, context: Any = None) -> asyncio.Handle:
+        if getattr(callback, "__name__", "") not in ("drain", "resume"):
+            return super().call_soon(callback, *args, context=context)
+        self.pending += 1
+        self.most = max(self.most, self.pending)
+
+        def run(*arguments: Any) -> None:
+            self.pending -= 1
+            callback(*arguments)
+
+        return super().call_soon(run, *args, context=context)
+
+
+def test_results_arriving_while_others_convert_add_no_second_chain_of_drains() -> None:
+    async def read_while_others_arrive() -> list[Any]:
+        async with testing.memory_client() as client:
+            read = await large_page(client)
+            core = await client._core()
+            testing.inject_fault(client, operation="Query", latency=0.001)
+            page = read()
+            # Small results that arrive (and wake the loop) while the page is converted.
+            gets = []
+            for delay in range(2, 40, 2):
+                testing.inject_fault(client, operation="GetItem", latency=delay / 1000)
+                gets.append(core.get_item(client.table("large").physical_name, key={"pk": "p", "n": 1}))
+            return await asyncio.gather(page, *gets)
+
+    loop = ContinuationsLoop()
+    try:
+        (page, _), *gets = loop.run_until_complete(read_while_others_arrive())
+    finally:
+        loop.close()
+    assert len(page["items"]) == 20_000
+    assert all(output["item"] == {"pk": "p", "n": 1, "text": "item 1", "flag": False} for output, _ in gets)
+    assert loop.most == 1, f"{loop.most} chains of drains converted results at once"
+
+
 async def scenario() -> list[Any]:
     """Inline and waiting calls, and a cancelled one, on the running loop."""
     async with testing.memory_client() as client:
