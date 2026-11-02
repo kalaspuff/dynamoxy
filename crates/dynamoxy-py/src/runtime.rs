@@ -312,7 +312,8 @@ impl Shared {
 struct Calls {
     futures: Mutex<HashMap<u64, Pending>>,
     /// Finished calls whose outcome a drain did not build within its budget, oldest first, and
-    /// whether a drain is scheduled (`loop.call_soon`) to go on with them.
+    /// whether [`Port::resume`] is scheduled (`loop.call_soon`) to go on with them: at most one
+    /// is, and drains leave the calls they find to it.
     converting: Mutex<(VecDeque<(u64, Finished)>, bool)>,
 }
 
@@ -331,11 +332,10 @@ pub struct Port {
 
 #[pymethods]
 impl Port {
-    /// Resolves the futures of finished calls (called by the event loop), building their
-    /// outcomes for about [`STEP_BUDGET`]: when calls are left, it schedules itself again
-    /// (`loop.call_soon`), so that other tasks run in between.
+    /// Resolves the futures of finished calls (called by the event loop when it is woken),
+    /// building their outcomes for about [`STEP_BUDGET`]; calls left over are built by
+    /// [`Port::resume`], scheduled with `loop.call_soon`, so that other tasks run in between.
     fn drain(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let py = slf.py();
         let port = slf.get();
         // Read the wake-up bytes before taking the queue: a byte read here was written after a
         // call was queued, so that call is taken below. Bytes written later wake the loop again.
@@ -345,11 +345,32 @@ impl Port {
             // A short read took every byte; bytes left over only cause another (empty) drain.
             while matches!((&*reader).read(&mut buffer), Ok(count) if count == buffer.len()) {}
         }
-        let mut queue = {
+        {
             let mut converting = port.calls.converting.lock();
-            converting.1 = false;
-            std::mem::take(&mut converting.0)
-        };
+            if converting.1 {
+                // A resume is scheduled: it builds these after the calls before them, so that one
+                // loop iteration never builds outcomes for longer than one budget.
+                converting.0.extend(std::mem::take(&mut *port.shared.finished.lock()));
+                return Ok(());
+            }
+        }
+        Self::build(slf)
+    }
+
+    /// Goes on building the outcomes a drain left over (scheduled with `loop.call_soon`).
+    fn resume(slf: &Bound<'_, Self>) -> PyResult<()> {
+        slf.get().calls.converting.lock().1 = false;
+        Self::build(slf)
+    }
+}
+
+impl Port {
+    /// Builds the outcomes of finished calls, oldest first, for about [`STEP_BUDGET`], and
+    /// resolves their futures; schedules [`Port::resume`] for the calls left over.
+    fn build(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let py = slf.py();
+        let port = slf.get();
+        let mut queue = std::mem::take(&mut port.calls.converting.lock().0);
         queue.extend(std::mem::take(&mut *port.shared.finished.lock()));
         let deadline = Instant::now() + STEP_BUDGET;
         let mut built = false;
@@ -386,13 +407,13 @@ impl Port {
         }
         let schedule = {
             let mut converting = port.calls.converting.lock();
-            // Older than anything a nested drain may have left (none: this is the loop's thread).
+            // Older than anything queued meanwhile (nothing: this is the loop's thread).
             queue.extend(std::mem::take(&mut converting.0));
             converting.0 = queue;
             !std::mem::replace(&mut converting.1, true)
         };
         if schedule && let Some(event_loop) = port.event_loop.bind(py).upgrade() {
-            event_loop.call_method1(intern!(py, "call_soon"), (slf.getattr(intern!(py, "drain"))?,))?;
+            event_loop.call_method1(intern!(py, "call_soon"), (slf.getattr(intern!(py, "resume"))?,))?;
         }
         Ok(())
     }
