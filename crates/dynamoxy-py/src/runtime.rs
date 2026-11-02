@@ -16,20 +16,23 @@
 //! event loop, and its Rust future runs on the runtime. When it finishes, its outcome (a
 //! [`Deferred`] that builds the Python result) is queued on the loop's [`Port`]; the first
 //! completion after a drain wakes the loop by writing one byte to a socket the loop watches
-//! (`loop.add_reader`). The loop's thread then builds the Python results of every queued call
+//! (`loop.add_reader`). The loop's thread then builds the Python results of the queued calls
 //! and resolves their futures: no thread waits for the GIL, and conversions run where the GIL
-//! is held anyway. Loops without `add_reader` (the Windows proactor loop) are woken with
+//! is held anyway. A drain builds results for about [`STEP_BUDGET`] and then schedules itself
+//! again (`loop.call_soon`), and large results (pages of items) are built in steps of that
+//! length, so that other tasks run in between. Loops without `add_reader` (the Windows proactor loop) are woken with
 //! `call_soon_threadsafe` from a blocking thread instead.
 //!
 //! In-memory clients poll their future once on the calling thread first ([`future_into_py_inline`]):
 //! operations without injected latency finish right there, with no thread hop. Their awaitable
-//! ([`Ready`]) still yields to the event loop once, like real I/O, before it returns the result.
+//! ([`Ready`]) still yields to the event loop once, like real I/O, before it returns the result
+//! (and once after each step of building a large one).
 //!
 //! Cancelling the asyncio future aborts the Rust task: it is dropped at its next await point.
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -42,7 +45,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 #[cfg(unix)]
@@ -131,6 +134,18 @@ pub fn shutdown(py: Python<'_>) {
     py.detach(|| runtime.shutdown_timeout(SHUTDOWN_TIMEOUT));
 }
 
+/// Drops `value` on a thread of the runtime's blocking pool, or right here once it is shut down:
+/// freeing large Rust values (the items of a page converted to Python) takes milliseconds that
+/// the event loop's thread need not spend.
+pub fn drop_elsewhere<T: Send + 'static>(value: T) {
+    if is_shut_down() {
+        drop(value);
+        return;
+    }
+    // A runtime shut down meanwhile drops the closure, and the value with it, right here.
+    drop(handle().spawn_blocking(move || drop(value)));
+}
+
 /// Forgets the runtime inherited from a parent process (called after `fork()`).
 pub fn reset_after_fork() {
     let pid = std::process::id();
@@ -144,16 +159,37 @@ pub fn reset_after_fork() {
 
 // ---- results --------------------------------------------------------------------------------
 
-type Build = Box<dyn for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send>;
+/// One step of building an outcome: `None` while there is more to do (it stops soon after the
+/// deadline it is given), then the result.
+type Step = Box<dyn for<'py> FnMut(Python<'py>, Instant) -> Option<PyResult<Py<PyAny>>> + Send>;
+
+/// How long the event loop's thread builds outcomes before it lets other tasks run: a large
+/// result (a page of thousands of items) is converted in steps of about this long.
+pub const STEP_BUDGET: Duration = Duration::from_millis(1);
 
 /// The outcome of a call, turned into Python objects (a result or an exception) only on the
-/// event loop's thread.
-pub struct Deferred(Build);
+/// event loop's thread: at once, or in steps of about [`STEP_BUDGET`] (results with many items),
+/// between which the loop runs other tasks.
+pub struct Deferred(Step);
 
 impl Deferred {
     /// An outcome built by `build`, which runs on the event loop's thread with the GIL.
     pub fn new(build: impl for<'py> FnOnce(Python<'py>) -> PyResult<Py<PyAny>> + Send + 'static) -> Self {
-        Self(Box::new(build))
+        let mut build = Some(build);
+        Self(Box::new(move |py: Python<'_>, _deadline: Instant| {
+            Some(match build.take() {
+                Some(build) => build(py),
+                None => Err(PyRuntimeError::new_err("internal error: an outcome was built twice")),
+            })
+        }))
+    }
+
+    /// An outcome built in steps by `step`, which runs on the event loop's thread with the GIL
+    /// until it returns the result; each call should return soon after its deadline.
+    pub fn in_steps(
+        step: impl for<'py> FnMut(Python<'py>, Instant) -> Option<PyResult<Py<PyAny>>> + Send + 'static,
+    ) -> Self {
+        Self(Box::new(step))
     }
 
     /// A plain Rust value, converted with `IntoPyObject`.
@@ -275,6 +311,9 @@ impl Shared {
 /// The asyncio futures of calls in progress on one event loop (used on the loop's thread only).
 struct Calls {
     futures: Mutex<HashMap<u64, Pending>>,
+    /// Finished calls whose outcome a drain did not build within its budget, oldest first, and
+    /// whether a drain is scheduled (`loop.call_soon`) to go on with them.
+    converting: Mutex<(VecDeque<(u64, Finished)>, bool)>,
 }
 
 /// A call's asyncio future and its done callback.
@@ -292,45 +331,82 @@ pub struct Port {
 
 #[pymethods]
 impl Port {
-    /// Resolves the futures of every finished call (called by the event loop).
-    fn drain(&self, py: Python<'_>) {
+    /// Resolves the futures of finished calls (called by the event loop), building their
+    /// outcomes for about [`STEP_BUDGET`]: when calls are left, it schedules itself again
+    /// (`loop.call_soon`), so that other tasks run in between.
+    fn drain(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let py = slf.py();
+        let port = slf.get();
         // Read the wake-up bytes before taking the queue: a byte read here was written after a
         // call was queued, so that call is taken below. Bytes written later wake the loop again.
         #[cfg(unix)]
-        if let Some(Wake::Socket { reader, .. }) = self.shared.wake.get() {
+        if let Some(Wake::Socket { reader, .. }) = port.shared.wake.get() {
             let mut buffer = [0u8; 256];
             // A short read took every byte; bytes left over only cause another (empty) drain.
             while matches!((&*reader).read(&mut buffer), Ok(count) if count == buffer.len()) {}
         }
-        let finished = std::mem::take(&mut *self.shared.finished.lock());
-        for (id, finished) in finished {
-            let entry = self.calls.futures.lock().remove(&id);
-            let Some((future, canceller)) = entry else { continue };
+        let mut queue = {
+            let mut converting = port.calls.converting.lock();
+            converting.1 = false;
+            std::mem::take(&mut converting.0)
+        };
+        queue.extend(std::mem::take(&mut *port.shared.finished.lock()));
+        let deadline = Instant::now() + STEP_BUDGET;
+        let mut built = false;
+        while let Some((id, mut finished)) = queue.pop_front() {
+            if built && Instant::now() >= deadline {
+                queue.push_front((id, finished));
+                break;
+            }
+            let future = port.calls.futures.lock().get(&id).map(|(future, _)| future.clone_ref(py));
+            // Gone: cancelled (its canceller removed it), or its loop closed.
+            let Some(future) = future else { continue };
             let future = future.bind(py);
-            let _ = future.call_method1(intern!(py, "remove_done_callback"), (canceller,));
-            resolve(py, future, finished);
+            if !matches!(future.call_method0(intern!(py, "cancelled")).and_then(|value| value.is_truthy()), Ok(false)) {
+                let entry = port.calls.futures.lock().remove(&id);
+                drop(entry);
+                continue;
+            }
+            built = true;
+            let Some(outcome) = step(py, &mut finished, deadline) else {
+                queue.push_front((id, finished));
+                break;
+            };
+            let entry = port.calls.futures.lock().remove(&id);
+            if let Some((_, canceller)) = entry {
+                let _ = future.call_method1(intern!(py, "remove_done_callback"), (canceller,));
+            }
+            let _ = match outcome {
+                Ok(value) => future.call_method1(intern!(py, "set_result"), (value,)),
+                Err(error) => future.call_method1(intern!(py, "set_exception"), (error.into_value(py),)),
+            };
+        }
+        if queue.is_empty() {
+            return Ok(());
+        }
+        let schedule = {
+            let mut converting = port.calls.converting.lock();
+            // Older than anything a nested drain may have left (none: this is the loop's thread).
+            queue.extend(std::mem::take(&mut converting.0));
+            converting.0 = queue;
+            !std::mem::replace(&mut converting.1, true)
+        };
+        if schedule && let Some(event_loop) = port.event_loop.bind(py).upgrade() {
+            event_loop.call_method1(intern!(py, "call_soon"), (slf.getattr(intern!(py, "drain"))?,))?;
+        }
+        Ok(())
+    }
+}
+
+/// Builds the outcome of a finished call for a while: `None` when it is not built yet by
+/// `deadline`, else the Python result (or exception).
+fn step(py: Python<'_>, finished: &mut Finished, deadline: Instant) -> Option<PyResult<Py<PyAny>>> {
+    match finished {
+        Ok(deferred) => (deferred.0)(py, deadline),
+        Err(message) => {
+            Some(Err(DynamoxyError::new_err(format!("internal error: a dynamoxy task panicked: {message}"))))
         }
     }
-}
-
-/// The Python result (or exception) of a finished call.
-fn outcome(py: Python<'_>, finished: Finished) -> PyResult<Py<PyAny>> {
-    match finished {
-        Ok(deferred) => (deferred.0)(py),
-        Err(message) => Err(DynamoxyError::new_err(format!("internal error: a dynamoxy task panicked: {message}"))),
-    }
-}
-
-/// Sets the result (or exception) of a call's future, unless it was cancelled.
-fn resolve(py: Python<'_>, future: &Bound<'_, PyAny>, finished: Finished) {
-    let cancelled = future.call_method0(intern!(py, "cancelled")).and_then(|value| value.is_truthy());
-    if !matches!(cancelled, Ok(false)) {
-        return;
-    }
-    let _ = match outcome(py, finished) {
-        Ok(value) => future.call_method1(intern!(py, "set_result"), (value,)),
-        Err(error) => future.call_method1(intern!(py, "set_exception"), (error.into_value(py),)),
-    };
 }
 
 /// Writes the wake-up byte. Returns whether a byte is pending for the loop: written, or the
@@ -349,7 +425,8 @@ fn write_wakeup(writer: &mut impl Write) -> bool {
 
 /// The awaitable of a call that finished when it was made (in-memory backend): awaiting it
 /// yields to the event loop once (a bare yield, like `asyncio.sleep(0)`), then returns the
-/// result, which is converted to Python only then.
+/// result, which is converted to Python only then, in steps of about [`STEP_BUDGET`] with a
+/// yield after each one.
 #[pyclass(frozen, module = "dynamoxy._core")]
 pub struct Ready {
     /// Whether the awaitable yielded already, and the outcome until it is returned.
@@ -377,10 +454,17 @@ impl Ready {
             }
             state.1.take()
         };
-        let Some(finished) = finished else {
+        let Some(mut finished) = finished else {
             return Err(PyRuntimeError::new_err("cannot reuse an awaited dynamoxy call"));
         };
-        Err(PyStopIteration::new_err((outcome(py, finished)?,)))
+        // Not under the lock: building Python objects may run code (a collection's finalizers).
+        match step(py, &mut finished, Instant::now() + STEP_BUDGET) {
+            Some(outcome) => Err(PyStopIteration::new_err((outcome?,))),
+            None => {
+                self.state.lock().1 = Some(finished);
+                Ok(py.None())
+            }
+        }
     }
 }
 
@@ -469,6 +553,8 @@ fn release_closed(registry: &Bound<'_, PyAny>) -> PyResult<()> {
         // Dropped after the lock is released (dropping Python objects may run code).
         let calls = std::mem::take(&mut *port.get().calls.futures.lock());
         drop(calls);
+        let converting = std::mem::take(&mut port.get().calls.converting.lock().0);
+        drop(converting);
     }
     Ok(())
 }
@@ -487,7 +573,10 @@ fn create_port<'py>(event_loop: &Bound<'py, PyAny>, pid: u32) -> PyResult<Bound<
         py,
         Port {
             shared: Arc::clone(&shared),
-            calls: Arc::new(Calls { futures: Mutex::new(HashMap::new()) }),
+            calls: Arc::new(Calls {
+                futures: Mutex::new(HashMap::new()),
+                converting: Mutex::new((VecDeque::new(), false)),
+            }),
             next_id: AtomicU64::new(0),
             event_loop: PyWeakrefReference::new(event_loop)?.unbind(),
             pid,

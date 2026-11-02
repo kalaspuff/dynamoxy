@@ -130,6 +130,76 @@ async def test_cancelling_a_call_drops_its_work() -> None:
         assert await table.get({"pk": "a"}) == {"pk": "a", "n": 1}
 
 
+async def large_page(client: dynamoxy.Client) -> Callable[[], Any]:
+    """A table with one partition of 20,000 items (a page of about 600 KB), and a call that reads it."""
+    table = client.table("large")
+    await table.create(partition_key=("pk", "S"), sort_key=("n", "N"))
+    await table.batch_write(puts=[{"pk": "p", "n": n, "text": f"item {n}", "flag": n % 2 == 0} for n in range(20_000)])
+    core = await client._core()
+
+    def read() -> Any:
+        return core.query(
+            table.physical_name, key_condition_expression="pk = :p", expression_attribute_values={":p": "p"}
+        )
+
+    return read
+
+
+async def ticks_while(awaitable: Any) -> tuple[Any, int]:
+    """The result of ``awaitable``, and how often another task ran while it was awaited."""
+    ticks = 0
+    running = True
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while running:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    task = asyncio.get_running_loop().create_task(heartbeat())
+    await asyncio.sleep(0)
+    before = ticks
+    try:
+        result = await awaitable
+    finally:
+        running = False
+    during = ticks - before
+    await task
+    return result, during
+
+
+@pytest.mark.parametrize("path", ["inline", "port"])
+async def test_large_results_are_converted_in_steps_between_which_other_tasks_run(path: str) -> None:
+    async with testing.memory_client() as client:
+        read = await large_page(client)
+        if path == "port":
+            testing.inject_fault(client, operation="Query", latency=0.001)
+        (output, _), ticks = await ticks_while(read())
+        assert [item["n"] for item in output["items"]] == list(range(20_000))
+        assert output["items"][3] == {"pk": "p", "n": 3, "text": "item 3", "flag": False}
+        assert output["last_evaluated_key"] is None
+        # Converting 20,000 items takes several steps of about a millisecond each.
+        assert ticks >= 3, f"other tasks ran {ticks} time(s) while the page was converted"
+
+
+async def test_a_call_cancelled_while_its_result_is_converted_drops_it() -> None:
+    async with testing.memory_client() as client:
+        read = await large_page(client)
+        testing.inject_fault(client, operation="Query", latency=0.001)
+
+        async def query() -> Any:
+            return await read()
+
+        call = asyncio.get_running_loop().create_task(query())
+        await wait_until(lambda: client.metrics().in_flight == 1)
+        await wait_until(lambda: client.metrics().in_flight == 0)  # finished: converting
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        (output, _), _ = await ticks_while(read())
+        assert len(output["items"]) == 20_000
+
+
 async def scenario() -> list[Any]:
     """Inline and waiting calls, and a cancelled one, on the running loop."""
     async with testing.memory_client() as client:

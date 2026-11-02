@@ -208,7 +208,9 @@ These are relied upon across layers; tests cover each of them.
 - **The asyncio bridge** (`runtime.rs`): runtime threads never take the GIL. A finished call's
   outcome (a `Deferred` that builds the Python result) is queued on the `Port` of its event loop;
   the first one after a drain writes a byte to a socket pair the loop watches (`add_reader`),
-  and the loop's thread builds every queued result and resolves the futures. Loops without
+  and the loop's thread builds the queued results and resolves the futures, about a
+  millisecond at a time (large pages convert in steps; a drain that runs out of time schedules
+  itself again with `call_soon`), so other tasks run in between. Loops without
   `add_reader` are woken with `call_soon_threadsafe` from a blocking thread. In-memory clients
   poll each call once on the calling thread (without the GIL); a call that finishes there needs
   no thread at all, and its awaitable (`Ready`) still yields to the loop once, like real I/O.

@@ -218,6 +218,7 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
             "from_wire(), 1,000 items": from_wire,
             "to_wire(), 1,000 items": to_wire,
         }
+        results["longest loop stall, query of 20,000 items"] = await longest_stall(client, rounds)
         counts = {name: await calls_in(seconds, call) for name, call in cases.items()}
         means: dict[str, list[float]] = {name: [] for name in cases}
         for _ in range(rounds):  # interleaved: a burst of other work slows one round of each case, not a whole case
@@ -225,8 +226,46 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
                 means[name].append(await one_round(call, counts[name], time.perf_counter))
         for name, seconds_per_call in means.items():
             results[name] = statistics.median(seconds_per_call)
-            print(f"{'memory':<12} {name:<38} {duration(results[name])} per call")
+            print(f"{'memory':<12} {name:<42} {duration(results[name])} per call")
     return results
+
+
+async def stall_of(awaitable: Awaitable[object]) -> float:
+    """The longest time another task waits for the event loop while ``awaitable`` is awaited."""
+    running, longest = True, 0.0
+
+    async def heartbeat() -> None:
+        nonlocal longest
+        last = time.perf_counter()
+        while running:
+            await asyncio.sleep(0)
+            now = time.perf_counter()
+            longest, last = max(longest, now - last), now
+
+    task = asyncio.get_running_loop().create_task(heartbeat())
+    await asyncio.sleep(0)
+    await awaitable
+    running = False
+    await task
+    return longest
+
+
+async def longest_stall(client: dynamoxy.Client, rounds: int) -> float:
+    """The longest time another task waits for the event loop while a page of 20,000 items is converted.
+
+    The query waits a millisecond (injected latency), so that the result arrives like one from
+    DynamoDB, through the event loop's port, and its conversion is all that runs on the loop.
+    """
+    table = client.table("stall")
+    await table.create(partition_key=("pk", "S"), sort_key=("n", "N"))
+    await table.batch_write(puts=[{"pk": "p", "n": n, "text": f"item {n}"} for n in range(20_000)])
+    stalls = []
+    for _ in range(rounds):
+        testing.inject_fault(client, operation="Query", latency=0.001)
+        stalls.append(await stall_of(anext(aiter(table.query(F("pk") == "p").pages()))))
+    stall = statistics.median(stalls)
+    print(f"{'memory':<12} {'longest loop stall, query of 20,000 items':<42} {duration(stall)}")
+    return stall
 
 
 # Against an emulator
