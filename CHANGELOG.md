@@ -28,6 +28,9 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
 - `Repository.from_item(item)` (`client.model(User).from_item(...)`) decodes a stored item from
   elsewhere (a stream image, an export) into an instance bound to the repository, as if read
   through it.
+- `.prefetch(pages=1)` on queries and scans requests up to `pages` pages ahead of the page being
+  read, so the round trips of long reads overlap with decoding, hydration and the caller's work;
+  a read that stops early may have read up to `pages` pages for nothing.
 
 ### Changed
 

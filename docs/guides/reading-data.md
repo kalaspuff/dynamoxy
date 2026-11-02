@@ -124,6 +124,27 @@ next_page = await query.page_size(25).after(cursor_from_client).page()
   signed. Never derive authorization from a cursor: the partition key of the query must come from
   your own code. If keys contain sensitive data, encrypt or sign cursors before handing them out.
 
+### Reading ahead
+
+Iteration, `pages()` and `all()` ask for a page only when the previous one has been handed
+over, so each page costs its round trip plus what happens to it: decoding, hydration, and the
+work your loop does with it. `prefetch(pages=1)` requests up to `pages` pages ahead: the request
+for the next page starts as soon as a page arrives, so its round trip overlaps with that work.
+
+```python
+async for order in orders.query(customer_id="c1").prefetch():  # exports, backfills, migrations
+    await migrate(order)
+everything = await orders.query(index="by_status", status="paid").hydrate().prefetch(2).all()
+```
+
+Pages, cursors, limits and errors are those of a read without it; an error of a request made
+ahead is raised when the read reaches its page. When a read stops early (`break`, `first()`, a
+limit), the requests ahead are cancelled, but up to `pages` pages may have been read for
+nothing, and their read capacity is consumed. With a round trip of 5 ms and 5 ms of work per
+page, 20 pages took 340 ms one after the other and 185 ms with `prefetch()` (in memory, with
+injected latency); a loop that does nothing with its pages gains little. `page()` and `count()`
+make one request at a time, and a parallel scan (`segments(n)`) overlaps its segments already.
+
 ## Indexes and projections
 
 ```python

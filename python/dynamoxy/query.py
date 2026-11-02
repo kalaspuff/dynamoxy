@@ -155,6 +155,7 @@ class _Reader[T]:
         self._partial = partial
         # A local index that does not hold every attribute: DynamoDB reads the rest from the table.
         self._select_all = select_all
+        self._prefetch = 0  # pages requested ahead of the one being read (see prefetch())
 
     def _replace(self, **changes: Any) -> Self:
         clone = copy.copy(self)
@@ -251,6 +252,26 @@ class _Reader[T]:
         if count < 1:
             raise ValueError(f"page_size must be at least 1, got {count}")
         return self._replace(page_size=count)
+
+    def prefetch(self, pages: int = 1) -> Self:
+        """Requests up to ``pages`` pages ahead of the page being read (iteration, ``pages()``, ``all()``).
+
+        The request for the next page starts as soon as a page arrives, before it is hydrated,
+        decoded and handed over, so its round trip overlaps with that work and with what the
+        caller does with the page. Pages, cursors, limits and errors stay the same: a page's
+        error is raised when iteration reaches it. When iteration stops early (``break``,
+        ``first()``, a limit reached), the requests ahead are cancelled, and up to ``pages``
+        pages may have been read for nothing: their read capacity is consumed.
+
+        ``page()`` and ``count()`` make their requests one by one; parallel scans
+        (``segments(n)``) overlap their segments already.
+
+        Raises:
+            ValueError: ``pages`` is less than 1.
+        """
+        if pages < 1:
+            raise ValueError(f"prefetch needs at least 1 page, got {pages}")
+        return self._replace(prefetch=pages)
 
     def consistent(self, consistent: bool = True) -> Self:
         """Strongly consistent reads (twice the read cost), like ``consistent=True``.
@@ -362,6 +383,15 @@ class _Reader[T]:
         self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
     ) -> tuple[Page[T], list[dict[str, Any]]]:
         """One request: the page, and the entries read for its items (index entries for index reads)."""
+        return await self._page_of(await self._request(start, limit, segment=segment))
+
+    def _item_checks(self) -> tuple[ItemCheck, ...]:
+        return self._checks + self._where_checks if self._where is not None else self._checks
+
+    async def _request(
+        self, start: dict[str, Any] | None, limit: int | None, *, segment: tuple[int, int] | None = None
+    ) -> dict[str, Any]:
+        """Sends one request of the read: its output (see :meth:`_page_of`)."""
         if self._projection and not self._hydrate:
             self._check_projection()
         if self._partial and not self._hydrate and not self._projection:
@@ -372,7 +402,7 @@ class _Reader[T]:
                 "attributes it holds"
             )
         builder = ExpressionBuilder()
-        checks = self._checks + self._where_checks if self._where is not None else self._checks
+        checks = self._item_checks()
         # A projection reads the key attributes too when a limit may cut the page (its cursor),
         # when items are checked on the client (the sort key prefix that where() replaced) and
         # for hydration (the table key); the decoder leaves out what was not asked for.
@@ -387,7 +417,11 @@ class _Reader[T]:
         if segment is not None:
             params["segment"], params["total_segments"] = segment
         params.update(builder.arguments())
-        output = await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
+        return await self._client.call(self._method, self._operation, table=self._table, model=self._model, **params)
+
+    async def _page_of(self, output: dict[str, Any]) -> tuple[Page[T], list[dict[str, Any]]]:
+        """The page of a request's output (hydrated, checked, decoded), and the entries read for its items."""
+        checks = self._item_checks()
         entries: list[dict[str, Any]] = output["items"]
         items = entries
         if self._hydrate and self._hydrator is not None and entries:
@@ -453,20 +487,37 @@ class _Reader[T]:
         remaining = self._limit
         start = self._start
         growth = 1
-        while True:
-            request = self._request_limit(remaining, growth)
-            page, entries = await self._fetch_page(start, request)
-            if remaining is not None and len(page.items) >= remaining:
-                yield await self._truncate(page, entries, remaining) if len(page.items) > remaining else page
-                return
-            yield page
-            if remaining is not None:
-                remaining -= len(page.items)
-            if page.last_evaluated_key is None:
-                return
-            if len(page.items) < page.scanned_count:
-                growth = min(growth * _GROWTH, _MAX_REQUEST_LIMIT)
-            start = page.last_evaluated_key
+        ahead = _ReadAhead(self, start, remaining, self._prefetch) if self._prefetch else None
+        try:
+            while True:
+                request = self._request_limit(remaining, growth)
+                output = None
+                if ahead is not None:
+                    taken = await ahead.next()
+                    if taken is not None and taken[0] == request:
+                        output = taken[1]
+                    elif taken is not None:
+                        # Checks on the client removed items, so this request asks for another
+                        # Limit than the page needs: the pages would differ. Read one by one.
+                        await ahead.close()
+                        ahead = None
+                if output is None:  # no read-ahead, or it stopped: the request is made here
+                    output = await self._request(start, request)
+                page, entries = await self._page_of(output)
+                if remaining is not None and len(page.items) >= remaining:
+                    yield await self._truncate(page, entries, remaining) if len(page.items) > remaining else page
+                    return
+                yield page
+                if remaining is not None:
+                    remaining -= len(page.items)
+                if page.last_evaluated_key is None:
+                    return
+                if len(page.items) < page.scanned_count:
+                    growth = min(growth * _GROWTH, _MAX_REQUEST_LIMIT)
+                start = page.last_evaluated_key
+        finally:
+            if ahead is not None:
+                await ahead.close()
 
     async def __aiter__(self) -> AsyncGenerator[T]:
         if self._segments is not None:
@@ -616,6 +667,76 @@ class _Reader[T]:
             # The keys of the entries: no hydration (project() keeps a hydrate() before it).
             return await self.limit(1)._replace(hydrate=False)._with_projection(*names).first() is not None
         return await self.first() is not None
+
+
+class _ReadAhead:
+    """The requests of a read made ahead of the pages its reader hands over (see ``prefetch()``).
+
+    A task sends the requests in order, each as soon as the previous answer gives its start
+    key, at most ``depth`` ahead of the page the reader works on: a slot is taken for each
+    request, and the reader frees one when it asks for its next page. The task stops at the
+    last page, after an error (which the reader raises when it reaches it), and when the items
+    returned reach the read's limit. It counts the items requests return, where the reader
+    counts those left after its checks on the client (``where()`` prefixes, hydrated items
+    deleted meanwhile): the reader uses an answer only when its request had the ``Limit`` the
+    reader would have sent, and makes the requests itself otherwise.
+    """
+
+    def __init__(self, reader: _Reader[Any], start: dict[str, Any] | None, remaining: int | None, depth: int) -> None:
+        self._outputs: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        self._slots = asyncio.Semaphore(depth + 1)  # the page being read, and those ahead of it
+        self._taken = False
+        self._ended = False
+        self._task = asyncio.get_running_loop().create_task(self._run(reader, start, remaining))
+
+    async def _run(self, reader: _Reader[Any], start: dict[str, Any] | None, remaining: int | None) -> None:
+        growth = 1
+        try:
+            while True:
+                await self._slots.acquire()
+                limit = reader._request_limit(remaining, growth)
+                output = await reader._request(start, limit)
+                self._outputs.put_nowait(("output", (limit, output)))
+                last, count = output["last_evaluated_key"], len(output["items"])
+                if last is None:
+                    break
+                if remaining is not None:
+                    remaining -= count
+                    if remaining <= 0:
+                        break
+                if count < output["scanned_count"]:
+                    growth = min(growth * _GROWTH, _MAX_REQUEST_LIMIT)
+                start = last
+        except asyncio.CancelledError:
+            raise  # the reader stopped
+        except BaseException as error:  # noqa: BLE001 - raised by the reader when it reaches this page
+            self._outputs.put_nowait(("error", error))
+            return
+        self._outputs.put_nowait(("end", None))
+
+    async def next(self) -> tuple[int | None, dict[str, Any]] | None:
+        """The ``Limit`` and the output of the next request, or ``None`` once the requests ahead stopped.
+
+        Raises:
+            Exception: The error of the next request.
+        """
+        if self._ended:
+            return None
+        if self._taken:
+            self._slots.release()  # the reader is done with its page
+        self._taken = True
+        kind, value = await self._outputs.get()
+        if kind == "output":
+            return value
+        self._ended = True
+        if kind == "error":
+            raise value
+        return None
+
+    async def close(self) -> None:
+        """Cancels the requests ahead."""
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
 
 
 class Query[T](_Reader[T]):
