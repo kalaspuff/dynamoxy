@@ -35,6 +35,12 @@ Entries are generated from conventional commits with [git-cliff](https://git-cli
   items whose type attribute names another model of the table with an `ItemDecodeError` that
   says so, instead of failing on missing fields or decoding another entity's item.
 
+### Fixed
+
+- A call on a new event loop no longer fails now and then with `RuntimeError: dictionary changed
+  size during iteration` on Python 3.12-3.14 while another thread makes its first call on a loop
+  of its own.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added
