@@ -961,9 +961,9 @@ impl<'py> ToWire<'py> {
         Ok(dict)
     }
 
-    /// A Python value in the typed shape, in one pass for strings, maps and lists, and through
-    /// [`to_av`] for the others: the checks, messages and canonical numbers are [`to_av`]'s. The
-    /// `str` objects of the value (attribute names, `S` values) are reused.
+    /// A Python value in the typed shape, in one pass for strings, maps, lists and tuples, and
+    /// through [`to_av`] for the others: the checks, messages and canonical numbers are
+    /// [`to_av`]'s. The `str` objects of the value (attribute names, `S` values) are reused.
     fn python(&self, value: &Bound<'py, PyAny>, path: &ValuePath<'_>, depth: usize) -> PyResult<Bound<'py, PyDict>> {
         if depth > MAX_DEPTH {
             return Err(too_deep(path));
@@ -981,6 +981,13 @@ impl<'py> ToWire<'py> {
         if let Ok(list) = value.cast::<PyList>() {
             let values = PyList::empty(self.py);
             for (index, element) in list.iter().enumerate() {
+                values.append(self.python(&element, &ValuePath::Element(path, index), depth + 1)?)?;
+            }
+            return self.tagged(&self.tags.l, values);
+        }
+        if let Ok(tuple) = value.cast::<PyTuple>() {
+            let values = PyList::empty(self.py);
+            for (index, element) in tuple.iter().enumerate() {
                 values.append(self.python(&element, &ValuePath::Element(path, index), depth + 1)?)?;
             }
             return self.tagged(&self.tags.l, values);
