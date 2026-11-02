@@ -49,7 +49,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import dynamoxy
 from dynamoxy import Attr, F, field, partition_key, sort_key, testing
@@ -81,6 +81,14 @@ class Entry(dynamoxy.Model, table="entries"):
     amount: Attr[Decimal]
     note: Attr[str]
     at: Attr[datetime]
+
+
+class PydanticEntry(dynamoxy.PydanticModel, table="pydantic-entries"):
+    account_id: Annotated[str, dynamoxy.PartitionKey()]
+    seq: Annotated[int, dynamoxy.SortKey()]
+    amount: Decimal
+    note: str
+    at: datetime
 
 
 def ada() -> User:
@@ -166,10 +174,27 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
         await entries.batch_put(ledger("a1", 100))
         keys = itertools.count()
         many_keys = [{"user_id": f"missing{index}"} for index in range(10_000)]
+        page = await entries.query(account_id="a1").all()
 
         async def save() -> object:
             loaded.visits += 1
             return await loaded.save()
+
+        stored = [entry.to_item() for entry in ledger("a1", 1000)]
+        wire = [dynamoxy.to_wire(item) for item in stored]
+
+        async def decode(model: type[Entry | PydanticEntry]) -> object:
+            return [model.from_item(item) for item in stored]
+
+        async def from_wire() -> object:
+            return [dynamoxy.from_wire(item) for item in wire]
+
+        async def to_wire() -> object:
+            return [dynamoxy.to_wire(item) for item in stored]
+
+        async def existing() -> None:
+            with contextlib.suppress(dynamoxy.ItemAlreadyExistsError):
+                await users.create(ada())
 
         async def transaction() -> None:
             async with client.transaction() as tx:
@@ -186,6 +211,12 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
             "table.query, 100 items -> dicts": lambda: client.table("entries").query(F("account_id") == "a1").all(),
             "transaction of two writes": transaction,
             "batch_get(), 10,000 missing keys": lambda: client.table("users").batch_get(many_keys),
+            "batch_put(), 25 loaded items": lambda: entries.batch_put(page[:25]),
+            "create() of an existing key": existing,
+            "from_item(), 1,000 items -> models": lambda: decode(Entry),
+            "from_item(), 1,000 items -> pydantic": lambda: decode(PydanticEntry),
+            "from_wire(), 1,000 items": from_wire,
+            "to_wire(), 1,000 items": to_wire,
         }
         counts = {name: await calls_in(seconds, call) for name, call in cases.items()}
         means: dict[str, list[float]] = {name: [] for name in cases}
@@ -194,7 +225,7 @@ async def memory(rounds: int, seconds: float) -> dict[str, float]:
                 means[name].append(await one_round(call, counts[name], time.perf_counter))
         for name, seconds_per_call in means.items():
             results[name] = statistics.median(seconds_per_call)
-            print(f"{'memory':<12} {name:<34} {duration(results[name])} per call")
+            print(f"{'memory':<12} {name:<38} {duration(results[name])} per call")
     return results
 
 

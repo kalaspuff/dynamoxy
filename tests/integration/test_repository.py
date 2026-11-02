@@ -12,6 +12,7 @@ import pytest
 
 import dynamoxy
 from dynamoxy import Attr, F, GlobalIndex, Model, Projection, field, partition_key, sort_key, updated_at, version
+from dynamoxy.schema import schema_of
 from tests.conftest import ClientFactory
 from tests.helpers import at, record_consistent_reads, wait_for
 from tests.models import Article, Customer, Event, Order, OrderStatus, Player, Status, User
@@ -922,6 +923,37 @@ async def test_model_and_client_hooks(client: dynamoxy.Client) -> None:
         "client.after_delete",
         "model.after_load",  # delete() returns the deleted item, decoded from DynamoDB
     ]
+
+
+async def test_updates_of_instances_refresh_them_with_the_item_returned(client: dynamoxy.Client) -> None:
+    loads: list[int] = []
+
+    class Tally(dynamoxy.Model, table="tallies"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+        count: dynamoxy.Attr[int] = dynamoxy.field(default=0)
+        tags: dynamoxy.Attr[set[str]] = dynamoxy.field(default_factory=set)
+
+    class Watched(dynamoxy.Model, table="tallies-watched"):
+        pk: dynamoxy.Attr[str] = dynamoxy.partition_key()
+        count: dynamoxy.Attr[int] = dynamoxy.field(default=0)
+
+        @dynamoxy.after_load
+        def loaded(self) -> None:
+            loads.append(self.count)
+
+    await client.create_tables(Tally, Watched)
+    tally = await client.model(Tally).create(Tally(pk="t", tags={"a"}))
+    await client.model(Tally).table.update({"pk": "t"}, F("count").add(5))  # another writer
+    updated = await tally.update(Tally.count.add(1), Tally.tags.discard({"a"}))
+    assert updated is tally
+    assert (tally.count, tally.tags) == (6, set())
+    stored = schema_of(Tally).state(tally).stored  # type: ignore[union-attr]
+    assert stored == {"pk": "t", "count": 6, "_wid": stored["_wid"]}
+    assert schema_of(Tally).state(tally).repository is not None  # type: ignore[union-attr]
+
+    watched = await client.model(Watched).create(Watched(pk="w"))
+    await watched.update(Watched.count.add(2))
+    assert loads == [2], "after_load hooks see the item an update returned"
 
 
 async def test_hooks_can_abort_writes(client: dynamoxy.Client) -> None:

@@ -69,6 +69,7 @@ from dynamoxy.client import Client
 from dynamoxy.errors import FieldError, ValidationError, validation_error
 from dynamoxy.expressions import Arithmetic, IfNotExists, ListAppend, Path, UpdateAction, Value
 from dynamoxy.schema import (
+    LIBRARY_BASES,
     ModelOptions,
     ModelSchema,
     ModelState,
@@ -203,6 +204,19 @@ class NativeAdapter:
         values[_STATE] = ModelState(stored, repository)
         instance.__dict__.update(values)
         return instance
+
+    def load_into(
+        self, instance: Any, values: dict[str, Any], stored: dict[str, Any], repository: Repository[Any] | None
+    ) -> None:
+        """Sets the fields of ``instance`` to decoded ``values`` (every field), with ``stored`` as its stored item."""
+        attributes = instance.__dict__
+        attributes.update(values)
+        state = attributes.get(_STATE)
+        if state is None:
+            attributes[_STATE] = ModelState(stored, repository)
+        else:
+            state.stored = stored
+            state.repository = repository
 
     def state(self, instance: Any) -> ModelState | None:
         state = instance.__dict__.get(_STATE)
@@ -1118,6 +1132,8 @@ class Model(Document, _Persistence):
 def _api_names(*classes: type) -> frozenset[str]:
     return frozenset(name for cls in classes for name in vars(cls) if not name.startswith("_"))
 
+
+LIBRARY_BASES.update((Document, Model, _Persistence))
 
 #: Names of the document and model APIs, which fields must not shadow.
 _DOCUMENT_API = _api_names(Document)
