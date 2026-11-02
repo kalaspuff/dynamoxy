@@ -308,6 +308,10 @@ def test_conversions_keep_the_order_and_the_strings_of_their_input() -> None:
     proxied = dynamoxy.to_wire(MappingProxyType({"b": 1, "a": UserDict({"y": 1, "x": 2})}))
     assert list(proxied) == ["b", "a"]
     assert list(proxied["a"]["M"]) == ["y", "x"]
+    # So do maps inside tuples, which become lists.
+    tupled = dynamoxy.to_wire({"t": ({"b": 1, "a": [{"y": 1, "x": 2}]},)})
+    assert list(tupled["t"]["L"][0]["M"]) == ["b", "a"]
+    assert list(tupled["t"]["L"][0]["M"]["a"]["L"][0]["M"]) == ["y", "x"]
     assert list(dynamoxy.from_wire(UserDict({"b": {"N": "1"}, "a": {"N": "2"}}))) == ["b", "a"]
     with pytest.raises(dynamoxy.ValidationError, match=r"^item\.b: cannot store a value of type object"):
         dynamoxy.to_wire(MappingProxyType({"b": object()}))
